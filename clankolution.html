@@ -511,6 +511,10 @@
       // Output layer: O * (Q hidden + 1 bias)               =  6 * (10 + 1)       =  66
       const GENES = Q * (N + Q + 1) + O * (Q + 1);
 
+      // Pre-fused neural activation scaling multipliers (eliminates runtime division)
+      const SCALE_H = 0.61 / 127;
+      const SCALE_O = 0.66 / 127;
+
       // Shared static scratchpad buffer for actuator outputs (zero-allocation neural inference)
       const brainOut = new Float32Array(O);
 
@@ -703,10 +707,11 @@
       function genome(parent, other) {
         const w = new Int8Array(GENES);
         if (parent) {
+          const mRate = mutRate();
           for (let i = 0; i < GENES; i++) {
             const base = other && Math.random() < 0.48 ? other.w[i] : parent.w[i];
             const mutation = Math.random() < 0.11
-              ? Math.round((Math.random() + Math.random() - 1) * 100 * mutRate())
+              ? Math.round((Math.random() + Math.random() - 1) * 100 * mRate)
               : 0;
             w[i] = clamp(base + mutation, -127, 127);
           }
@@ -756,7 +761,7 @@
             s += a.w[p++] * hPrev[k];
           }
           s += a.w[p++]; // bias
-          newH[j] = Math.tanh(s * (0.61 / 127));
+          newH[j] = Math.tanh(s * SCALE_H);
         }
 
         // Compute output layer: s = W_out * newH + b
@@ -766,7 +771,7 @@
             s += a.w[p++] * newH[k];
           }
           s += a.w[p++]; // bias
-          brainOut[j] = Math.tanh(s * (0.66 / 127));
+          brainOut[j] = Math.tanh(s * SCALE_O);
         }
 
         a.h = newH;
@@ -860,15 +865,22 @@
           const b = agents[i];
           if (a === b) continue;
           let dx = b.x - ax;
-          let dy = b.y - ay;
 
-          // Toroidal shortest distance
+          // Toroidal shortest distance (X-axis)
           if (dx > halfW) dx -= W;
           else if (dx < -halfW) dx += W;
+
+          const dx2 = dx * dx;
+          const cutoff = bd > 10000 ? bd : 10000;
+          if (dx2 >= cutoff) continue;
+
+          let dy = b.y - ay;
+
+          // Toroidal shortest distance (Y-axis)
           if (dy > halfH) dy -= H;
           else if (dy < -halfH) dy += H;
 
-          const d = dx * dx + dy * dy;
+          const d = dx2 + dy * dy;
           if (d < 10000) density++;
           if (d < bd) {
             bd = d;
@@ -968,8 +980,9 @@
         }
 
         // Creature update
-        const snapshot = agents.slice();
-        for (const a of snapshot) {
+        const snapshotLen = agents.length;
+        for (let i = 0; i < snapshotLen; i++) {
+          const a = agents[i];
           if (a.energy <= 0) {
             a.energy = 0;
             die(a);
@@ -990,7 +1003,9 @@
 
           // Sample food in front and at antenna points
           const here = sample(food, a.x, a.y);
-          const forward = sample(food, a.x + fwdX * reach, a.y + fwdY * reach);
+          const fwdReachX = a.x + fwdX * reach;
+          const fwdReachY = a.y + fwdY * reach;
+          const forward = sample(food, fwdReachX, fwdReachY);
           const left = sample(
             food,
             a.x + fwdX * reach * 0.7 + sideX * reach * 0.6,
@@ -1017,7 +1032,7 @@
           sensoryInputs[3] = clamp(forward - right, -1, 1);
           sensoryInputs[4] = clamp(forward - here, -1, 1);
           sensoryInputs[5] = clamp(sample(taint, a.x, a.y), 0, 1);
-          sensoryInputs[6] = clamp(sample(scent, a.x + fwdX * reach, a.y + fwdY * reach) - sample(scent, a.x, a.y), -1, 1);
+          sensoryInputs[6] = clamp(sample(scent, fwdReachX, fwdReachY) - sample(scent, a.x, a.y), -1, 1);
           sensoryInputs[7] = Math.sin(bearing);
           sensoryInputs[8] = Math.cos(bearing);
           sensoryInputs[9] = clamp(1 - d / (100 + 70 * a.tr[2]), -1, 1);
