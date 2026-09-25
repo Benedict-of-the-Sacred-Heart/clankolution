@@ -492,6 +492,14 @@
       // DOM lookup helper
       const $ = id => document.getElementById(id);
 
+      // Cached HUD element handles for zero-lookup UI updates
+      const elPop = $('pop');
+      const elGen = $('gen');
+      const elKills = $('kills');
+      const elDiversity = $('diversity');
+      const elWorldLabel = $('worldLabel');
+      const elInspect = $('inspect');
+
       // Mathematical utilities
       const TAU = Math.PI * 2;
       const clamp = (v, min, max) => Math.max(min, Math.min(max, v));
@@ -670,21 +678,35 @@
         fieldDirty = true;
       }
 
-      function sample(arr, x, y) {
-        const cx = clamp(Math.floor(wrap(x, W) * invCellW), 0, cols - 1);
-        const cy = clamp(Math.floor(wrap(y, H) * invCellH), 0, rows - 1);
-        return arr[cy * cols + cx];
-      }
-
       function idx(x, y) {
-        const cx = clamp(Math.floor(wrap(x, W) * invCellW), 0, cols - 1);
-        const cy = clamp(Math.floor(wrap(y, H) * invCellH), 0, rows - 1);
+        const cx = clamp(Math.floor((((x % W) + W) % W) * invCellW), 0, cols - 1);
+        const cy = clamp(Math.floor((((y % H) + H) % H) * invCellH), 0, rows - 1);
         return cy * cols + cx;
       }
 
+      function sample(arr, x, y) {
+        return arr[idx(x, y)];
+      }
+
       function deposit(arr, x, y, value, radius = 1) {
-        const cx = Math.floor(wrap(x, W) * invCellW);
-        const cy = Math.floor(wrap(y, H) * invCellH);
+        const cx = Math.floor((((x % W) + W) % W) * invCellW);
+        const cy = Math.floor((((y % H) + H) % H) * invCellH);
+
+        if (radius === 1) {
+          const v18 = value / 1.8;
+          const c0 = cy * cols + cx;
+          arr[c0] = clamp(arr[c0] + value, 0, 3);
+          const cUp = wrap(cy - 1, rows) * cols + cx;
+          arr[cUp] = clamp(arr[cUp] + v18, 0, 3);
+          const cDown = wrap(cy + 1, rows) * cols + cx;
+          arr[cDown] = clamp(arr[cDown] + v18, 0, 3);
+          const cLeft = cy * cols + wrap(cx - 1, cols);
+          arr[cLeft] = clamp(arr[cLeft] + v18, 0, 3);
+          const cRight = cy * cols + wrap(cx + 1, cols);
+          arr[cRight] = clamp(arr[cRight] + v18, 0, 3);
+          fieldDirty = true;
+          return;
+        }
 
         for (let dy = -radius; dy <= radius; dy++) {
           for (let dx = -radius; dx <= radius; dx++) {
@@ -709,12 +731,15 @@
         const w = new Int8Array(GENES);
         if (parent) {
           const mRate = mutRate();
+          const pw = parent.w;
+          const ow = other ? other.w : null;
           for (let i = 0; i < GENES; i++) {
-            const base = other && Math.random() < 0.48 ? other.w[i] : parent.w[i];
+            const base = ow && Math.random() < 0.48 ? ow[i] : pw[i];
             const mutation = Math.random() < 0.11
               ? Math.round((Math.random() + Math.random() - 1) * 100 * mRate)
               : 0;
-            w[i] = clamp(base + mutation, -127, 127);
+            const v = base + mutation;
+            w[i] = v < -127 ? -127 : v > 127 ? 127 : v;
           }
         } else {
           for (let i = 0; i < GENES; i++) {
@@ -736,11 +761,14 @@
             rand(0.20, 0.8)
           ];
         }
-        return parent.tr.map((v, i) => {
-          const base = other && Math.random() < 0.45 ? other.tr[i] : v;
-          const mutation = (Math.random() + Math.random() - 1) * mutRate() * 0.6;
-          return clamp(base + mutation, 0.03, 0.98);
-        });
+        const mRate = mutRate();
+        const tr = new Array(6);
+        for (let i = 0; i < 6; i++) {
+          const base = other && Math.random() < 0.45 ? other.tr[i] : parent.tr[i];
+          const mutation = (Math.random() + Math.random() - 1) * mRate * 0.6;
+          tr[i] = clamp(base + mutation, 0.03, 0.98);
+        }
+        return tr;
       }
 
       // Elman RNN forward pass:
@@ -749,29 +777,69 @@
       // Outputs (out): 6 actuator values in [-1, 1]
       function brain(a, ins) {
         let p = 0;
-        const newH = a.hNext;
+        const w = a.w;
         const hPrev = a.h;
+        const newH = a.hNext;
 
-        // Compute recurrent hidden layer: s = W_in * ins + W_rec * h_prev + b
-        for (let j = 0; j < Q; j++) {
+        const in0 = ins[0], in1 = ins[1], in2 = ins[2], in3 = ins[3], in4 = ins[4];
+        const in5 = ins[5], in6 = ins[6], in7 = ins[7], in8 = ins[8], in9 = ins[9];
+        const in10 = ins[10], in11 = ins[11], in12 = ins[12], in13 = ins[13], in14 = ins[14];
+
+        const hp0 = hPrev[0], hp1 = hPrev[1], hp2 = hPrev[2], hp3 = hPrev[3], hp4 = hPrev[4];
+        const hp5 = hPrev[5], hp6 = hPrev[6], hp7 = hPrev[7], hp8 = hPrev[8], hp9 = hPrev[9];
+
+        // Hidden layer activations (10 neurons)
+        for (let j = 0; j < 10; j++) {
           let s = 0;
-          for (let i = 0; i < N; i++) {
-            s += a.w[p++] * ins[i];
-          }
-          for (let k = 0; k < Q; k++) {
-            s += a.w[p++] * hPrev[k];
-          }
-          s += a.w[p++]; // bias
+          s += w[p++] * in0;
+          s += w[p++] * in1;
+          s += w[p++] * in2;
+          s += w[p++] * in3;
+          s += w[p++] * in4;
+          s += w[p++] * in5;
+          s += w[p++] * in6;
+          s += w[p++] * in7;
+          s += w[p++] * in8;
+          s += w[p++] * in9;
+          s += w[p++] * in10;
+          s += w[p++] * in11;
+          s += w[p++] * in12;
+          s += w[p++] * in13;
+          s += w[p++] * in14;
+
+          s += w[p++] * hp0;
+          s += w[p++] * hp1;
+          s += w[p++] * hp2;
+          s += w[p++] * hp3;
+          s += w[p++] * hp4;
+          s += w[p++] * hp5;
+          s += w[p++] * hp6;
+          s += w[p++] * hp7;
+          s += w[p++] * hp8;
+          s += w[p++] * hp9;
+
+          s += w[p++]; // bias
           newH[j] = Math.tanh(s * SCALE_H);
         }
 
-        // Compute output layer: s = W_out * newH + b
-        for (let j = 0; j < O; j++) {
+        const nh0 = newH[0], nh1 = newH[1], nh2 = newH[2], nh3 = newH[3], nh4 = newH[4];
+        const nh5 = newH[5], nh6 = newH[6], nh7 = newH[7], nh8 = newH[8], nh9 = newH[9];
+
+        // Output layer activations (6 neurons)
+        for (let j = 0; j < 6; j++) {
           let s = 0;
-          for (let k = 0; k < Q; k++) {
-            s += a.w[p++] * newH[k];
-          }
-          s += a.w[p++]; // bias
+          s += w[p++] * nh0;
+          s += w[p++] * nh1;
+          s += w[p++] * nh2;
+          s += w[p++] * nh3;
+          s += w[p++] * nh4;
+          s += w[p++] * nh5;
+          s += w[p++] * nh6;
+          s += w[p++] * nh7;
+          s += w[p++] * nh8;
+          s += w[p++] * nh9;
+
+          s += w[p++]; // bias
           brainOut[j] = Math.tanh(s * SCALE_O);
         }
 
@@ -952,6 +1020,7 @@
         fieldDirty = true;
         const renewal = +$('growth').value / 100;
         const hostility = +$('hostility').value / 100;
+        const tick008 = tick * 0.08;
         let sum = 0;
 
         // Environmental soil update
@@ -966,10 +1035,16 @@
           if (Math.random() < spawnThreshold) {
             f += rand(0.15, 0.6);
           }
-          food[k] = clamp(f, 0, 2.5);
-          if (t > 0) taint[k] = Math.max(0, t * 0.994 - 0.0001);
+          food[k] = f < 0 ? 0 : f > 2.5 ? 2.5 : f;
+          if (t > 0) {
+            const dec = t * 0.994 - 0.0001;
+            taint[k] = dec > 0 ? dec : 0;
+          }
           if (s > 0) scent[k] = s * 0.954;
-          sum += food[k];
+        }
+
+        if (tick % 60 === 0) {
+          for (let k = 0; k < cols * rows; k++) sum += food[k];
         }
 
         // Eclipse catastrophe dynamics
@@ -1006,21 +1081,21 @@
           const sideY = fwdX;
           const reach = 19 + 38 * a.tr[2]; // sight trait
 
-          // Sample food in front and at antenna points
-          const here = sample(food, a.x, a.y);
+          // Spatial grid indexing with cached coordinate reuse
+          const idxHere = idx(a.x, a.y);
+          const here = food[idxHere];
           const fwdReachX = a.x + fwdX * reach;
           const fwdReachY = a.y + fwdY * reach;
-          const forward = sample(food, fwdReachX, fwdReachY);
-          const left = sample(
-            food,
-            a.x + fwdX * reach * 0.7 + sideX * reach * 0.6,
-            a.y + fwdY * reach * 0.7 + sideY * reach * 0.6
-          );
-          const right = sample(
-            food,
-            a.x + fwdX * reach * 0.7 - sideX * reach * 0.6,
-            a.y + fwdY * reach * 0.7 - sideY * reach * 0.6
-          );
+          const idxFwd = idx(fwdReachX, fwdReachY);
+          const forward = food[idxFwd];
+
+          // Antenna symmetry factoring (preserves exact IEEE-754 order)
+          const midX = a.x + fwdX * reach * 0.7;
+          const midY = a.y + fwdY * reach * 0.7;
+          const offX = sideX * reach * 0.6;
+          const offY = sideY * reach * 0.6;
+          const left = food[idx(midX + offX, midY + offY)];
+          const right = food[idx(midX - offX, midY - offY)];
 
           // Neighbor perception
           const { best, density } = near(a);
@@ -1036,14 +1111,14 @@
           sensoryInputs[2] = clamp(forward - left, -1, 1);
           sensoryInputs[3] = clamp(forward - right, -1, 1);
           sensoryInputs[4] = clamp(forward - here, -1, 1);
-          sensoryInputs[5] = clamp(sample(taint, a.x, a.y), 0, 1);
-          sensoryInputs[6] = clamp(sample(scent, fwdReachX, fwdReachY) - sample(scent, a.x, a.y), -1, 1);
+          sensoryInputs[5] = clamp(taint[idxHere], 0, 1);
+          sensoryInputs[6] = clamp(scent[idxFwd] - scent[idxHere], -1, 1);
           sensoryInputs[7] = Math.sin(bearing);
           sensoryInputs[8] = Math.cos(bearing);
           sensoryInputs[9] = clamp(1 - d / (100 + 70 * a.tr[2]), -1, 1);
           sensoryInputs[10] = clamp(density / 9, 0, 1);
           sensoryInputs[11] = clamp(a.age / 600, 0, 1);
-          sensoryInputs[12] = Math.sin(tick * 0.08 + a.id);
+          sensoryInputs[12] = Math.sin(tick008 + a.id);
           sensoryInputs[13] = clamp(a.vx * fwdX + a.vy * fwdY, -1, 1);
           sensoryInputs[14] = best ? clamp(best.b.energy / 70 - 1, -1, 1) : 0;
 
@@ -1095,7 +1170,7 @@
             0.035 * a.attack +
             0.014 * a.signal +
             thrust * 0.06 +
-            sample(taint, a.x, a.y) * (0.10 + 0.18 * (1 - a.tr[3]));
+            taint[fi] * (0.10 + 0.18 * (1 - a.tr[3]));
 
           // Predation / Combat
           if (best && d < 14 + 10 * a.tr[0] && a.attack > 0.25 && a.cooldown === 0 && best.b.energy > 0) {
@@ -1194,16 +1269,31 @@
 
       function drawField() {
         if (fieldDirty) {
+          const inv18 = 1 / 1.8;
           for (let i = 0; i < food.length; i++) {
-            const f = clamp(food[i] / 1.8, 0, 1);
-            const t = clamp(taint[i], 0, 1);
-            const s = clamp(scent[i], 0, 1);
+            let fVal = food[i] * inv18;
+            if (fVal > 1) fVal = 1;
+            let r = 9.5 + fVal * 42;
+            let g = 22.5 + fVal * 61;
+            let b = 25.5 + fVal * 44;
 
-            const r = (9.5 + f * 42 + t * 98 + s * 27) | 0;
-            const g = (22.5 + f * 61 - t * 13 + s * 20) | 0;
-            const b = (25.5 + f * 44 + t * 23 + s * 33) | 0;
+            const t = taint[i];
+            if (t > 0) {
+              const tc = t > 1 ? 1 : t;
+              r += tc * 98;
+              g -= tc * 13;
+              b += tc * 23;
+            }
 
-            fieldBuf32[i] = (255 << 24) | (b << 16) | (g << 8) | r;
+            const s = scent[i];
+            if (s > 0) {
+              const sc = s > 1 ? 1 : s;
+              r += sc * 27;
+              g += sc * 20;
+              b += sc * 33;
+            }
+
+            fieldBuf32[i] = (255 << 24) | (((b | 0) << 16) | ((g | 0) << 8) | (r | 0));
           }
           fieldCtx.putImageData(fieldImage, 0, 0);
           fieldDirty = false;
@@ -1320,6 +1410,12 @@
         }
       }
 
+      const chartSeries = [
+        ['p', '#8fe3cf', v => v.p / 220],
+        ['f', '#d9ad72', v => v.f / 1.7],
+        ['k', '#ed7869', (_, i) => Math.min(1, Math.max(0, (history[i].k - history[Math.max(0, i - 10)].k) / 30))]
+      ];
+
       function drawChart() {
         const w = chart.width;
         const h = chart.height;
@@ -1336,13 +1432,7 @@
 
         if (history.length < 2) return;
 
-        const series = [
-          ['p', '#8fe3cf', v => v.p / 220],
-          ['f', '#d9ad72', v => v.f / 1.7],
-          ['k', '#ed7869', (_, i) => Math.min(1, Math.max(0, (history[i].k - history[Math.max(0, i - 10)].k) / 30))]
-        ];
-
-        for (const [key, color, fn] of series) {
+        for (const [key, color, fn] of chartSeries) {
           ch.beginPath();
           ch.strokeStyle = color;
           ch.lineWidth = 1.5;
@@ -1368,12 +1458,12 @@
           uiRootsSet.add(a.root);
         }
 
-        $('pop').textContent = agents.length;
-        $('gen').textContent = max;
-        $('kills').textContent = kills;
-        $('diversity').textContent = uiRootsSet.size;
+        elPop.textContent = agents.length;
+        elGen.textContent = max;
+        elKills.textContent = kills;
+        elDiversity.textContent = uiRootsSet.size;
 
-        $('worldLabel').textContent =
+        elWorldLabel.textContent =
           'CYCLE ' +
           String(tick).padStart(5, '0') +
           ' / ' +
@@ -1392,7 +1482,7 @@
         if (selected) {
           const a = selected;
           const labels = ['bulk', 'speed', 'sight', 'armor', 'foraging', 'carnivory'];
-          $('inspect').innerHTML =
+          elInspect.innerHTML =
             '<b>SPECIMEN ' +
             a.id +
             '</b>  ·  lineage ' +
