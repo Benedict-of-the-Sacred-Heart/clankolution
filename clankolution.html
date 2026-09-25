@@ -679,8 +679,10 @@
       }
 
       function idx(x, y) {
-        const cx = clamp(Math.floor((((x % W) + W) % W) * invCellW), 0, cols - 1);
-        const cy = clamp(Math.floor((((y % H) + H) % H) * invCellH), 0, rows - 1);
+        let cx = ((((x % W) + W) % W) * invCellW) | 0;
+        if (cx >= cols) cx = cols - 1;
+        let cy = ((((y % H) + H) % H) * invCellH) | 0;
+        if (cy >= rows) cy = rows - 1;
         return cy * cols + cx;
       }
 
