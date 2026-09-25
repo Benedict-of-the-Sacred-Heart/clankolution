@@ -105,6 +105,44 @@
       align-items: center;
     }
 
+    .speed-control {
+      display: inline-flex;
+      align-items: center;
+      gap: 7px;
+      background: #142326;
+      border: 1px solid #395054;
+      border-radius: 4px;
+      padding: 5px 9px;
+      font-size: 11px;
+      color: var(--ink);
+      user-select: none;
+    }
+
+    .speed-control label {
+      color: var(--muted);
+      font-size: 10px;
+      letter-spacing: 0.08em;
+      font-weight: 500;
+      cursor: pointer;
+    }
+
+    .speed-control input[type="range"] {
+      width: 72px;
+      height: 14px;
+      margin: 0;
+      accent-color: var(--cyan);
+      cursor: pointer;
+      vertical-align: middle;
+    }
+
+    .speed-control output {
+      min-width: 25px;
+      text-align: right;
+      color: var(--gold);
+      font-weight: 600;
+      font-variant-numeric: tabular-nums;
+    }
+
     .world {
       position: relative;
       min-height: 0;
@@ -374,9 +412,13 @@
         <span class="sub">AN EXPERIMENT IN INHERITED APPETITE</span>
       </div>
       <div class="top-controls">
-        <button id="engineToggle" title="Toggle simulation engine (pure JS vs Rust+Wasm SIMD)">ENGINE: JS</button>
+        <button id="engineToggle" title="Toggle simulation engine (pure JS vs Rust+WASM)">ENGINE: JS</button>
         <button id="pause" aria-label="Pause simulation">PAUSE</button>
-        <button id="speed" title="Simulation speed">1× SPEED</button>
+        <div class="speed-control" title="Simulation speed (1× to 32×)">
+          <label for="speed">SPEED</label>
+          <input id="speed" type="range" min="1" max="32" step="1" value="1" aria-label="Simulation speed">
+          <output id="speedValue">1×</output>
+        </div>
         <button id="reset">NEW WORLD</button>
       </div>
     </header>
@@ -462,7 +504,7 @@
           <output id="capValue">340</output>
         </div>
         <input id="capSlider" aria-label="Creature capacity" type="range" min="50" max="10000" step="50" value="340">
-        <div class="minor" id="capHint" style="display:none; font-size: 11px; color: var(--gold); margin-top: -6px; margin-bottom: 8px;">Switch to WASM SIMD to unlock up to 10,000 creatures.</div>
+        <div class="minor" id="capHint" style="display:none; font-size: 11px; color: var(--gold); margin-top: -6px; margin-bottom: 8px;">Switch to WASM mode to unlock up to 10,000 creatures.</div>
       </div>
 
       <div class="section">
@@ -520,6 +562,7 @@
       const elWorldLabel = $('worldLabel');
       const elInspect = $('inspect');
       const elSpeed = $('speed');
+      const elSpeedValue = $('speedValue');
 
       // Mathematical utilities
       const TAU = Math.PI * 2;
@@ -1671,7 +1714,7 @@
             : agents.length < 25
             ? 'THE REMNANT'
             : 'THE HUNGER') +
-          (activeEngine === 'wasm' ? ' [WASM SIMD]' : ' [JS]');
+          (activeEngine === 'wasm' ? ' [WASM]' : ' [JS]');
 
         if (selected && !agents.includes(selected)) {
           selected = null;
@@ -1804,7 +1847,7 @@
       });
 
       /* ==========================================================================
-         10. DUAL-ENGINE CONTROLLER (WASM SIMD RUNTIME)
+         10. DUAL-ENGINE CONTROLLER (RUST+WASM RUNTIME)
          ========================================================================== */
 
       let wasmLoading = false;
@@ -1830,7 +1873,7 @@
           wasmExports = wasmInstance.exports;
           wasmMemory = wasmExports.memory;
           wasmLoading = false;
-          console.log('Rust+Wasm SIMD engine initialized successfully.');
+          console.log('Rust+WASM engine initialized successfully.');
           if (pendingEngineToggle) {
             pendingEngineToggle = false;
             toggleEngine();
@@ -2087,10 +2130,10 @@
         if (activeEngine === 'js') {
           syncStateToWasm();
           activeEngine = 'wasm';
-          $('engineToggle').textContent = 'ENGINE: WASM SIMD';
+          $('engineToggle').textContent = 'ENGINE: WASM';
           $('engineToggle').classList.add('wasm-active');
           elCapHint.style.display = 'none';
-          event('Simulation engine switched to Rust+Wasm SIMD.');
+          event('Simulation engine switched to Rust+WASM.');
         } else {
           syncStateFromWasm();
           activeEngine = 'js';
@@ -2271,12 +2314,19 @@
         $('pause').textContent = paused ? 'RESUME' : 'PAUSE';
       };
 
-      const SPEEDS = [1, 2, 4, 8, 16, 32, 64];
-      $('speed').onclick = () => {
-        const curIdx = SPEEDS.indexOf(speed);
-        speed = SPEEDS[(curIdx + 1) % SPEEDS.length];
-        $('speed').textContent = speed + '× SPEED';
-      };
+      function setSpeed(val) {
+        speed = Math.max(1, Math.min(32, Math.round(+val || 1)));
+        if (elSpeed.value !== String(speed)) {
+          elSpeed.value = speed;
+        }
+        if (elSpeedValue) {
+          elSpeedValue.textContent = speed + '×';
+        }
+      }
+
+      elSpeed.addEventListener('input', () => {
+        setSpeed(elSpeed.value);
+      });
 
       $('reset').onclick = () => {
         reset();
@@ -2322,7 +2372,7 @@
           val = 340;
           $('capSlider').value = 340;
           $('capHint').style.display = 'block';
-          event('Capacity above 340 requires Rust+Wasm SIMD mode.');
+          event('Capacity above 340 requires Rust+WASM mode.');
         } else {
           $('capHint').style.display = 'none';
         }
@@ -2535,6 +2585,8 @@
       window.__clank = {
         getEngine: () => activeEngine,
         getCap: () => CAP,
+        getSpeed: () => speed,
+        setSpeed: v => setSpeed(v),
         getAgents: () => agents,
         getAgentsCount: () => agents.length,
         getTick: () => tick,
