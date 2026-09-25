@@ -320,20 +320,23 @@ impl World {
 
     pub fn evolve(&mut self) {
         self.tick += 1;
-        if self.eclipse > 0 {
-            self.eclipse -= 1;
-        }
-
         let growth_val = self.growth / 100.0;
         let hostility_val = self.hostility / 100.0;
 
         // Environmental soil step
         self.soil.step_soil(&mut self.prng, growth_val);
 
+        // Eclipse catastrophe dynamics
         if self.eclipse > 0 {
-            for i in 0..GRID_SIZE {
-                let f = self.soil.food[i];
-                self.soil.food[i] = if f > 0.006 { f - 0.006 } else { 0.0 };
+            self.eclipse -= 1;
+            if self.tick % 2 == 0 {
+                for _ in 0..160 {
+                    let k = (self.prng.next_f64() * (GRID_SIZE as f64)).floor() as usize;
+                    let k = k.min(GRID_SIZE - 1);
+                    self.soil.food[k] = ((self.soil.food[k] as f64) * 0.73) as f32;
+                    let new_t = (self.soil.taint[k] as f64) + 0.14;
+                    self.soil.taint[k] = if new_t < 0.0 { 0.0 } else if new_t > 2.0 { 2.0 } else { new_t as f32 };
+                }
             }
         }
 
@@ -345,8 +348,8 @@ impl World {
             if self.agents[i].dead != 0 {
                 continue;
             }
-            if self.agents[i].energy <= 0.0 || self.agents[i].age > 2100 {
-                self.agents[i].energy = if self.agents[i].energy > 0.0 { self.agents[i].energy } else { 0.0 };
+            if self.agents[i].energy <= 0.0 {
+                self.agents[i].energy = 0.0;
                 let ax = self.agents[i].x;
                 let ay = self.agents[i].y;
                 let ae = self.agents[i].energy;

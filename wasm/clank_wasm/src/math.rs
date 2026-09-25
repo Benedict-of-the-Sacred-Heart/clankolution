@@ -1,5 +1,5 @@
 pub struct Prng {
-    s: u32,
+    pub s: u32,
 }
 
 impl Prng {

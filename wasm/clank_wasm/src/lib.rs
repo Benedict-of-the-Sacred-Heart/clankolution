@@ -13,7 +13,10 @@ static mut ARCHIVE_BUFFER: Vec<u8> = Vec::new();
 #[inline(always)]
 fn get_world() -> &'static mut World {
     unsafe {
-        GLOBAL_WORLD.as_mut().expect("World not initialized! Call init_world first.")
+        if GLOBAL_WORLD.is_none() {
+            GLOBAL_WORLD = Some(World::new(1));
+        }
+        GLOBAL_WORLD.as_mut().unwrap()
     }
 }
 
@@ -110,6 +113,96 @@ pub extern "C" fn create_snapshot() -> u32 {
 pub extern "C" fn get_archive_ptr() -> *const u8 {
     unsafe { ARCHIVE_BUFFER.as_ptr() }
 }
+
+#[no_mangle]
+pub extern "C" fn get_agents_mut_ptr() -> *mut AgentData {
+    let w = get_world();
+    w.agents.as_mut_ptr()
+}
+
+#[no_mangle]
+pub extern "C" fn set_agents_count(count: u32) {
+    let w = get_world();
+    let count = (count as usize).min(agent::MAX_CAP);
+    w.agents.resize(count, AgentData::default());
+}
+
+#[no_mangle]
+pub extern "C" fn get_prng_state() -> u32 {
+    let w = get_world();
+    w.prng.s
+}
+
+#[no_mangle]
+pub extern "C" fn set_prng_state(state: u32) {
+    let w = get_world();
+    w.prng.s = state;
+}
+
+#[no_mangle]
+pub extern "C" fn get_roots() -> u32 {
+    let w = get_world();
+    w.roots
+}
+
+#[no_mangle]
+pub extern "C" fn get_next_id() -> u32 {
+    let w = get_world();
+    w.next_id
+}
+
+#[no_mangle]
+pub extern "C" fn get_eclipse() -> u32 {
+    let w = get_world();
+    w.eclipse
+}
+
+#[no_mangle]
+pub extern "C" fn trigger_eclipse() {
+    let w = get_world();
+    w.eclipse = 210;
+}
+
+#[no_mangle]
+pub extern "C" fn set_eclipse(eclipse: u32) {
+    let w = get_world();
+    w.eclipse = eclipse;
+}
+
+#[no_mangle]
+pub extern "C" fn set_selective_pressures(mutation: f64, growth: f64, hostility: f64) {
+    let w = get_world();
+    w.mutation = mutation;
+    w.growth = growth;
+    w.hostility = hostility;
+}
+
+#[no_mangle]
+pub extern "C" fn sync_params_to_wasm(
+    tick: u32,
+    kills: u32,
+    births: u32,
+    roots: u32,
+    next_id: u32,
+    eclipse: u32,
+    mutation: f64,
+    growth: f64,
+    hostility: f64,
+    prng_state: u32,
+) {
+    let w = get_world();
+    w.tick = tick;
+    w.kills = kills;
+    w.births = births;
+    w.roots = roots;
+    w.next_id = next_id;
+    w.eclipse = eclipse;
+    w.mutation = mutation;
+    w.growth = growth;
+    w.hostility = hostility;
+    w.prng.s = prng_state;
+}
+
 
 
 
