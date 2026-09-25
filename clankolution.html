@@ -1076,53 +1076,75 @@
           if (a.cooldown > 0) a.cooldown--;
           if (a.birth > 0) a.birth--;
 
+          // Creature morphological trait registers
+          const tr = a.tr;
+          const tr0 = tr[0], tr1 = tr[1], tr2 = tr[2], tr3 = tr[3], tr4 = tr[4], tr5 = tr[5];
+
           // Direction vectors & sensor reach
           const fwdX = Math.cos(a.angle);
           const fwdY = Math.sin(a.angle);
-          const sideX = -fwdY;
-          const sideY = fwdX;
-          const reach = 19 + 38 * a.tr[2]; // sight trait
+          const reach = 19 + 38 * tr2; // sight trait
 
-          // Spatial grid indexing with cached coordinate reuse
+          // Factored antenna symmetry vectors (eliminates 4 float multiplications)
+          const fwdReachXTerm = fwdX * reach;
+          const fwdReachYTerm = fwdY * reach;
+
           const idxHere = idx(a.x, a.y);
           const here = food[idxHere];
-          const fwdReachX = a.x + fwdX * reach;
-          const fwdReachY = a.y + fwdY * reach;
+          const fwdReachX = a.x + fwdReachXTerm;
+          const fwdReachY = a.y + fwdReachYTerm;
           const idxFwd = idx(fwdReachX, fwdReachY);
           const forward = food[idxFwd];
 
-          // Antenna symmetry factoring (preserves exact IEEE-754 order)
-          const midX = a.x + fwdX * reach * 0.7;
-          const midY = a.y + fwdY * reach * 0.7;
-          const offX = sideX * reach * 0.6;
-          const offY = sideY * reach * 0.6;
+          const midX = a.x + fwdReachXTerm * 0.7;
+          const midY = a.y + fwdReachYTerm * 0.7;
+          const offX = -fwdReachYTerm * 0.6;
+          const offY = fwdReachXTerm * 0.6;
           const left = food[idx(midX + offX, midY + offY)];
           const right = food[idx(midX - offX, midY - offY)];
 
           // Neighbor perception
           const { best, density } = near(a);
           const d = best?.d || 999;
-          let bearing = 0;
           if (best) {
-            bearing = Math.atan2(best.dy, best.dx) - a.angle;
+            const bearing = Math.atan2(best.dy, best.dx) - a.angle;
+            sensoryInputs[7] = Math.sin(bearing);
+            sensoryInputs[8] = Math.cos(bearing);
+          } else {
+            sensoryInputs[7] = 0;
+            sensoryInputs[8] = 1;
           }
 
-          // 15 Sensory Inputs (written to static Float64Array scratchpad)
-          sensoryInputs[0] = clamp(a.energy / 75 - 1, -1, 1);
-          sensoryInputs[1] = clamp(here - 1, -1, 1);
-          sensoryInputs[2] = clamp(forward - left, -1, 1);
-          sensoryInputs[3] = clamp(forward - right, -1, 1);
-          sensoryInputs[4] = clamp(forward - here, -1, 1);
-          sensoryInputs[5] = clamp(taint[idxHere], 0, 1);
-          sensoryInputs[6] = clamp(scent[idxFwd] - scent[idxHere], -1, 1);
-          sensoryInputs[7] = Math.sin(bearing);
-          sensoryInputs[8] = Math.cos(bearing);
-          sensoryInputs[9] = clamp(1 - d / (100 + 70 * a.tr[2]), -1, 1);
-          sensoryInputs[10] = clamp(density / 9, 0, 1);
-          sensoryInputs[11] = clamp(a.age / 600, 0, 1);
+          // 15 Sensory Inputs (inlined branch-predicted clamps)
+          let v = a.energy / 75 - 1;
+          sensoryInputs[0] = v < -1 ? -1 : v > 1 ? 1 : v;
+          v = here - 1;
+          sensoryInputs[1] = v < -1 ? -1 : v > 1 ? 1 : v;
+          v = forward - left;
+          sensoryInputs[2] = v < -1 ? -1 : v > 1 ? 1 : v;
+          v = forward - right;
+          sensoryInputs[3] = v < -1 ? -1 : v > 1 ? 1 : v;
+          v = forward - here;
+          sensoryInputs[4] = v < -1 ? -1 : v > 1 ? 1 : v;
+          v = taint[idxHere];
+          sensoryInputs[5] = v < 0 ? 0 : v > 1 ? 1 : v;
+          v = scent[idxFwd] - scent[idxHere];
+          sensoryInputs[6] = v < -1 ? -1 : v > 1 ? 1 : v;
+          v = 1 - d / (100 + 70 * tr2);
+          sensoryInputs[9] = v < -1 ? -1 : v > 1 ? 1 : v;
+          v = density / 9;
+          sensoryInputs[10] = v < 0 ? 0 : v > 1 ? 1 : v;
+          v = a.age / 600;
+          sensoryInputs[11] = v < 0 ? 0 : v > 1 ? 1 : v;
           sensoryInputs[12] = Math.sin(tick008 + a.id);
-          sensoryInputs[13] = clamp(a.vx * fwdX + a.vy * fwdY, -1, 1);
-          sensoryInputs[14] = best ? clamp(best.b.energy / 70 - 1, -1, 1) : 0;
+          v = a.vx * fwdX + a.vy * fwdY;
+          sensoryInputs[13] = v < -1 ? -1 : v > 1 ? 1 : v;
+          if (best) {
+            v = best.b.energy / 70 - 1;
+            sensoryInputs[14] = v < -1 ? -1 : v > 1 ? 1 : v;
+          } else {
+            sensoryInputs[14] = 0;
+          }
 
           // Neural forward pass
           const o = brain(a, sensoryInputs);
