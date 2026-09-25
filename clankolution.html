@@ -534,6 +534,13 @@
         '#89c5a1'
       ];
 
+      // Precomputed hex alpha color lookup tables (eliminates per-agent string concatenations in render)
+      const palette40 = palette.map(c => c + '40');
+      const palette8c = palette.map(c => c + '8c');
+
+      // Reusable Set for lineage diversity calculation (eliminates per-frame Set allocations)
+      const uiRootsSet = new Set();
+
       /* ==========================================================================
          2. SIMULATION STATE
          ========================================================================== */
@@ -570,6 +577,7 @@
       let cellH;
       let invCellW = 1 / 12;
       let invCellH = 1 / 12;
+      let fieldDirty = true;
 
       // Off-screen canvas buffer for rasterizing the soil grid
       let fieldImage;
@@ -654,6 +662,7 @@
         fieldCtx = fieldCanvas.getContext('2d');
         fieldImage = fieldCtx.createImageData(cols, rows);
         fieldBuf32 = new Uint32Array(fieldImage.data.buffer);
+        fieldDirty = true;
       }
 
       function sample(arr, x, y) {
@@ -680,6 +689,7 @@
             arr[cellIndex] = clamp(arr[cellIndex] + value / (1 + rr * 0.8), 0, 3);
           }
         }
+        fieldDirty = true;
       }
 
       /* ==========================================================================
@@ -924,6 +934,7 @@
 
       function evolve() {
         tick++;
+        fieldDirty = true;
         const renewal = +$('growth').value / 100;
         const hostility = +$('hostility').value / 100;
         let sum = 0;
@@ -1160,18 +1171,21 @@
          ========================================================================== */
 
       function drawField() {
-        for (let i = 0; i < food.length; i++) {
-          const f = clamp(food[i] / 1.8, 0, 1);
-          const t = clamp(taint[i], 0, 1);
-          const s = clamp(scent[i], 0, 1);
+        if (fieldDirty) {
+          for (let i = 0; i < food.length; i++) {
+            const f = clamp(food[i] / 1.8, 0, 1);
+            const t = clamp(taint[i], 0, 1);
+            const s = clamp(scent[i], 0, 1);
 
-          const r = Math.round(9 + f * 42 + t * 98 + s * 27);
-          const g = Math.round(22 + f * 61 - t * 13 + s * 20);
-          const b = Math.round(25 + f * 44 + t * 23 + s * 33);
+            const r = Math.round(9 + f * 42 + t * 98 + s * 27);
+            const g = Math.round(22 + f * 61 - t * 13 + s * 20);
+            const b = Math.round(25 + f * 44 + t * 23 + s * 33);
 
-          fieldBuf32[i] = (255 << 24) | (b << 16) | (g << 8) | r;
+            fieldBuf32[i] = (255 << 24) | (b << 16) | (g << 8) | r;
+          }
+          fieldCtx.putImageData(fieldImage, 0, 0);
+          fieldDirty = false;
         }
-        fieldCtx.putImageData(fieldImage, 0, 0);
         ctx.imageSmoothingEnabled = true;
         ctx.drawImage(fieldCanvas, 0, 0, W, H);
       }
@@ -1193,7 +1207,7 @@
                 ctx.moveTo(p[0], p[1]);
               }
             }
-            ctx.strokeStyle = hue(a) + '40';
+            ctx.strokeStyle = palette40[a.root % palette.length];
             ctx.lineWidth = 1 + a.tr[0] * 2;
             ctx.stroke();
           }
@@ -1230,7 +1244,7 @@
 
           // Sensory antennae (if sight trait is high)
           if (a.tr[2] > 0.56) {
-            ctx.strokeStyle = c + '8c';
+            ctx.strokeStyle = palette8c[a.root % palette.length];
             ctx.beginPath();
             ctx.moveTo(-r * 0.3, r * 0.6);
             ctx.lineTo(-r * (1.5 + a.tr[2]), r * (1.1 + a.signal));
@@ -1324,16 +1338,16 @@
 
       function updateUI() {
         let max = 0;
-        const div = new Set();
+        uiRootsSet.clear();
         for (const a of agents) {
           max = Math.max(max, a.gen);
-          div.add(a.root);
+          uiRootsSet.add(a.root);
         }
 
         $('pop').textContent = agents.length;
         $('gen').textContent = max;
         $('kills').textContent = kills;
-        $('diversity').textContent = div.size;
+        $('diversity').textContent = uiRootsSet.size;
 
         $('worldLabel').textContent =
           'CYCLE ' +
@@ -1635,6 +1649,7 @@
 
       $('catastrophe').onclick = () => {
         eclipse = 210;
+        fieldDirty = true;
         event('An eclipse consumes the harvest.');
         spark(rand(W), rand(H), '#ff6659', 30);
       };
