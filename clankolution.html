@@ -514,6 +514,11 @@
       // Shared static scratchpad buffer for actuator outputs (zero-allocation neural inference)
       const brainOut = new Float32Array(O);
 
+      // Pre-allocated static scratchpads for allocation-free sensing and perception
+      const sensoryInputs = new Float64Array(N);
+      const nearBest = { b: null, dx: 0, dy: 0, d: 999 };
+      const nearResult = { best: null, density: 0 };
+
       // Maximum creature capacity in the arena
       const CAP = 340;
 
@@ -563,6 +568,8 @@
       let rows;
       let cellW;
       let cellH;
+      let invCellW = 1 / 12;
+      let invCellH = 1 / 12;
 
       // Off-screen canvas buffer for rasterizing the soil grid
       let fieldImage;
@@ -619,6 +626,8 @@
         rows = Math.ceil(H / 12);
         cellW = W / cols;
         cellH = H / rows;
+        invCellW = 1 / cellW;
+        invCellH = 1 / cellH;
 
         food = new Float32Array(cols * rows);
         taint = new Float32Array(cols * rows);
@@ -648,20 +657,20 @@
       }
 
       function sample(arr, x, y) {
-        const cx = clamp(Math.floor(wrap(x, W) / cellW), 0, cols - 1);
-        const cy = clamp(Math.floor(wrap(y, H) / cellH), 0, rows - 1);
+        const cx = clamp(Math.floor(wrap(x, W) * invCellW), 0, cols - 1);
+        const cy = clamp(Math.floor(wrap(y, H) * invCellH), 0, rows - 1);
         return arr[cy * cols + cx];
       }
 
       function idx(x, y) {
-        const cx = clamp(Math.floor(wrap(x, W) / cellW), 0, cols - 1);
-        const cy = clamp(Math.floor(wrap(y, H) / cellH), 0, rows - 1);
+        const cx = clamp(Math.floor(wrap(x, W) * invCellW), 0, cols - 1);
+        const cy = clamp(Math.floor(wrap(y, H) * invCellH), 0, rows - 1);
         return cy * cols + cx;
       }
 
       function deposit(arr, x, y, value, radius = 1) {
-        const cx = Math.floor(wrap(x, W) / cellW);
-        const cy = Math.floor(wrap(y, H) / cellH);
+        const cx = Math.floor(wrap(x, W) * invCellW);
+        const cy = Math.floor(wrap(y, H) * invCellH);
 
         for (let dy = -radius; dy <= radius; dy++) {
           for (let dx = -radius; dx <= radius; dx++) {
@@ -831,16 +840,23 @@
         let bd = 1e9;
         let density = 0;
 
-        for (const b of agents) {
+        const ax = a.x;
+        const ay = a.y;
+        const halfW = W * 0.5;
+        const halfH = H * 0.5;
+        const len = agents.length;
+
+        for (let i = 0; i < len; i++) {
+          const b = agents[i];
           if (a === b) continue;
-          let dx = b.x - a.x;
-          let dy = b.y - a.y;
+          let dx = b.x - ax;
+          let dy = b.y - ay;
 
           // Toroidal shortest distance
-          if (dx > W / 2) dx -= W;
-          if (dx < -W / 2) dx += W;
-          if (dy > H / 2) dy -= H;
-          if (dy < -H / 2) dy += H;
+          if (dx > halfW) dx -= W;
+          else if (dx < -halfW) dx += W;
+          if (dy > halfH) dy -= H;
+          else if (dy < -halfH) dy += H;
 
           const d = dx * dx + dy * dy;
           if (d < 10000) density++;
@@ -851,10 +867,18 @@
             bestDy = dy;
           }
         }
-        return {
-          best: bestAgent ? { b: bestAgent, dx: bestDx, dy: bestDy, d: Math.sqrt(bd) } : null,
-          density
-        };
+
+        if (bestAgent) {
+          nearBest.b = bestAgent;
+          nearBest.dx = bestDx;
+          nearBest.dy = bestDy;
+          nearBest.d = Math.sqrt(bd);
+          nearResult.best = nearBest;
+        } else {
+          nearResult.best = null;
+        }
+        nearResult.density = density;
+        return nearResult;
       }
 
       function spark(x, y, color, n = 5) {
@@ -975,27 +999,25 @@
             bearing = Math.atan2(best.dy, best.dx) - a.angle;
           }
 
-          // 15 Sensory Inputs
-          const ins = [
-            clamp(a.energy / 75 - 1, -1, 1),                                                   // 0: Energy reserve
-            clamp(here - 1, -1, 1),                                                            // 1: Food underfoot
-            clamp(forward - left, -1, 1),                                                      // 2: Food gradient (forward - left)
-            clamp(forward - right, -1, 1),                                                     // 3: Food gradient (forward - right)
-            clamp(forward - here, -1, 1),                                                      // 4: Food gradient (forward - here)
-            clamp(sample(taint, a.x, a.y), 0, 1),                                              // 5: Soil taint/toxin
-            clamp(sample(scent, a.x + fwdX * reach, a.y + fwdY * reach) - sample(scent, a.x, a.y), -1, 1), // 6: Scent gradient
-            Math.sin(bearing),                                                                 // 7: Lateral bearing to neighbor
-            Math.cos(bearing),                                                                 // 8: Forward bearing to neighbor
-            clamp(1 - d / (100 + 70 * a.tr[2]), -1, 1),                                        // 9: Neighbor proximity
-            clamp(density / 9, 0, 1),                                                          // 10: Local crowd density
-            clamp(a.age / 600, 0, 1),                                                          // 11: Normalized age
-            Math.sin(tick * 0.08 + a.id),                                                      // 12: Internal biological oscillator
-            clamp(a.vx * fwdX + a.vy * fwdY, -1, 1),                                           // 13: Forward velocity (proprioception)
-            best ? clamp(best.b.energy / 70 - 1, -1, 1) : 0                                    // 14: Neighbor energy status
-          ];
+          // 15 Sensory Inputs (written to static Float64Array scratchpad)
+          sensoryInputs[0] = clamp(a.energy / 75 - 1, -1, 1);
+          sensoryInputs[1] = clamp(here - 1, -1, 1);
+          sensoryInputs[2] = clamp(forward - left, -1, 1);
+          sensoryInputs[3] = clamp(forward - right, -1, 1);
+          sensoryInputs[4] = clamp(forward - here, -1, 1);
+          sensoryInputs[5] = clamp(sample(taint, a.x, a.y), 0, 1);
+          sensoryInputs[6] = clamp(sample(scent, a.x + fwdX * reach, a.y + fwdY * reach) - sample(scent, a.x, a.y), -1, 1);
+          sensoryInputs[7] = Math.sin(bearing);
+          sensoryInputs[8] = Math.cos(bearing);
+          sensoryInputs[9] = clamp(1 - d / (100 + 70 * a.tr[2]), -1, 1);
+          sensoryInputs[10] = clamp(density / 9, 0, 1);
+          sensoryInputs[11] = clamp(a.age / 600, 0, 1);
+          sensoryInputs[12] = Math.sin(tick * 0.08 + a.id);
+          sensoryInputs[13] = clamp(a.vx * fwdX + a.vy * fwdY, -1, 1);
+          sensoryInputs[14] = best ? clamp(best.b.energy / 70 - 1, -1, 1) : 0;
 
           // Neural forward pass
-          const o = brain(a, ins);
+          const o = brain(a, sensoryInputs);
 
           // Actuator 0: Steering
           a.angle += o[0] * (0.11 + 0.09 * a.tr[1]);
@@ -1008,8 +1030,14 @@
           a.x = wrap(a.x + a.vx, W);
           a.y = wrap(a.y + a.vy, H);
 
-          a.trail.push([a.x, a.y]);
-          if (a.trail.length > 9) a.trail.shift();
+          if (a.trail.length >= 9) {
+            const p = a.trail.shift();
+            p[0] = a.x;
+            p[1] = a.y;
+            a.trail.push(p);
+          } else {
+            a.trail.push([a.x, a.y]);
+          }
 
           // Actuators 2, 3, 4: Feeding, Attack, Signal
           a.feeding = Math.max(0, o[2]);
