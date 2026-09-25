@@ -203,6 +203,14 @@ pub extern "C" fn sync_params_to_wasm(
     w.prng.s = prng_state;
 }
 
+#[no_mangle]
+pub extern "C" fn resize_world(w: f64, h: f64, cols: u32, rows: u32) {
+    let world = get_world();
+    world.resize(w, h, cols as usize, rows as usize);
+}
 
-
-
+#[no_mangle]
+pub extern "C" fn get_grid_size() -> u32 {
+    let w = get_world();
+    w.soil.grid_size as u32
+}

@@ -1,6 +1,6 @@
 use crate::math::{self, Prng};
 use crate::agent::{AgentData, MAX_CAP, GENES};
-use crate::soil::{SoilGrid, W, H, COLS, ROWS, GRID_SIZE, INV_CELL_W, INV_CELL_H};
+use crate::soil::SoilGrid;
 
 pub const TAU: f64 = std::f64::consts::TAU;
 pub const SCALE_H: f64 = 0.61 / 127.0;
@@ -27,6 +27,8 @@ pub struct World {
     pub mutation: f64,
     pub growth: f64,
     pub hostility: f64,
+    pub w: f64,
+    pub h: f64,
 }
 
 impl World {
@@ -44,13 +46,21 @@ impl World {
             mutation: 16.0,
             growth: 100.0,
             hostility: 100.0,
+            w: 900.0,
+            h: 600.0,
         };
-        // Initial startup draws 3,750 numbers during initial resize() -> setupGrid(false)
-        for _ in 0..GRID_SIZE {
+        // Initial startup draws numbers during initial resize() -> setupGrid(false)
+        for _ in 0..w.soil.grid_size {
             w.prng.rand(0.15, 0.5);
         }
         w.reset();
         w
+    }
+
+    pub fn resize(&mut self, w: f64, h: f64, cols: usize, rows: usize) {
+        self.w = w;
+        self.h = h;
+        self.soil.resize(w, h, cols, rows);
     }
 
     pub fn reset(&mut self) {
@@ -62,32 +72,32 @@ impl World {
         self.next_id = 1;
         self.eclipse = 0;
 
-        self.soil.food = [0.0; GRID_SIZE];
-        self.soil.taint = [0.0; GRID_SIZE];
-        self.soil.scent = [0.0; GRID_SIZE];
+        self.soil.food.fill(0.0);
+        self.soil.taint.fill(0.0);
+        self.soil.scent.fill(0.0);
         self.soil.init_bloom();
 
         // Initial background food noise: food[i] = rand(0.15, 0.5)
-        for i in 0..GRID_SIZE {
+        for i in 0..self.soil.grid_size {
             self.soil.food[i] = self.prng.rand(0.15, 0.5) as f32;
         }
 
         // 12 initial food patches
         for _ in 0..12 {
-            let cx = self.prng.rand(0.0, W);
-            let cy = self.prng.rand(0.0, H);
+            let cx = self.prng.rand(0.0, self.w);
+            let cy = self.prng.rand(0.0, self.h);
             for _ in 0..16 {
                 let px = cx + self.prng.rand(-80.0, 80.0);
                 let py = cy + self.prng.rand(-80.0, 80.0);
                 let val = self.prng.rand(0.2, 0.5);
-                SoilGrid::deposit(&mut self.soil.food, px, py, val, 2);
+                self.soil.deposit(0, px, py, val, 2);
             }
         }
 
         // 72 initial creatures
         for _ in 0..72 {
-            let x = self.prng.rand(0.0, W);
-            let y = self.prng.rand(0.0, H);
+            let x = self.prng.rand(0.0, self.w);
+            let y = self.prng.rand(0.0, self.h);
             self.create_agent(x, y, None, None);
         }
     }
@@ -111,75 +121,85 @@ impl World {
         let mut a = AgentData::default();
         a.id = self.next_id;
         self.next_id += 1;
-        a.x = math::wrap(x, W);
-        a.y = math::wrap(y, H);
+        a.x = math::wrap(x, self.w);
+        a.y = math::wrap(y, self.h);
         a.angle = self.prng.rand(0.0, TAU);
         a.vx = 0.0;
         a.vy = 0.0;
         a.energy = if parent.is_some() { 25.0 } else { self.prng.rand(34.0, 52.0) };
         a.age = 0;
-        a.gen = if let Some(p) = parent {
-            let og = other.map_or(0, |o| o.gen);
-            std::cmp::max(p.gen, og) + 1
-        } else {
-            0
-        };
-        a.root = if let Some(p) = parent {
-            p.root
-        } else {
-            let r = self.roots;
-            self.roots += 1;
-            r
-        };
 
-        // Genome
-        let m_rate = self.mutation / 100.0;
+        if let Some(p) = parent {
+            let other_gen = other.map(|o| o.gen).unwrap_or(0);
+            a.gen = p.gen.max(other_gen) + 1;
+            a.root = p.root;
+        } else {
+            a.gen = 0;
+            a.root = self.roots;
+            self.roots += 1;
+        }
+
+        let mut_rate = self.mutation / 100.0;
+
+        // Genome crossover and mutation
         if let Some(p) = parent {
             for i in 0..GENES {
-                let base = if other.is_some() && self.prng.next_f64() < 0.48 {
-                    other.unwrap().genes[i]
+                let mut base = if let Some(o) = other {
+                    if self.prng.next_f64() < 0.48 {
+                        o.genes[i]
+                    } else {
+                        p.genes[i]
+                    }
                 } else {
                     p.genes[i]
                 };
-                let mutation = if self.prng.next_f64() < 0.11 {
-                    let r = (self.prng.next_f64() + self.prng.next_f64() - 1.0) * 100.0 * m_rate;
-                    (r + 0.5).floor() as i32
-                } else {
-                    0
-                };
-                let v = base as i32 + mutation;
-                a.genes[i] = if v < -127 { -127 } else if v > 127 { 127 } else { v as i8 };
+
+                if self.prng.next_f64() < 0.11 {
+                    let r1 = self.prng.next_f64();
+                    let r2 = self.prng.next_f64();
+                    let delta = ((r1 + r2 - 1.0) * 100.0 * mut_rate).round() as i32;
+                    let val = (base as i32) + delta;
+                    base = if val < -127 { -127 } else if val > 127 { 127 } else { val as i8 };
+                }
+                a.genes[i] = base;
             }
         } else {
             for i in 0..GENES {
-                let r = self.prng.rand(-58.0, 58.0);
-                a.genes[i] = (r + 0.5).floor() as i8;
+                a.genes[i] = self.prng.rand(-58.0, 58.0).round() as i8;
             }
         }
 
-        // Traits
+        // Traits crossover and mutation
         if let Some(p) = parent {
             for i in 0..6 {
-                let base = if other.is_some() && self.prng.next_f64() < 0.45 {
-                    other.unwrap().tr[i]
+                let base = if let Some(o) = other {
+                    if self.prng.next_f64() < 0.45 {
+                        o.tr[i]
+                    } else {
+                        p.tr[i]
+                    }
                 } else {
                     p.tr[i]
                 };
-                let mutation = (self.prng.next_f64() + self.prng.next_f64() - 1.0) * m_rate * 0.6;
-                a.tr[i] = math::clamp(base + mutation, 0.03, 0.98);
+                let r1 = self.prng.next_f64();
+                let r2 = self.prng.next_f64();
+                let delta = (r1 + r2 - 1.0) * mut_rate * 0.6;
+                let val = base + delta;
+                a.tr[i] = if val < 0.03 { 0.03 } else if val > 0.98 { 0.98 } else { val };
             }
         } else {
             a.tr[0] = self.prng.rand(0.25, 0.8);
-            a.tr[1] = self.prng.rand(0.30, 0.8);
-            a.tr[2] = self.prng.rand(0.30, 0.8);
+            a.tr[1] = self.prng.rand(0.3, 0.8);
+            a.tr[2] = self.prng.rand(0.3, 0.8);
             a.tr[3] = self.prng.rand(0.25, 0.75);
-            a.tr[4] = self.prng.rand(0.20, 0.8);
-            a.tr[5] = self.prng.rand(0.20, 0.8);
+            a.tr[4] = self.prng.rand(0.2, 0.8);
+            a.tr[5] = self.prng.rand(0.2, 0.8);
         }
 
+        let idx = self.agents.len();
         self.agents.push(a);
         self.births += 1;
-        self.agents.len() - 1
+        idx
     }
 
     #[inline(always)]
@@ -187,8 +207,8 @@ impl World {
         let a = &self.agents[a_idx];
         let ax = a.x;
         let ay = a.y;
-        let half_w = W * 0.5;
-        let half_h = H * 0.5;
+        let half_w = self.w * 0.5;
+        let half_h = self.h * 0.5;
         let mut bd = 1e9f64;
         let mut cutoff = 1e9f64;
         let mut density = 0.0f64;
@@ -204,9 +224,9 @@ impl World {
             let b = &self.agents[i];
             let mut dx = b.x - ax;
             if dx > half_w {
-                dx -= W;
+                dx -= self.w;
             } else if dx < -half_w {
-                dx += W;
+                dx += self.w;
             }
 
             let dx2 = dx * dx;
@@ -216,9 +236,9 @@ impl World {
 
             let mut dy = b.y - ay;
             if dy > half_h {
-                dy -= H;
+                dy -= self.h;
             } else if dy < -half_h {
-                dy += H;
+                dy += self.h;
             }
 
             let d = dx2 + dy * dy;
@@ -238,84 +258,71 @@ impl World {
             best_idx,
             best_dx,
             best_dy,
-            best_d: if best_idx.is_some() { math::sqrt(bd) } else { 999.0 },
+            best_d: bd.sqrt(),
             density,
         }
     }
 
+    #[inline(always)]
     pub fn brain(a: &mut AgentData, ins: &[f64; 15]) -> [f32; 6] {
         let mut p = 0;
-        let w = &a.genes;
-        let h_prev = a.h;
         let mut new_h = [0.0f32; 10];
-        let mut brain_out = [0.0f32; 6];
+        let mut out = [0.0f32; 6];
 
-        let in0 = ins[0]; let in1 = ins[1]; let in2 = ins[2]; let in3 = ins[3]; let in4 = ins[4];
-        let in5 = ins[5]; let in6 = ins[6]; let in7 = ins[7]; let in8 = ins[8]; let in9 = ins[9];
-        let in10 = ins[10]; let in11 = ins[11]; let in12 = ins[12]; let in13 = ins[13]; let in14 = ins[14];
-
-        let hp0 = h_prev[0] as f64; let hp1 = h_prev[1] as f64; let hp2 = h_prev[2] as f64;
-        let hp3 = h_prev[3] as f64; let hp4 = h_prev[4] as f64; let hp5 = h_prev[5] as f64;
-        let hp6 = h_prev[6] as f64; let hp7 = h_prev[7] as f64; let hp8 = h_prev[8] as f64;
-        let hp9 = h_prev[9] as f64;
-
+        // Recurrent Hidden Layer (Q = 10, N = 15)
         for j in 0..10 {
             let mut s = 0.0f64;
-            s += (w[p] as f64) * in0; p += 1;
-            s += (w[p] as f64) * in1; p += 1;
-            s += (w[p] as f64) * in2; p += 1;
-            s += (w[p] as f64) * in3; p += 1;
-            s += (w[p] as f64) * in4; p += 1;
-            s += (w[p] as f64) * in5; p += 1;
-            s += (w[p] as f64) * in6; p += 1;
-            s += (w[p] as f64) * in7; p += 1;
-            s += (w[p] as f64) * in8; p += 1;
-            s += (w[p] as f64) * in9; p += 1;
-            s += (w[p] as f64) * in10; p += 1;
-            s += (w[p] as f64) * in11; p += 1;
-            s += (w[p] as f64) * in12; p += 1;
-            s += (w[p] as f64) * in13; p += 1;
-            s += (w[p] as f64) * in14; p += 1;
+            let mut k = 0;
+            while k + 4 <= 15 {
+                let w0 = a.genes[p] as f64;
+                let w1 = a.genes[p + 1] as f64;
+                let w2 = a.genes[p + 2] as f64;
+                let w3 = a.genes[p + 3] as f64;
+                s += w0 * ins[k] + w1 * ins[k + 1] + w2 * ins[k + 2] + w3 * ins[k + 3];
+                p += 4;
+                k += 4;
+            }
+            while k < 15 {
+                s += (a.genes[p] as f64) * ins[k];
+                p += 1;
+                k += 1;
+            }
 
-            s += (w[p] as f64) * hp0; p += 1;
-            s += (w[p] as f64) * hp1; p += 1;
-            s += (w[p] as f64) * hp2; p += 1;
-            s += (w[p] as f64) * hp3; p += 1;
-            s += (w[p] as f64) * hp4; p += 1;
-            s += (w[p] as f64) * hp5; p += 1;
-            s += (w[p] as f64) * hp6; p += 1;
-            s += (w[p] as f64) * hp7; p += 1;
-            s += (w[p] as f64) * hp8; p += 1;
-            s += (w[p] as f64) * hp9; p += 1;
+            k = 0;
+            while k + 2 <= 10 {
+                let w0 = a.genes[p] as f64;
+                let w1 = a.genes[p + 1] as f64;
+                s += w0 * (a.h[k] as f64) + w1 * (a.h[k + 1] as f64);
+                p += 2;
+                k += 2;
+            }
 
-            s += w[p] as f64; p += 1; // bias
+            s += a.genes[p] as f64;
+            p += 1;
+
             new_h[j] = math::tanh(s * SCALE_H) as f32;
         }
 
-        let nh0 = new_h[0] as f64; let nh1 = new_h[1] as f64; let nh2 = new_h[2] as f64;
-        let nh3 = new_h[3] as f64; let nh4 = new_h[4] as f64; let nh5 = new_h[5] as f64;
-        let nh6 = new_h[6] as f64; let nh7 = new_h[7] as f64; let nh8 = new_h[8] as f64;
-        let nh9 = new_h[9] as f64;
-
+        // Output Actuator Layer (O = 6, Q = 10)
         for j in 0..6 {
             let mut s = 0.0f64;
-            s += (w[p] as f64) * nh0; p += 1;
-            s += (w[p] as f64) * nh1; p += 1;
-            s += (w[p] as f64) * nh2; p += 1;
-            s += (w[p] as f64) * nh3; p += 1;
-            s += (w[p] as f64) * nh4; p += 1;
-            s += (w[p] as f64) * nh5; p += 1;
-            s += (w[p] as f64) * nh6; p += 1;
-            s += (w[p] as f64) * nh7; p += 1;
-            s += (w[p] as f64) * nh8; p += 1;
-            s += (w[p] as f64) * nh9; p += 1;
+            let mut k = 0;
+            while k + 2 <= 10 {
+                let w0 = a.genes[p] as f64;
+                let w1 = a.genes[p + 1] as f64;
+                s += w0 * (new_h[k] as f64) + w1 * (new_h[k + 1] as f64);
+                p += 2;
+                k += 2;
+            }
 
-            s += w[p] as f64; p += 1; // bias
-            brain_out[j] = math::tanh(s * SCALE_O) as f32;
+            s += a.genes[p] as f64;
+            p += 1;
+
+            out[j] = math::tanh(s * SCALE_O) as f32;
         }
 
         a.h = new_h;
-        brain_out
+        out
     }
 
     pub fn evolve(&mut self) {
@@ -331,8 +338,8 @@ impl World {
             self.eclipse -= 1;
             if self.tick % 2 == 0 {
                 for _ in 0..160 {
-                    let k = (self.prng.next_f64() * (GRID_SIZE as f64)).floor() as usize;
-                    let k = k.min(GRID_SIZE - 1);
+                    let k = (self.prng.next_f64() * (self.soil.grid_size as f64)).floor() as usize;
+                    let k = k.min(self.soil.grid_size - 1);
                     self.soil.food[k] = ((self.soil.food[k] as f64) * 0.73) as f32;
                     let new_t = (self.soil.taint[k] as f64) + 0.14;
                     self.soil.taint[k] = if new_t < 0.0 { 0.0 } else if new_t > 2.0 { 2.0 } else { new_t as f32 };
@@ -354,8 +361,8 @@ impl World {
                 let ay = self.agents[i].y;
                 let ae = self.agents[i].energy;
                 let deposit_food = math::clamp(ae * 0.016 + 0.6, 0.3, 2.0);
-                SoilGrid::deposit(&mut self.soil.food, ax, ay, deposit_food, 2);
-                SoilGrid::deposit(&mut self.soil.taint, ax, ay, 0.1, 1);
+                self.soil.deposit(0, ax, ay, deposit_food, 2);
+                self.soil.deposit(1, ax, ay, 0.1, 1);
                 self.spark_prng(5);
                 self.agents[i].dead = 1;
                 continue;
@@ -459,8 +466,8 @@ impl World {
             let mot = 0.45 + 1.1 * tr1;
             self.agents[i].vx = (self.agents[i].vx + fwd_x * thrust * mot * 0.22) * 0.89;
             self.agents[i].vy = (self.agents[i].vy + fwd_y * thrust * mot * 0.22) * 0.89;
-            self.agents[i].x = math::wrap(self.agents[i].x + self.agents[i].vx, W);
-            self.agents[i].y = math::wrap(self.agents[i].y + self.agents[i].vy, H);
+            self.agents[i].x = math::wrap(self.agents[i].x + self.agents[i].vx, self.w);
+            self.agents[i].y = math::wrap(self.agents[i].y + self.agents[i].vy, self.h);
 
             // Trail management (in-place ring buffer)
             let cur_x = self.agents[i].x;
@@ -486,7 +493,7 @@ impl World {
 
             if self.agents[i].signal > 0.4 {
                 let s_val = (self.agents[i].signal - 0.4) * 0.035;
-                SoilGrid::deposit(&mut self.soil.scent, self.agents[i].x, self.agents[i].y, s_val, 1);
+                self.soil.deposit(2, self.agents[i].x, self.agents[i].y, s_val, 1);
             }
 
             let fi = self.soil.idx(self.agents[i].x, self.agents[i].y);
@@ -579,8 +586,8 @@ impl World {
                 let ay = self.agents[i].y;
                 let ae = self.agents[i].energy;
                 let deposit_food = math::clamp(ae * 0.016 + 0.6, 0.3, 2.0);
-                SoilGrid::deposit(&mut self.soil.food, ax, ay, deposit_food, 2);
-                SoilGrid::deposit(&mut self.soil.taint, ax, ay, 0.1, 1);
+                self.soil.deposit(0, ax, ay, deposit_food, 2);
+                self.soil.deposit(1, ax, ay, 0.1, 1);
                 self.spark_prng(5);
                 self.agents[i].dead = 1;
             }
@@ -600,8 +607,8 @@ impl World {
         if self.agents.len() < 15 && self.tick % 45 == 0 {
             let n = 15 - self.agents.len();
             for _ in 0..n {
-                let x = self.prng.rand(0.0, W);
-                let y = self.prng.rand(0.0, H);
+                let x = self.prng.rand(0.0, self.w);
+                let y = self.prng.rand(0.0, self.h);
                 self.create_agent(x, y, None, None);
             }
         }

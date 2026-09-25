@@ -1,6 +1,5 @@
 use rkyv::{Archive, Deserialize, Serialize};
 use crate::agent::AgentData;
-use crate::soil::GRID_SIZE;
 
 #[derive(Archive, Deserialize, Serialize, Debug, Clone)]
 #[archive(check_bytes)]
@@ -25,9 +24,9 @@ impl WorldSnapshot {
         roots: u32,
         next_id: u32,
         eclipse: u32,
-        food: &[f32; GRID_SIZE],
-        taint: &[f32; GRID_SIZE],
-        scent: &[f32; GRID_SIZE],
+        food: &[f32],
+        taint: &[f32],
+        scent: &[f32],
         agents: &[AgentData],
     ) -> Self {
         Self {
