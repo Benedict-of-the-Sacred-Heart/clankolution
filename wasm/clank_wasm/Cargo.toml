@@ -8,7 +8,7 @@ crate-type = ["cdylib"]
 
 [dependencies]
 libm = "0.2.11"
-rkyv = { version = "0.7.44", default-features = false, features = ["alloc", "size_32"] }
+rkyv = { version = "0.7.44", default-features = false, features = ["alloc", "size_32", "validation"] }
 
 [profile.release]
 opt-level = 3
