@@ -522,6 +522,7 @@
       const sensoryInputs = new Float64Array(N);
       const nearBest = { b: null, dx: 0, dy: 0, d: 999 };
       const nearResult = { best: null, density: 0 };
+      const particlePool = [];
 
       // Maximum creature capacity in the arena
       const CAP = 340;
@@ -820,6 +821,7 @@
       function reset() {
         agents = [];
         particles = [];
+        particlePool.length = 0;
         selected = null;
         tick = 0;
         kills = 0;
@@ -905,18 +907,19 @@
 
       function spark(x, y, color, n = 5) {
         for (let i = 0; i < n; i++) {
-          particles.push({
-            x,
-            y,
-            vx: rand(-2.4, 2.4),
-            vy: rand(-2.4, 2.4),
-            life: rand(15, 36),
-            max: 36,
-            color
-          });
+          const p = particlePool.pop() || {};
+          p.x = x;
+          p.y = y;
+          p.vx = rand(-2.4, 2.4);
+          p.vy = rand(-2.4, 2.4);
+          p.life = rand(15, 36);
+          p.max = 36;
+          p.color = color;
+          particles.push(p);
         }
         if (particles.length > 850) {
-          particles.splice(0, particles.length - 850);
+          const excess = particles.splice(0, particles.length - 850);
+          for (let i = 0; i < excess.length; i++) particlePool.push(excess[i]);
         }
       }
 
@@ -1178,6 +1181,8 @@
           p.life--;
           if (p.life > 0) {
             particles[particleCount++] = p;
+          } else {
+            particlePool.push(p);
           }
         }
         particles.length = particleCount;
@@ -1194,9 +1199,9 @@
             const t = clamp(taint[i], 0, 1);
             const s = clamp(scent[i], 0, 1);
 
-            const r = Math.round(9 + f * 42 + t * 98 + s * 27);
-            const g = Math.round(22 + f * 61 - t * 13 + s * 20);
-            const b = Math.round(25 + f * 44 + t * 23 + s * 33);
+            const r = (9.5 + f * 42 + t * 98 + s * 27) | 0;
+            const g = (22.5 + f * 61 - t * 13 + s * 20) | 0;
+            const b = (25.5 + f * 44 + t * 23 + s * 33) | 0;
 
             fieldBuf32[i] = (255 << 24) | (b << 16) | (g << 8) | r;
           }
@@ -1213,12 +1218,14 @@
         // Agent trails
         ctx.save();
         ctx.globalCompositeOperation = 'screen';
+        const halfW = W * 0.5;
+        const halfH = H * 0.5;
         for (const a of agents) {
           if (a.trail.length > 1) {
             ctx.beginPath();
             for (let i = 0; i < a.trail.length; i++) {
               const p = a.trail[i];
-              if (i && Math.abs(p[0] - a.trail[i - 1][0]) < W / 2 && Math.abs(p[1] - a.trail[i - 1][1]) < H / 2) {
+              if (i && Math.abs(p[0] - a.trail[i - 1][0]) < halfW && Math.abs(p[1] - a.trail[i - 1][1]) < halfH) {
                 ctx.lineTo(p[0], p[1]);
               } else {
                 ctx.moveTo(p[0], p[1]);
@@ -1602,6 +1609,7 @@
         agents = restored;
         selected = null;
         particles = [];
+        particlePool.length = 0;
         tick = clamp(+data.tick || 0, 0, 1e10);
         kills = clamp(+data.kills || 0, 0, 1e10);
         births = clamp(+data.births || 0, 0, 1e10);
