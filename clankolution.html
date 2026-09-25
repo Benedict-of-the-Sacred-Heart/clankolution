@@ -1,75 +1,1730 @@
 <!doctype html>
 <html lang="en">
 <head>
-<meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Clankolution — an artificial ecology</title><meta name="description" content="A living artificial ecology of evolving creatures with inherited recurrent brains. Intervene, observe, and save your world."><link rel="icon" type="image/svg+xml" href="data:image/svg+xml,%3Csvg%20xmlns%3D%22http%3A%2F%2Fwww.w3.org%2F2000%2Fsvg%22%20viewBox%3D%220%200%2064%2064%22%3E%3Crect%20width%3D%2264%22%20height%3D%2264%22%20rx%3D%2212%22%20fill%3D%22%230b1719%22%2F%3E%3Cpath%20d%3D%22M51%2016%2038%2030l10%2018-20-6-14%208%206-19-8-15%2019%207z%22%20fill%3D%22%237ce4d5%22%20stroke%3D%22%23e6bc78%22%20stroke-width%3D%223%22%2F%3E%3Ccircle%20cx%3D%2234%22%20cy%3D%2229%22%20r%3D%223%22%20fill%3D%22%23ff755e%22%2F%3E%3C%2Fsvg%3E">
-<style>
-:root{color-scheme:dark;--ink:#e7e4dc;--muted:#8f9c9b;--line:#294041;--red:#ff755e;--cyan:#7ce4d5;--gold:#e6bc78;--bg:#071012}
-*{box-sizing:border-box}body{margin:0;background:var(--bg);color:var(--ink);font:13px/1.45 ui-monospace,SFMono-Regular,Consolas,monospace;overflow:hidden}button,input{font:inherit}button{cursor:pointer;color:var(--ink);background:#142326;border:1px solid #395054;border-radius:4px;padding:7px 10px}button:hover,button.active{background:#2b4849;border-color:var(--cyan)}button:focus-visible,input:focus-visible{outline:2px solid var(--cyan);outline-offset:2px}.shell{display:grid;grid-template-columns:minmax(0,1fr) 330px;grid-template-rows:auto minmax(0,1fr);height:100dvh}.top{grid-column:1/-1;display:flex;align-items:center;justify-content:space-between;gap:16px;padding:12px 18px;border-bottom:1px solid var(--line);background:#0b1719}.brand{font-size:15px;letter-spacing:.28em;color:#f3e9d7;white-space:nowrap}.brand b{color:var(--red)}.sub{font-size:10px;letter-spacing:.12em;color:var(--muted);margin-left:12px}.top-controls{display:flex;gap:7px;align-items:center}.world{position:relative;min-height:0;overflow:hidden;background:radial-gradient(ellipse at 50% 45%,#112628,#071012 72%)}canvas#field{display:block;width:100%;height:100%;touch-action:none}.overlay{pointer-events:none;position:absolute;inset:0;background:linear-gradient(90deg,rgba(4,11,12,.12),transparent 18%,transparent 80%,rgba(4,11,12,.23));box-shadow:inset 0 0 100px #061012}.world-label{position:absolute;left:18px;top:15px;letter-spacing:.13em;font-size:10px;color:#a8d1c9;text-shadow:0 1px 5px black;pointer-events:none}.world-hint{position:absolute;left:18px;bottom:16px;max-width:65%;color:#b8cbc3;font-size:11px;text-shadow:0 1px 7px black;pointer-events:none}.side{overflow-y:auto;border-left:1px solid var(--line);background:#0c191b;padding:18px 18px 30px;scrollbar-color:#304747 transparent}.eyebrow{font-size:10px;color:var(--cyan);letter-spacing:.22em;margin-bottom:10px}.hero{font-family:Georgia,serif;font-size:27px;line-height:1.08;margin:0 0 9px;color:#eee5d5}.intro{color:#aebcba;font-size:12px;margin:0 0 17px}.statgrid{display:grid;grid-template-columns:repeat(2,1fr);gap:7px}.stat{border:1px solid #2b4243;background:#101f21;padding:9px 10px;min-height:60px}.stat label{display:block;color:#8da5a2;letter-spacing:.12em;font-size:10px;text-transform:uppercase}.stat strong{font-size:22px;font-weight:400;color:#e9ebe2}.stat small{color:#718b89}.section{border-top:1px solid var(--line);margin-top:17px;padding-top:15px}.section h2{font-size:10px;letter-spacing:.21em;color:var(--gold);font-weight:400;margin:0 0 11px}.row{display:flex;justify-content:space-between;align-items:center;gap:8px;margin:8px 0;color:#c4d0ca}.row output{color:var(--cyan)}input[type=range]{width:100%;accent-color:#d87766;height:16px}.toolrow{display:grid;grid-template-columns:repeat(3,1fr);gap:6px}.toolrow button{font-size:11px;padding:8px 4px}.toolrow button:disabled{opacity:.5;cursor:wait}.minor{color:#869a96;font-size:11px;margin:9px 0 0}.chart{width:100%;height:82px;border:1px solid #253a3b;background:#0a1517;display:block}.legend{display:flex;gap:12px;color:#8d9e9b;font-size:10px;margin-top:6px}.swatch{display:inline-block;width:7px;height:7px;border-radius:50%;margin-right:4px}.log{height:112px;overflow:hidden;color:#a7b8af;font-size:11px;line-height:1.65}.log div:first-child{color:#ead7b8}.inspect{min-height:100px;border:1px solid #2d4140;padding:10px;background:#101e1f;color:#adbfba;font-size:11px;white-space:pre-line}.inspect b{font-size:14px;color:#f0e6d9}.footer{margin-top:15px;color:#6f8882;font-size:10px}.pulse{animation:pulse .8s ease-out}@keyframes pulse{from{filter:brightness(2)}to{filter:brightness(1)}}
-@media(max-width:800px){body{overflow:auto}.shell{height:auto;min-height:100dvh;grid-template-columns:1fr;grid-template-rows:auto min(62vh,600px) auto}.top{flex-wrap:wrap}.sub{display:block;margin:2px 0 0}.side{border-left:0;border-top:1px solid var(--line)}.world-hint{max-width:92%}}
-</style>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Clankolution — an artificial ecology</title>
+  <meta name="description" content="A living artificial ecology of evolving creatures with inherited recurrent brains. Intervene, observe, and save your world.">
+  <link rel="icon" type="image/svg+xml" href="data:image/svg+xml,%3Csvg%20xmlns%3D%22http%3A%2F%2Fwww.w3.org%2F2000%2Fsvg%22%20viewBox%3D%220%200%2064%2064%22%3E%3Crect%20width%3D%2264%22%20height%3D%2264%22%20rx%3D%2212%22%20fill%3D%22%230b1719%22%2F%3E%3Cpath%20d%3D%22M51%2016%2038%2030l10%2018-20-6-14%208%206-19-8-15%2019%207z%22%20fill%3D%22%237ce4d5%22%20stroke%3D%22%23e6bc78%22%20stroke-width%3D%223%22%2F%3E%3Ccircle%20cx%3D%2234%22%20cy%3D%2229%22%20r%3D%223%22%20fill%3D%22%23ff755e%22%2F%3E%3C%2Fsvg%3E">
+  <style>
+    :root {
+      color-scheme: dark;
+      --ink: #e7e4dc;
+      --muted: #8f9c9b;
+      --line: #294041;
+      --red: #ff755e;
+      --cyan: #7ce4d5;
+      --gold: #e6bc78;
+      --bg: #071012;
+    }
+
+    * {
+      box-sizing: border-box;
+    }
+
+    body {
+      margin: 0;
+      background: var(--bg);
+      color: var(--ink);
+      font: 13px/1.45 ui-monospace, SFMono-Regular, Consolas, monospace;
+      overflow: hidden;
+    }
+
+    button,
+    input {
+      font: inherit;
+    }
+
+    button {
+      cursor: pointer;
+      color: var(--ink);
+      background: #142326;
+      border: 1px solid #395054;
+      border-radius: 4px;
+      padding: 7px 10px;
+    }
+
+    button:hover,
+    button.active {
+      background: #2b4849;
+      border-color: var(--cyan);
+    }
+
+    button:focus-visible,
+    input:focus-visible {
+      outline: 2px solid var(--cyan);
+      outline-offset: 2px;
+    }
+
+    .shell {
+      display: grid;
+      grid-template-columns: minmax(0, 1fr) 330px;
+      grid-template-rows: auto minmax(0, 1fr);
+      height: 100dvh;
+    }
+
+    .top {
+      grid-column: 1 / -1;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 16px;
+      padding: 12px 18px;
+      border-bottom: 1px solid var(--line);
+      background: #0b1719;
+    }
+
+    .brand {
+      font-size: 15px;
+      letter-spacing: 0.28em;
+      color: #f3e9d7;
+      white-space: nowrap;
+    }
+
+    .brand b {
+      color: var(--red);
+    }
+
+    .sub {
+      font-size: 10px;
+      letter-spacing: 0.12em;
+      color: var(--muted);
+      margin-left: 12px;
+    }
+
+    .top-controls {
+      display: flex;
+      gap: 7px;
+      align-items: center;
+    }
+
+    .world {
+      position: relative;
+      min-height: 0;
+      overflow: hidden;
+      background: radial-gradient(ellipse at 50% 45%, #112628, #071012 72%);
+    }
+
+    canvas#field {
+      display: block;
+      width: 100%;
+      height: 100%;
+      touch-action: none;
+    }
+
+    .overlay {
+      pointer-events: none;
+      position: absolute;
+      inset: 0;
+      background: linear-gradient(90deg, rgba(4, 11, 12, 0.12), transparent 18%, transparent 80%, rgba(4, 11, 12, 0.23));
+      box-shadow: inset 0 0 100px #061012;
+    }
+
+    .world-label {
+      position: absolute;
+      left: 18px;
+      top: 15px;
+      letter-spacing: 0.13em;
+      font-size: 10px;
+      color: #a8d1c9;
+      text-shadow: 0 1px 5px black;
+      pointer-events: none;
+    }
+
+    .world-hint {
+      position: absolute;
+      left: 18px;
+      bottom: 16px;
+      max-width: 65%;
+      color: #b8cbc3;
+      font-size: 11px;
+      text-shadow: 0 1px 7px black;
+      pointer-events: none;
+    }
+
+    .side {
+      overflow-y: auto;
+      border-left: 1px solid var(--line);
+      background: #0c191b;
+      padding: 18px 18px 30px;
+      scrollbar-color: #304747 transparent;
+    }
+
+    .eyebrow {
+      font-size: 10px;
+      color: var(--cyan);
+      letter-spacing: 0.22em;
+      margin-bottom: 10px;
+    }
+
+    .hero {
+      font-family: Georgia, serif;
+      font-size: 27px;
+      line-height: 1.08;
+      margin: 0 0 9px;
+      color: #eee5d5;
+    }
+
+    .intro {
+      color: #aebcba;
+      font-size: 12px;
+      margin: 0 0 17px;
+    }
+
+    .statgrid {
+      display: grid;
+      grid-template-columns: repeat(2, 1fr);
+      gap: 7px;
+    }
+
+    .stat {
+      border: 1px solid #2b4243;
+      background: #101f21;
+      padding: 9px 10px;
+      min-height: 60px;
+    }
+
+    .stat label {
+      display: block;
+      color: #8da5a2;
+      letter-spacing: 0.12em;
+      font-size: 10px;
+      text-transform: uppercase;
+    }
+
+    .stat strong {
+      font-size: 22px;
+      font-weight: 400;
+      color: #e9ebe2;
+    }
+
+    .stat small {
+      color: #718b89;
+    }
+
+    .section {
+      border-top: 1px solid var(--line);
+      margin-top: 17px;
+      padding-top: 15px;
+    }
+
+    .section h2 {
+      font-size: 10px;
+      letter-spacing: 0.21em;
+      color: var(--gold);
+      font-weight: 400;
+      margin: 0 0 11px;
+    }
+
+    .row {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      gap: 8px;
+      margin: 8px 0;
+      color: #c4d0ca;
+    }
+
+    .row output {
+      color: var(--cyan);
+    }
+
+    input[type="range"] {
+      width: 100%;
+      accent-color: #d87766;
+      height: 16px;
+    }
+
+    .toolrow {
+      display: grid;
+      grid-template-columns: repeat(3, 1fr);
+      gap: 6px;
+    }
+
+    .toolrow button {
+      font-size: 11px;
+      padding: 8px 4px;
+    }
+
+    .toolrow button:disabled {
+      opacity: 0.5;
+      cursor: wait;
+    }
+
+    .minor {
+      color: #869a96;
+      font-size: 11px;
+      margin: 9px 0 0;
+    }
+
+    .chart {
+      width: 100%;
+      height: 82px;
+      border: 1px solid #253a3b;
+      background: #0a1517;
+      display: block;
+    }
+
+    .legend {
+      display: flex;
+      gap: 12px;
+      color: #8d9e9b;
+      font-size: 10px;
+      margin-top: 6px;
+    }
+
+    .swatch {
+      display: inline-block;
+      width: 7px;
+      height: 7px;
+      border-radius: 50%;
+      margin-right: 4px;
+    }
+
+    .log {
+      height: 112px;
+      overflow: hidden;
+      color: #a7b8af;
+      font-size: 11px;
+      line-height: 1.65;
+    }
+
+    .log div:first-child {
+      color: #ead7b8;
+    }
+
+    .inspect {
+      min-height: 100px;
+      border: 1px solid #2d4140;
+      padding: 10px;
+      background: #101e1f;
+      color: #adbfba;
+      font-size: 11px;
+      white-space: pre-line;
+    }
+
+    .inspect b {
+      font-size: 14px;
+      color: #f0e6d9;
+    }
+
+    .footer {
+      margin-top: 15px;
+      color: #6f8882;
+      font-size: 10px;
+    }
+
+    .pulse {
+      animation: pulse 0.8s ease-out;
+    }
+
+    @keyframes pulse {
+      from {
+        filter: brightness(2);
+      }
+      to {
+        filter: brightness(1);
+      }
+    }
+
+    @media (max-width: 800px) {
+      body {
+        overflow: auto;
+      }
+
+      .shell {
+        height: auto;
+        min-height: 100dvh;
+        grid-template-columns: 1fr;
+        grid-template-rows: auto min(62vh, 600px) auto;
+      }
+
+      .top {
+        flex-wrap: wrap;
+      }
+
+      .sub {
+        display: block;
+        margin: 2px 0 0;
+      }
+
+      .side {
+        border-left: 0;
+        border-top: 1px solid var(--line);
+      }
+
+      .world-hint {
+        max-width: 92%;
+      }
+    }
+  </style>
 </head>
 <body>
-<div class="shell"><header class="top"><div><div class="brand">CLANK<b>O</b>LUTION</div><span class="sub">AN EXPERIMENT IN INHERITED APPETITE</span></div><div class="top-controls"><button id="pause" aria-label="Pause simulation">PAUSE</button><button id="speed" title="Simulation speed">1× SPEED</button><button id="reset">NEW WORLD</button></div></header>
-<main class="world"><canvas id="field" aria-label="Artificial ecology simulation"></canvas><div class="overlay"></div><div class="world-label" id="worldLabel">CYCLE 00000 / THE FIRST HUNGER</div><div class="world-hint" id="hint">Click a creature to inspect its lineage. Choose a tool, then paint on the world.</div></main>
-<aside class="side"><div class="eyebrow">FIELD NOTES / 001</div><h1 class="hero">Let them become<br>something else.</h1><p class="intro">Each creature inherits a tiny quantized recurrent brain and a body. Food blooms. Blood feeds the soil. Nothing is told how to behave.</p>
-<div class="statgrid"><div class="stat"><label>Population</label><strong id="pop">0</strong><small> / 340 capacity</small></div><div class="stat"><label>Generation</label><strong id="gen">0</strong><small> / oldest living</small></div><div class="stat"><label>Predations</label><strong id="kills">0</strong><small> / total</small></div><div class="stat"><label>Lineages</label><strong id="diversity">0</strong><small> / living roots</small></div></div>
-<div class="section"><h2>INTERVENE</h2><div class="toolrow"><button data-tool="inspect" class="active">OBSERVE</button><button data-tool="food">NOURISH</button><button data-tool="toxin">BLIGHT</button><button data-tool="spawn">SEED LIFE</button><button data-tool="erase">EXTINGUISH</button><button id="catastrophe">ECLIPSE</button></div><p class="minor">Drag to paint. Blight is a fading toxin: it destroys food and drains creatures crossing it. An eclipse starves the surface, then it regrows.</p></div>
-<div class="section"><h2>KEEP YOUR WORLD</h2><div class="toolrow"><button id="saveWorld">EXPORT</button><button id="loadWorld">IMPORT</button><button id="saveNote" title="Shows what an export contains">WHAT SAVES?</button></div><input id="importFile" type="file" accept="application/json,.json" hidden><p class="minor" id="saveHint">Export a snapshot to continue generations later. Import it here on this or another device.</p></div><div class="section"><h2>SELECTIVE PRESSURE</h2><div class="row"><span>Mutation</span><output id="mutationValue">0.16</output></div><input id="mutation" aria-label="Mutation strength" type="range" min="0" max="50" value="16"><div class="row"><span>Food renewal</span><output id="growthValue">1.00×</output></div><input id="growth" aria-label="Food renewal" type="range" min="0" max="200" value="100"><div class="row"><span>Hostility of contact</span><output id="hostilityValue">1.00×</output></div><input id="hostility" aria-label="Contact hostility" type="range" min="0" max="200" value="100"></div>
-<div class="section"><h2>THE RECORD</h2><canvas id="history" class="chart" width="290" height="82" aria-label="Population, food, and predation history"></canvas><div class="legend"><span><i class="swatch" style="background:#8fe3cf"></i>life</span><span><i class="swatch" style="background:#d9ad72"></i>food</span><span><i class="swatch" style="background:#ed7869"></i>violence</span></div></div>
-<div class="section"><h2>SPECIMEN</h2><div class="inspect" id="inspect">Select a creature in the arena.<br>Its recurrent state, ancestry, and traits will appear here.</div></div><div class="section"><h2>CHRONICLE</h2><div class="log" id="log"></div></div><div class="footer">One file. No assets. No API. All decisions happen on your machine.</div></aside></div>
-<script>
-(()=>{'use strict';
-const canvas=document.getElementById('field'),ctx=canvas.getContext('2d',{alpha:false});const chart=document.getElementById('history'),ch=chart.getContext('2d');
-const $=id=>document.getElementById(id),TAU=Math.PI*2,clamp=(v,a,b)=>Math.max(a,Math.min(b,v)),rand=(a=1,b)=>b===undefined?Math.random()*a:a+Math.random()*(b-a),wrap=(v,max)=>(v%max+max)%max;
-let W=900,H=600,dpr=1,agents=[],particles=[],selected=null,tool='inspect',paused=false,speed=1,frame=0,tick=0,kills=0,births=0,nextId=1,roots=1,eclipse=0,history=[],logCount=0,drag=false,food,taint,scent,cols,rows,cellW,cellH,fieldImage,fieldCanvas,fieldCtx;
-const N=15,Q=10,O=6,GENES=Q*(N+Q+1)+O*(Q+1),CAP=340;
-const palette=['#91e5d2','#e6b878','#ee786b','#be97d7','#7fb8df','#d4df8b','#e4a3bb','#89c5a1'];
-function event(message){const el=$('log'),d=document.createElement('div');d.textContent=String(tick).padStart(5,'0')+'  '+message;el.prepend(d);while(el.children.length>7)el.lastChild.remove()}
-function resize(){const r=canvas.getBoundingClientRect(),oldW=W,oldH=H;W=Math.max(320,r.width);H=Math.max(250,r.height);dpr=Math.min(2,devicePixelRatio||1);canvas.width=Math.round(W*dpr);canvas.height=Math.round(H*dpr);ctx.setTransform(dpr,0,0,dpr,0,0);if(agents.length){for(const a of agents){a.x=a.x/oldW*W;a.y=a.y/oldH*H}}setupGrid(false)}
-function setupGrid(fresh){const old=food,oc=cols,or=rows;cols=Math.ceil(W/12);rows=Math.ceil(H/12);cellW=W/cols;cellH=H/rows;food=new Float32Array(cols*rows);taint=new Float32Array(cols*rows);scent=new Float32Array(cols*rows);for(let y=0;y<rows;y++)for(let x=0;x<cols;x++){const i=y*cols+x;if(!fresh&&old){food[i]=old[clamp(Math.floor(y/rows*or),0,or-1)*oc+clamp(Math.floor(x/cols*oc),0,oc-1)]}else food[i]=rand(.15,.5)}fieldCanvas=document.createElement('canvas');fieldCanvas.width=cols;fieldCanvas.height=rows;fieldCtx=fieldCanvas.getContext('2d');fieldImage=fieldCtx.createImageData(cols,rows)}
-function sample(arr,x,y){let cx=clamp(Math.floor(wrap(x,W)/cellW),0,cols-1),cy=clamp(Math.floor(wrap(y,H)/cellH),0,rows-1);return arr[cy*cols+cx]}
-function idx(x,y){return clamp(Math.floor(wrap(y,H)/cellH),0,rows-1)*cols+clamp(Math.floor(wrap(x,W)/cellW),0,cols-1)}
-function deposit(arr,x,y,value,radius=1){const cx=Math.floor(wrap(x,W)/cellW),cy=Math.floor(wrap(y,H)/cellH);for(let dy=-radius;dy<=radius;dy++)for(let dx=-radius;dx<=radius;dx++){let rr=dx*dx+dy*dy;if(rr>radius*radius+.5)continue;arr[wrap(cy+dy,rows)*cols+wrap(cx+dx,cols)]=clamp(arr[wrap(cy+dy,rows)*cols+wrap(cx+dx,cols)]+value/(1+rr*.8),0,3)}}
-function genome(parent,other){const w=new Int8Array(GENES);if(parent){for(let i=0;i<GENES;i++){let base=other&&Math.random()<.48?other.w[i]:parent.w[i];w[i]=clamp(base+(Math.random()<.11?Math.round((Math.random()+Math.random()-1)*100*mutRate()):0),-127,127)}}else for(let i=0;i<GENES;i++)w[i]=Math.round(rand(-58,58));return w}
-function traits(parent,other){if(!parent)return [rand(.25,.8),rand(.3,.8),rand(.3,.8),rand(.25,.75),rand(.2,.8),rand(.2,.8)];return parent.tr.map((v,i)=>clamp((other&&Math.random()<.45?other.tr[i]:v)+(Math.random()+Math.random()-1)*mutRate()*.6,.03,.98))}
-function mutRate(){return +$('mutation').value/100}
-function agent(x,y,parent=null,other=null){const a={id:nextId++,x:wrap(x,W),y:wrap(y,H),angle:rand(TAU),vx:0,vy:0,energy:parent?25:rand(34,52),age:0,gen:parent?Math.max(parent.gen,other?.gen||0)+1:0,root:parent?parent.root:roots++,w:genome(parent,other),tr:traits(parent,other),h:new Float32Array(Q),signal:0,attack:0,feeding:0,cooldown:0,birth:0,trail:[],lastVictim:0,kills:0};agents.push(a);births++;return a}
-function hue(a){return palette[a.root%palette.length]}
-function reset(){agents=[];particles=[];selected=null;tick=0;kills=0;births=0;nextId=1;roots=1;eclipse=0;history=[];setupGrid(true);for(let k=0;k<12;k++){const cx=rand(W),cy=rand(H);for(let j=0;j<16;j++)deposit(food,cx+rand(-80,80),cy+rand(-80,80),rand(.2,.5),2)}for(let i=0;i<72;i++)agent(rand(W),rand(H));$('inspect').textContent='Select a creature in the arena.\nIts recurrent state, ancestry, and traits will appear here.';$('log').replaceChildren();event('The first hunger begins.')}
-function brain(a,ins){let p=0,newH=new Float32Array(Q),out=new Float32Array(O);for(let j=0;j<Q;j++){let s=0;for(let i=0;i<N;i++)s+=a.w[p++]*ins[i]/127;for(let k=0;k<Q;k++)s+=a.w[p++]*a.h[k]/127;s+=a.w[p++]/127;newH[j]=Math.tanh(s*.61)}for(let j=0;j<O;j++){let s=0;for(let k=0;k<Q;k++)s+=a.w[p++]*newH[k]/127;s+=a.w[p++]/127;out[j]=Math.tanh(s*.66)}a.h=newH;return out}
-function near(a){let best=null,bd=1e9,density=0;for(const b of agents){if(a===b)continue;let dx=b.x-a.x,dy=b.y-a.y;if(dx>W/2)dx-=W;if(dx<-W/2)dx+=W;if(dy>H/2)dy-=H;if(dy<-H/2)dy+=H;const d=dx*dx+dy*dy;if(d<10000)density++;if(d<bd){bd=d;best={b,dx,dy,d:Math.sqrt(d)}}}return {best,density}}
-function spark(x,y,color,n=5){for(let i=0;i<n;i++)particles.push({x,y,vx:rand(-2.4,2.4),vy:rand(-2.4,2.4),life:rand(15,36),max:36,color});if(particles.length>850)particles.splice(0,particles.length-850)}
-function die(a){deposit(food,a.x,a.y,clamp(a.energy*.016+.6,.3,2),2);deposit(taint,a.x,a.y,.1);spark(a.x,a.y,hue(a),5);if(selected===a)selected=null}
-function child(a,b){if(agents.length>=CAP)return;const c=agent(a.x+rand(-9,9),a.y+rand(-9,9),a,b);c.energy=24;a.energy-=24;if(b)b.energy-=6;a.birth=95;spark(c.x,c.y,hue(a),9);if(c.gen>0&&c.gen%12===0&&Math.random()<.08)event('Generation '+c.gen+' opens in lineage '+c.root+'.')}
-function evolve(){tick++;const renewal=+$('growth').value/100,hostility=+$('hostility').value/100;let sum=0;
-for(let k=0;k<cols*rows;k++){let f=food[k],t=taint[k];const x=k%cols,y=(k/cols)|0;const bloom=.5+.5*Math.sin(x*.13+Math.sin(y*.19)) * Math.cos(y*.11);f+=renewal*(.0008+.0022*bloom)* (1-f/1.7);if(Math.random()<.00013*renewal)f+=rand(.15,.6);food[k]=clamp(f,0,2.5);taint[k]=Math.max(0,t*.994-.0001);scent[k]*=.954;sum+=food[k]}
-if(eclipse>0){eclipse--;if(tick%2===0)for(let i=0;i<160;i++){const k=Math.floor(rand(food.length));food[k]*=.73;taint[k]=clamp(taint[k]+.14,0,2)}}
-const snapshot=agents.slice();for(const a of snapshot){if(a.energy<=0){a.energy=0;die(a);a.dead=true;continue}a.age++;if(a.cooldown>0)a.cooldown--;if(a.birth>0)a.birth--;const fwdX=Math.cos(a.angle),fwdY=Math.sin(a.angle),sideX=-fwdY,sideY=fwdX;const reach=19+38*a.tr[2];const here=sample(food,a.x,a.y),forward=sample(food,a.x+fwdX*reach,a.y+fwdY*reach),left=sample(food,a.x+fwdX*reach*.7+sideX*reach*.6,a.y+fwdY*reach*.7+sideY*reach*.6),right=sample(food,a.x+fwdX*reach*.7-sideX*reach*.6,a.y+fwdY*reach*.7-sideY*reach*.6);const {best,density}=near(a),d=best?.d||999;let bearing=0;if(best)bearing=Math.atan2(best.dy,best.dx)-a.angle;const ins=[clamp(a.energy/75-1,-1,1),clamp(here-1,-1,1),clamp(forward-left,-1,1),clamp(forward-right,-1,1),clamp(forward-here,-1,1),clamp(sample(taint,a.x,a.y),0,1),clamp(sample(scent,a.x+fwdX*reach,a.y+fwdY*reach)-sample(scent,a.x,a.y),-1,1),Math.sin(bearing),Math.cos(bearing),clamp(1-d/(100+70*a.tr[2]),-1,1),clamp(density/9,0,1),clamp(a.age/600,0,1),Math.sin(tick*.08+a.id),clamp(a.vx*fwdX+a.vy*fwdY,-1,1),best?clamp(best.b.energy/70-1,-1,1):0];const o=brain(a,ins);
-a.angle+=o[0]*(0.11+.09*a.tr[1]);let thrust=(o[1]+1)*.5;const mot=.45+1.1*a.tr[1];a.vx=(a.vx+fwdX*thrust*mot*.22)*.89;a.vy=(a.vy+fwdY*thrust*mot*.22)*.89;a.x=wrap(a.x+a.vx,W);a.y=wrap(a.y+a.vy,H);a.trail.push([a.x,a.y]);if(a.trail.length>9)a.trail.shift();
-a.feeding=Math.max(0,o[2]);a.attack=Math.max(0,o[3]);a.signal=Math.max(0,o[4]);if(a.signal>.4)deposit(scent,a.x,a.y,(a.signal-.4)*.035,1);
-const fi=idx(a.x,a.y);const eaten=Math.min(food[fi],(.016+.064*a.feeding)*(.7+a.tr[4]));food[fi]-=eaten;a.energy+=eaten*(9+9*a.tr[4]);a.energy-=.10+.12*a.tr[0]+.07*a.tr[1]+.035*a.tr[2]+.055*a.tr[3]+.035*a.attack+.014*a.signal+thrust*.06+sample(taint,a.x,a.y)*(.10+.18*(1-a.tr[3]));
-if(best&&d<14+10*a.tr[0]&&a.attack>.25&&a.cooldown===0&&best.b.energy>0){const b=best.b,damage=(.5+a.attack*2.2)*hostility*(.8+a.tr[0])*(1-.65*b.tr[3]);b.energy-=damage;a.energy+=damage*(.1+.55*a.tr[5]);a.cooldown=3;a.lastVictim=b.id;if(Math.random()<.13)spark((a.x+b.x)/2,(a.y+b.y)/2,'#ff7667',2);if(b.energy<=0){kills++;a.kills++;a.energy+=Math.min(9,8*a.tr[5]);if(a.kills%8===0)event('Lineage '+a.root+' has taken '+a.kills+' lives.')}}
-if(a.energy>58+12*a.tr[0]&&a.age>65&&a.birth===0&&o[5]>-.15&&agents.length<CAP){const mate=best&&d<18&&best.b.energy>42&&best.b.root!==a.root&&Math.random()<.15?best.b:null;child(a,mate)}
-a.energy=clamp(a.energy,-10,110);if(a.energy<=0||a.age>2100){a.energy=Math.max(0,a.energy);die(a);a.dead=true}}
-agents=agents.filter(a=>!a.dead);if(agents.length<15&&tick%45===0){const n=15-agents.length;for(let i=0;i<n;i++)agent(rand(W),rand(H));event('Spores emerge from the sediment.')}if(tick%60===0){history.push({p:agents.length,f:sum/(cols*rows),k:kills});if(history.length>180)history.shift()}if(tick%240===0)updateUI();for(const p of particles){p.x+=p.vx;p.y+=p.vy;p.vx*=.97;p.vy*=.97;p.life--}particles=particles.filter(p=>p.life>0)}
-function drawField(){const px=fieldImage.data;for(let i=0;i<food.length;i++){const f=clamp(food[i]/1.8,0,1),t=clamp(taint[i],0,1),s=clamp(scent[i],0,1),j=i*4;px[j]=Math.round(9+f*42+t*98+s*27);px[j+1]=Math.round(22+f*61-t*13+s*20);px[j+2]=Math.round(25+f*44+t*23+s*33);px[j+3]=255}fieldCtx.putImageData(fieldImage,0,0);ctx.imageSmoothingEnabled=true;ctx.drawImage(fieldCanvas,0,0,W,H)}
-function render(){drawField();ctx.save();ctx.globalCompositeOperation='screen';for(const a of agents){if(a.trail.length>1){ctx.beginPath();for(let i=0;i<a.trail.length;i++){const p=a.trail[i];if(i&&Math.abs(p[0]-a.trail[i-1][0])<W/2&&Math.abs(p[1]-a.trail[i-1][1])<H/2)ctx.lineTo(p[0],p[1]);else ctx.moveTo(p[0],p[1])}ctx.strokeStyle=hue(a)+'40';ctx.lineWidth=1+a.tr[0]*2;ctx.stroke()}}ctx.restore();
-for(const a of agents){const r=2.3+a.tr[0]*4.5,c=hue(a);ctx.save();ctx.translate(a.x,a.y);ctx.rotate(a.angle);ctx.shadowColor=c;ctx.shadowBlur=9+a.signal*12;ctx.fillStyle=c;ctx.globalAlpha=clamp(.55+a.energy/160,.55,1);ctx.beginPath();ctx.moveTo(r*1.5,0);ctx.lineTo(-r*.75,r*(.5+a.tr[3]*.45));ctx.lineTo(-r*(.45+a.tr[5]),0);ctx.lineTo(-r*.75,-r*(.5+a.tr[3]*.45));ctx.closePath();ctx.fill();ctx.shadowBlur=0;ctx.strokeStyle=a.attack>.5?'#ff544e':'#153034';ctx.lineWidth=a.attack>.5?1.4:.7;ctx.stroke();if(a.tr[2]>.56){ctx.strokeStyle=c+'8c';ctx.beginPath();ctx.moveTo(-r*.3,r*.6);ctx.lineTo(-r*(1.5+a.tr[2]),r*(1.1+a.signal));ctx.moveTo(-r*.3,-r*.6);ctx.lineTo(-r*(1.5+a.tr[2]),-r*(1.1+a.signal));ctx.stroke()}if(a.birth>0){ctx.strokeStyle=c;ctx.globalAlpha=a.birth/120;ctx.beginPath();ctx.arc(0,0,r+3+(95-a.birth)*.12,0,TAU);ctx.stroke()}if(a===selected){ctx.globalAlpha=1;ctx.strokeStyle='#fff1d6';ctx.lineWidth=1;ctx.setLineDash([2,3]);ctx.beginPath();ctx.arc(0,0,r+8,0,TAU);ctx.stroke()}ctx.restore()}
-ctx.save();ctx.globalCompositeOperation='screen';for(const p of particles){ctx.globalAlpha=clamp(p.life/p.max,0,1);ctx.fillStyle=p.color;ctx.fillRect(p.x,p.y,2,2)}ctx.restore();if(eclipse>0){ctx.fillStyle='rgba(20,5,7,'+(eclipse/210*.42)+')';ctx.fillRect(0,0,W,H);ctx.strokeStyle='rgba(244,102,83,.4)';ctx.lineWidth=2;ctx.strokeRect(2,2,W-4,H-4)}
-}
-function drawChart(){const w=chart.width,h=chart.height;ch.clearRect(0,0,w,h);ch.strokeStyle='#253a3b';ch.lineWidth=1;for(let y=20;y<h;y+=20){ch.beginPath();ch.moveTo(0,y+.5);ch.lineTo(w,y+.5);ch.stroke()}if(history.length<2)return;const vals=[['p','#8fe3cf',v=>v.p/220],['f','#d9ad72',v=>v.f/1.7],['k','#ed7869',(_,i)=>Math.min(1,Math.max(0,(history[i].k-(history[Math.max(0,i-10)].k))/30))]];for(const [key,color,fn] of vals){ch.beginPath();ch.strokeStyle=color;ch.lineWidth=1.5;history.forEach((v,i)=>{const x=i/(history.length-1)*(w-2)+1,y=h-3-clamp(fn(v,i),0,1)*(h-7);i?ch.lineTo(x,y):ch.moveTo(x,y)});ch.stroke()}}
-function updateUI(){let max=0,div=new Set;for(const a of agents){max=Math.max(max,a.gen);div.add(a.root)}$('pop').textContent=agents.length;$('gen').textContent=max;$('kills').textContent=kills;$('diversity').textContent=div.size;$('worldLabel').textContent='CYCLE '+String(tick).padStart(5,'0')+' / '+(eclipse?'THE ECLIPSE':agents.length>200?'THE SWARM':agents.length<25?'THE REMNANT':'THE HUNGER');if(selected&&!agents.includes(selected))selected=null;if(selected){let a=selected;const labels=['bulk','speed','sight','armor','foraging','carnivory'];$('inspect').innerHTML='<b>SPECIMEN '+a.id+'</b>  ·  lineage '+a.root+'  ·  generation '+a.gen+'<br>Energy '+a.energy.toFixed(1)+'  ·  age '+a.age+'  ·  kills '+a.kills+'<br>'+labels.map((v,i)=>v+' '+Math.round(a.tr[i]*100)+'%').join('  ·  ')+'<br>Recurrent state '+Array.from(a.h.slice(0,5),v=>v.toFixed(2)).join(' / ')}drawChart()}
-function interaction(e){const r=canvas.getBoundingClientRect(),x=(e.clientX-r.left)/r.width*W,y=(e.clientY-r.top)/r.height*H;if(tool==='inspect'){let closest=null,dist=25;for(const a of agents){const d=Math.hypot(a.x-x,a.y-y);if(d<dist){closest=a;dist=d}}selected=closest;updateUI();return}if(tool==='food'){deposit(food,x,y,.28,3);spark(x,y,'#dfbd79',2)}if(tool==='toxin'){deposit(taint,x,y,.38,3);deposit(food,x,y,-.14,2);spark(x,y,'#e0777a',2)}if(tool==='spawn'&&agents.length<CAP){for(let i=0;i<2;i++)agent(x+rand(-11,11),y+rand(-11,11));spark(x,y,'#9ce7d5',5)}if(tool==='erase'){for(const a of agents){if(Math.hypot(a.x-x,a.y-y)<23){a.energy=0;a.dead=true;die(a)}}agents=agents.filter(a=>!a.dead)}updateUI()}
-canvas.addEventListener('pointerdown',e=>{drag=true;canvas.setPointerCapture(e.pointerId);interaction(e)});canvas.addEventListener('pointermove',e=>{if(drag&&tool!=='inspect'&&frame%3===0)interaction(e)});canvas.addEventListener('pointerup',()=>drag=false);canvas.addEventListener('pointercancel',()=>drag=false);
-document.querySelectorAll('[data-tool]').forEach(b=>b.addEventListener('click',()=>{document.querySelectorAll('[data-tool]').forEach(x=>x.classList.remove('active'));b.classList.add('active');tool=b.dataset.tool;$('hint').textContent=tool==='inspect'?'Click a creature to inspect its lineage. Choose a tool, then paint on the world.':'Drag on the world to '+({food:'grow food',toxin:'spread blight',spawn:'seed life',erase:'extinguish creatures'}[tool])+'.'}));
-function exportWorld(){const data={version:1,width:W,height:H,tick,kills,births,nextId,roots,eclipse,cols,rows,food:Array.from(food),taint:Array.from(taint),scent:Array.from(scent),history,agents:agents.map(a=>({...a,w:Array.from(a.w),h:Array.from(a.h)}))};const blob=new Blob([JSON.stringify(data)],{type:'application/json'}),url=URL.createObjectURL(blob),link=document.createElement('a');link.href=url;link.download='clankolution-cycle-'+tick+'.json';document.body.appendChild(link);link.click();link.remove();setTimeout(()=>URL.revokeObjectURL(url),2000);$('saveHint').textContent='Cycle '+tick+' exported. Keep the JSON file to restore this world.'}
-function importWorld(data){if(data?.version!==1||!Array.isArray(data.agents)||data.agents.length>CAP||!Array.isArray(data.food)||!Number.isInteger(data.cols)||!Number.isInteger(data.rows)||data.cols<1||data.rows<1||data.cols*data.rows!==data.food.length||data.food.length>100000||!Number.isFinite(data.width)||!Number.isFinite(data.height)||data.width<1||data.height<1)throw Error('Invalid world file');const restored=data.agents.map(a=>{if(!Array.isArray(a.w)||a.w.length!==GENES||!Array.isArray(a.h)||a.h.length!==Q||!Array.isArray(a.tr)||a.tr.length!==6||![a.x,a.y,a.energy,a.age,a.gen,a.id,a.root,a.kills,a.angle,a.vx,a.vy,...a.tr,...a.h,...a.w].every(Number.isFinite))throw Error('Invalid creature data');return {...a,w:Int8Array.from(a.w),h:Float32Array.from(a.h),tr:a.tr.map(v=>clamp(+v,0,1)),x:wrap(a.x/data.width*W,W),y:wrap(a.y/data.height*H,H),trail:[],dead:false}});const oldCols=data.cols,oldRows=data.rows,oldFood=data.food,oldTaint=Array.isArray(data.taint)?data.taint:[],oldScent=Array.isArray(data.scent)?data.scent:[];agents=restored;selected=null;particles=[];tick=clamp(+data.tick||0,0,1e10);kills=clamp(+data.kills||0,0,1e10);births=clamp(+data.births||0,0,1e10);nextId=Math.max(+data.nextId||1,...agents.map(a=>a.id+1));roots=Math.max(+data.roots||1,...agents.map(a=>a.root+1));eclipse=clamp(+data.eclipse||0,0,210);history=Array.isArray(data.history)?data.history.slice(-180):[];setupGrid(true);for(let y=0;y<rows;y++)for(let x=0;x<cols;x++){const k=y*cols+x,j=Math.min(oldRows-1,Math.floor(y/rows*oldRows))*oldCols+Math.min(oldCols-1,Math.floor(x/cols*oldCols));food[k]=clamp(+oldFood[j]||0,0,2.5);taint[k]=clamp(+oldTaint[j]||0,0,3);scent[k]=clamp(+oldScent[j]||0,0,3)}updateUI();event('A world returns from its record.');$('saveHint').textContent='Cycle '+tick+' restored. The simulation continues here.'}
-$('saveWorld').onclick=exportWorld;$('loadWorld').onclick=()=>$('importFile').click();$('saveNote').onclick=()=>$('saveHint').textContent='Exports creatures, their neural weights and recurrent states, soil, toxins, ancestry, and the chronicle.';$('importFile').addEventListener('change',async e=>{const file=e.target.files?.[0];e.target.value='';if(!file)return;try{if(file.size>6000000)throw Error('File exceeds 6 MB');importWorld(JSON.parse(await file.text()))}catch(err){$('saveHint').textContent='Could not load this world: '+err.message}});
-$('pause').onclick=()=>{paused=!paused;$('pause').textContent=paused?'RESUME':'PAUSE'};$('speed').onclick=()=>{speed=speed===1?2:speed===2?4:1;$('speed').textContent=speed+'× SPEED'};$('reset').onclick=()=>{reset();updateUI()};$('catastrophe').onclick=()=>{eclipse=210;event('An eclipse consumes the harvest.');spark(rand(W),rand(H),'#ff6659',30)};
-for(const [id,out,fn] of [['mutation','mutationValue',v=>(v/100).toFixed(2)],['growth','growthValue',v=>(v/100).toFixed(2)+'×'],['hostility','hostilityValue',v=>(v/100).toFixed(2)+'×']])$(id).addEventListener('input',()=>$(out).textContent=fn(+$(id).value));
-if(document.modelContext?.registerTool){const register=tool=>{try{Promise.resolve(document.modelContext.registerTool(tool)).catch(()=>{})}catch(_){}};register({name:'read_ecology',title:'Read ecology',description:'Read the current population, oldest living generation, predations, and active pressures.',inputSchema:{type:'object',properties:{},additionalProperties:false},annotations:{readOnlyHint:true},execute(){return {cycle:tick,population:agents.length,oldestGeneration:Math.max(0,...agents.map(a=>a.gen)),predations:kills,mutation:mutRate(),foodRenewal:+$('growth').value/100,contactHostility:+$('hostility').value/100}}});register({name:'configure_ecology',title:'Configure ecology',description:'Set the three visible selective-pressure sliders. Values are multipliers except mutation, which is a fraction.',inputSchema:{type:'object',properties:{mutation:{type:'number',minimum:0,maximum:.5},foodRenewal:{type:'number',minimum:0,maximum:2},contactHostility:{type:'number',minimum:0,maximum:2}},additionalProperties:false},annotations:{readOnlyHint:false},execute(input){if(!input||typeof input!=='object'||Array.isArray(input)||Object.keys(input).some(k=>!['mutation','foodRenewal','contactHostility'].includes(k)))throw Error('Invalid pressure settings');for(const [key,id,max] of [['mutation','mutation',.5],['foodRenewal','growth',2],['contactHostility','hostility',2]])if(input[key]!==undefined){if(typeof input[key]!=='number'||!Number.isFinite(input[key])||input[key]<0||input[key]>max)throw Error('Invalid '+key)}for(const [key,id] of [['mutation','mutation'],['foodRenewal','growth'],['contactHostility','hostility']])if(input[key]!==undefined){$(id).value=Math.round(input[key]*100);$(id).dispatchEvent(new Event('input'))}return {mutation:mutRate(),foodRenewal:+$('growth').value/100,contactHostility:+$('hostility').value/100}}})}
-let last=0,acc=0;function loop(now){requestAnimationFrame(loop);let dt=Math.min(80,now-last||16);last=now;frame++;if(!paused){acc+=dt*speed;let n=0;while(acc>=40&&n<9){evolve();acc-=40;n++}}render();if(frame%15===0)updateUI()}
-window.addEventListener('resize',resize);resize();reset();updateUI();requestAnimationFrame(loop);
-})();
-</script><script>(function(){function c(){var b=a.contentDocument||(a.contentWindow&&a.contentWindow.document);if(b){var d=b.createElement('script');d.innerHTML="window.__CF$cv$params={r:'a3ffa77ac883b81f',t:'MTc5MDIzMDUyMg=='};var a=document.createElement('script');a.src='/cdn-cgi/challenge-platform/scripts/jsd/main.js';document.getElementsByTagName('head')[0].appendChild(a);";b.getElementsByTagName('head')[0].appendChild(d)}}if(document.body){var a=document.createElement('iframe');a.height=1;a.width=1;a.style.position='absolute';a.style.top=0;a.style.left=0;a.style.border='none';a.style.visibility='hidden';document.body.appendChild(a);if('loading'!==document.readyState)c();else if(window.addEventListener)document.addEventListener('DOMContentLoaded',c);else{var e=document.onreadystatechange||function(){};document.onreadystatechange=function(b){e(b);'loading'!==document.readyState&&(document.onreadystatechange=e,c())}}}})();</script></body></html>
+  <div class="shell">
+    <header class="top">
+      <div>
+        <div class="brand">CLANK<b>O</b>LUTION</div>
+        <span class="sub">AN EXPERIMENT IN INHERITED APPETITE</span>
+      </div>
+      <div class="top-controls">
+        <button id="pause" aria-label="Pause simulation">PAUSE</button>
+        <button id="speed" title="Simulation speed">1× SPEED</button>
+        <button id="reset">NEW WORLD</button>
+      </div>
+    </header>
+
+    <main class="world">
+      <canvas id="field" aria-label="Artificial ecology simulation"></canvas>
+      <div class="overlay"></div>
+      <div class="world-label" id="worldLabel">CYCLE 00000 / THE FIRST HUNGER</div>
+      <div class="world-hint" id="hint">Click a creature to inspect its lineage. Choose a tool, then paint on the world.</div>
+    </main>
+
+    <aside class="side">
+      <div class="eyebrow">FIELD NOTES / 001</div>
+      <h1 class="hero">Let them become<br>something else.</h1>
+      <p class="intro">Each creature inherits a tiny quantized recurrent brain and a body. Food blooms. Blood feeds the soil. Nothing is told how to behave.</p>
+
+      <div class="statgrid">
+        <div class="stat">
+          <label>Population</label>
+          <strong id="pop">0</strong>
+          <small> / 340 capacity</small>
+        </div>
+        <div class="stat">
+          <label>Generation</label>
+          <strong id="gen">0</strong>
+          <small> / oldest living</small>
+        </div>
+        <div class="stat">
+          <label>Predations</label>
+          <strong id="kills">0</strong>
+          <small> / total</small>
+        </div>
+        <div class="stat">
+          <label>Lineages</label>
+          <strong id="diversity">0</strong>
+          <small> / living roots</small>
+        </div>
+      </div>
+
+      <div class="section">
+        <h2>INTERVENE</h2>
+        <div class="toolrow">
+          <button data-tool="inspect" class="active">OBSERVE</button>
+          <button data-tool="food">NOURISH</button>
+          <button data-tool="toxin">BLIGHT</button>
+          <button data-tool="spawn">SEED LIFE</button>
+          <button data-tool="erase">EXTINGUISH</button>
+          <button id="catastrophe">ECLIPSE</button>
+        </div>
+        <p class="minor">Drag to paint. Blight is a fading toxin: it destroys food and drains creatures crossing it. An eclipse starves the surface, then it regrows.</p>
+      </div>
+
+      <div class="section">
+        <h2>KEEP YOUR WORLD</h2>
+        <div class="toolrow">
+          <button id="saveWorld">EXPORT</button>
+          <button id="loadWorld">IMPORT</button>
+          <button id="saveNote" title="Shows what an export contains">WHAT SAVES?</button>
+        </div>
+        <input id="importFile" type="file" accept="application/json,.json" hidden>
+        <p class="minor" id="saveHint">Export a snapshot to continue generations later. Import it here on this or another device.</p>
+      </div>
+
+      <div class="section">
+        <h2>SELECTIVE PRESSURE</h2>
+        <div class="row">
+          <span>Mutation</span>
+          <output id="mutationValue">0.16</output>
+        </div>
+        <input id="mutation" aria-label="Mutation strength" type="range" min="0" max="50" value="16">
+        <div class="row">
+          <span>Food renewal</span>
+          <output id="growthValue">1.00×</output>
+        </div>
+        <input id="growth" aria-label="Food renewal" type="range" min="0" max="200" value="100">
+        <div class="row">
+          <span>Hostility of contact</span>
+          <output id="hostilityValue">1.00×</output>
+        </div>
+        <input id="hostility" aria-label="Contact hostility" type="range" min="0" max="200" value="100">
+      </div>
+
+      <div class="section">
+        <h2>THE RECORD</h2>
+        <canvas id="history" class="chart" width="290" height="82" aria-label="Population, food, and predation history"></canvas>
+        <div class="legend">
+          <span><i class="swatch" style="background:#8fe3cf"></i>life</span>
+          <span><i class="swatch" style="background:#d9ad72"></i>food</span>
+          <span><i class="swatch" style="background:#ed7869"></i>violence</span>
+        </div>
+      </div>
+
+      <div class="section">
+        <h2>SPECIMEN</h2>
+        <div class="inspect" id="inspect">Select a creature in the arena.<br>Its recurrent state, ancestry, and traits will appear here.</div>
+      </div>
+
+      <div class="section">
+        <h2>CHRONICLE</h2>
+        <div class="log" id="log"></div>
+      </div>
+
+      <div class="footer">One file. No assets. No API. All decisions happen on your machine.</div>
+    </aside>
+  </div>
+
+  <script>
+    (() => {
+      'use strict';
+
+      /* ==========================================================================
+         1. CONSTANTS & HYPERPARAMETERS
+         ========================================================================== */
+
+      // Canvas element handles & 2D rendering contexts
+      const canvas = document.getElementById('field');
+      const ctx = canvas.getContext('2d', { alpha: false });
+      const chart = document.getElementById('history');
+      const ch = chart.getContext('2d');
+
+      // DOM lookup helper
+      const $ = id => document.getElementById(id);
+
+      // Mathematical utilities
+      const TAU = Math.PI * 2;
+      const clamp = (v, min, max) => Math.max(min, Math.min(max, v));
+      const rand = (a = 1, b) => (b === undefined ? Math.random() * a : a + Math.random() * (b - a));
+      const wrap = (v, max) => ((v % max) + max) % max;
+
+      // Neural Network Dimensions:
+      // N: 15 Sensory inputs
+      // Q: 10 Recurrent hidden units
+      // O:  6 Actuator outputs
+      const N = 15;
+      const Q = 10;
+      const O = 6;
+
+      // Total genome size:
+      // Hidden layer: Q * (N inputs + Q recurrent + 1 bias) = 10 * (15 + 10 + 1) = 260
+      // Output layer: O * (Q hidden + 1 bias)               =  6 * (10 + 1)       =  66
+      // Total genes: 326 quantized Int8 weights
+      const GENES = Q * (N + Q + 1) + O * (Q + 1);
+
+      // Maximum creature capacity in the arena
+      const CAP = 340;
+
+      // Lineage color palette (assigned by creature root lineage ID)
+      const palette = [
+        '#91e5d2',
+        '#e6b878',
+        '#ee786b',
+        '#be97d7',
+        '#7fb8df',
+        '#d4df8b',
+        '#e4a3bb',
+        '#89c5a1'
+      ];
+
+      /* ==========================================================================
+         2. SIMULATION STATE
+         ========================================================================== */
+
+      let W = 900;
+      let H = 600;
+      let dpr = 1;
+
+      let agents = [];
+      let particles = [];
+      let selected = null;
+      let tool = 'inspect';
+      let paused = false;
+      let speed = 1;
+      let frame = 0;
+      let tick = 0;
+      let kills = 0;
+      let births = 0;
+      let nextId = 1;
+      let roots = 1;
+      let eclipse = 0;
+      let history = [];
+      let logCount = 0;
+      let drag = false;
+
+      // 2D Environmental grids
+      let food;
+      let taint;
+      let scent;
+      let cols;
+      let rows;
+      let cellW;
+      let cellH;
+
+      // Off-screen canvas buffer for rasterizing the soil grid
+      let fieldImage;
+      let fieldCanvas;
+      let fieldCtx;
+
+      /* ==========================================================================
+         3. LOGGING & RESIZING
+         ========================================================================== */
+
+      function event(message) {
+        const el = $('log');
+        const d = document.createElement('div');
+        d.textContent = String(tick).padStart(5, '0') + '  ' + message;
+        el.prepend(d);
+        while (el.children.length > 7) {
+          el.lastChild.remove();
+        }
+      }
+
+      function resize() {
+        const r = canvas.getBoundingClientRect();
+        const oldW = W;
+        const oldH = H;
+
+        W = Math.max(320, r.width);
+        H = Math.max(250, r.height);
+        dpr = Math.min(2, devicePixelRatio || 1);
+
+        canvas.width = Math.round(W * dpr);
+        canvas.height = Math.round(H * dpr);
+        ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+
+        if (agents.length) {
+          for (const a of agents) {
+            a.x = (a.x / oldW) * W;
+            a.y = (a.y / oldH) * H;
+          }
+        }
+        setupGrid(false);
+      }
+
+      /* ==========================================================================
+         4. SPATIAL GRID OPERATIONS
+         ========================================================================== */
+
+      function setupGrid(fresh) {
+        const old = food;
+        const oc = cols;
+        const or = rows;
+
+        cols = Math.ceil(W / 12);
+        rows = Math.ceil(H / 12);
+        cellW = W / cols;
+        cellH = H / rows;
+
+        food = new Float32Array(cols * rows);
+        taint = new Float32Array(cols * rows);
+        scent = new Float32Array(cols * rows);
+
+        for (let y = 0; y < rows; y++) {
+          for (let x = 0; x < cols; x++) {
+            const i = y * cols + x;
+            if (!fresh && old) {
+              const sampleY = clamp(Math.floor((y / rows) * or), 0, or - 1);
+              const sampleX = clamp(Math.floor((x / cols) * oc), 0, oc - 1);
+              food[i] = old[sampleY * oc + sampleX];
+            } else {
+              food[i] = rand(0.15, 0.5);
+            }
+          }
+        }
+
+        fieldCanvas = document.createElement('canvas');
+        fieldCanvas.width = cols;
+        fieldCanvas.height = rows;
+        fieldCtx = fieldCanvas.getContext('2d');
+        fieldImage = fieldCtx.createImageData(cols, rows);
+      }
+
+      function sample(arr, x, y) {
+        const cx = clamp(Math.floor(wrap(x, W) / cellW), 0, cols - 1);
+        const cy = clamp(Math.floor(wrap(y, H) / cellH), 0, rows - 1);
+        return arr[cy * cols + cx];
+      }
+
+      function idx(x, y) {
+        const cx = clamp(Math.floor(wrap(x, W) / cellW), 0, cols - 1);
+        const cy = clamp(Math.floor(wrap(y, H) / cellH), 0, rows - 1);
+        return cy * cols + cx;
+      }
+
+      function deposit(arr, x, y, value, radius = 1) {
+        const cx = Math.floor(wrap(x, W) / cellW);
+        const cy = Math.floor(wrap(y, H) / cellH);
+
+        for (let dy = -radius; dy <= radius; dy++) {
+          for (let dx = -radius; dx <= radius; dx++) {
+            const rr = dx * dx + dy * dy;
+            if (rr > radius * radius + 0.5) continue;
+            const cellIndex = wrap(cy + dy, rows) * cols + wrap(cx + dx, cols);
+            arr[cellIndex] = clamp(arr[cellIndex] + value / (1 + rr * 0.8), 0, 3);
+          }
+        }
+      }
+
+      /* ==========================================================================
+         5. GENETICS & RECURRENT NEURAL BRAIN
+         ========================================================================== */
+
+      function mutRate() {
+        return +$('mutation').value / 100;
+      }
+
+      function genome(parent, other) {
+        const w = new Int8Array(GENES);
+        if (parent) {
+          for (let i = 0; i < GENES; i++) {
+            const base = other && Math.random() < 0.48 ? other.w[i] : parent.w[i];
+            const mutation = Math.random() < 0.11
+              ? Math.round((Math.random() + Math.random() - 1) * 100 * mutRate())
+              : 0;
+            w[i] = clamp(base + mutation, -127, 127);
+          }
+        } else {
+          for (let i = 0; i < GENES; i++) {
+            w[i] = Math.round(rand(-58, 58));
+          }
+        }
+        return w;
+      }
+
+      // Morphological traits: [bulk, speed, sight, armor, foraging, carnivory]
+      function traits(parent, other) {
+        if (!parent) {
+          return [
+            rand(0.25, 0.8),
+            rand(0.30, 0.8),
+            rand(0.30, 0.8),
+            rand(0.25, 0.75),
+            rand(0.20, 0.8),
+            rand(0.20, 0.8)
+          ];
+        }
+        return parent.tr.map((v, i) => {
+          const base = other && Math.random() < 0.45 ? other.tr[i] : v;
+          const mutation = (Math.random() + Math.random() - 1) * mutRate() * 0.6;
+          return clamp(base + mutation, 0.03, 0.98);
+        });
+      }
+
+      // Elman RNN forward pass:
+      // Inputs (ins): 15 sensor signals
+      // Hidden state (a.h): 10 persistent recurrent neurons
+      // Outputs (out): 6 actuator values in [-1, 1]
+      function brain(a, ins) {
+        let p = 0;
+        const newH = new Float32Array(Q);
+        const out = new Float32Array(O);
+
+        // Compute recurrent hidden layer: s = W_in * ins + W_rec * h_prev + b
+        for (let j = 0; j < Q; j++) {
+          let s = 0;
+          for (let i = 0; i < N; i++) {
+            s += (a.w[p++] * ins[i]) / 127;
+          }
+          for (let k = 0; k < Q; k++) {
+            s += (a.w[p++] * a.h[k]) / 127;
+          }
+          s += a.w[p++] / 127; // bias
+          newH[j] = Math.tanh(s * 0.61);
+        }
+
+        // Compute output layer: s = W_out * newH + b
+        for (let j = 0; j < O; j++) {
+          let s = 0;
+          for (let k = 0; k < Q; k++) {
+            s += (a.w[p++] * newH[k]) / 127;
+          }
+          s += a.w[p++] / 127; // bias
+          out[j] = Math.tanh(s * 0.66);
+        }
+
+        a.h = newH;
+        return out;
+      }
+
+      /* ==========================================================================
+         6. CREATURE AGENTS & LIFECYCLE
+         ========================================================================== */
+
+      function agent(x, y, parent = null, other = null) {
+        const a = {
+          id: nextId++,
+          x: wrap(x, W),
+          y: wrap(y, H),
+          angle: rand(TAU),
+          vx: 0,
+          vy: 0,
+          energy: parent ? 25 : rand(34, 52),
+          age: 0,
+          gen: parent ? Math.max(parent.gen, other?.gen || 0) + 1 : 0,
+          root: parent ? parent.root : roots++,
+          w: genome(parent, other),
+          tr: traits(parent, other),
+          h: new Float32Array(Q),
+          signal: 0,
+          attack: 0,
+          feeding: 0,
+          cooldown: 0,
+          birth: 0,
+          trail: [],
+          lastVictim: 0,
+          kills: 0
+        };
+        agents.push(a);
+        births++;
+        return a;
+      }
+
+      function hue(a) {
+        return palette[a.root % palette.length];
+      }
+
+      function reset() {
+        agents = [];
+        particles = [];
+        selected = null;
+        tick = 0;
+        kills = 0;
+        births = 0;
+        nextId = 1;
+        roots = 1;
+        eclipse = 0;
+        history = [];
+
+        setupGrid(true);
+
+        for (let k = 0; k < 12; k++) {
+          const cx = rand(W);
+          const cy = rand(H);
+          for (let j = 0; j < 16; j++) {
+            deposit(food, cx + rand(-80, 80), cy + rand(-80, 80), rand(0.2, 0.5), 2);
+          }
+        }
+
+        for (let i = 0; i < 72; i++) {
+          agent(rand(W), rand(H));
+        }
+
+        $('inspect').textContent = 'Select a creature in the arena.\nIts recurrent state, ancestry, and traits will appear here.';
+        $('log').replaceChildren();
+        event('The first hunger begins.');
+      }
+
+      function near(a) {
+        let best = null;
+        let bd = 1e9;
+        let density = 0;
+
+        for (const b of agents) {
+          if (a === b) continue;
+          let dx = b.x - a.x;
+          let dy = b.y - a.y;
+
+          // Toroidal shortest distance
+          if (dx > W / 2) dx -= W;
+          if (dx < -W / 2) dx += W;
+          if (dy > H / 2) dy -= H;
+          if (dy < -H / 2) dy += H;
+
+          const d = dx * dx + dy * dy;
+          if (d < 10000) density++;
+          if (d < bd) {
+            bd = d;
+            best = { b, dx, dy, d: Math.sqrt(d) };
+          }
+        }
+        return { best, density };
+      }
+
+      function spark(x, y, color, n = 5) {
+        for (let i = 0; i < n; i++) {
+          particles.push({
+            x,
+            y,
+            vx: rand(-2.4, 2.4),
+            vy: rand(-2.4, 2.4),
+            life: rand(15, 36),
+            max: 36,
+            color
+          });
+        }
+        if (particles.length > 850) {
+          particles.splice(0, particles.length - 850);
+        }
+      }
+
+      function die(a) {
+        deposit(food, a.x, a.y, clamp(a.energy * 0.016 + 0.6, 0.3, 2), 2);
+        deposit(taint, a.x, a.y, 0.1);
+        spark(a.x, a.y, hue(a), 5);
+        if (selected === a) selected = null;
+      }
+
+      function child(a, b) {
+        if (agents.length >= CAP) return;
+        const c = agent(a.x + rand(-9, 9), a.y + rand(-9, 9), a, b);
+        c.energy = 24;
+        a.energy -= 24;
+        if (b) b.energy -= 6;
+        a.birth = 95;
+        spark(c.x, c.y, hue(a), 9);
+        if (c.gen > 0 && c.gen % 12 === 0 && Math.random() < 0.08) {
+          event('Generation ' + c.gen + ' opens in lineage ' + c.root + '.');
+        }
+      }
+
+      /* ==========================================================================
+         7. ECOLOGY SIMULATION TICK (EVOLVE)
+         ========================================================================== */
+
+      function evolve() {
+        tick++;
+        const renewal = +$('growth').value / 100;
+        const hostility = +$('hostility').value / 100;
+        let sum = 0;
+
+        // Environmental soil update
+        for (let k = 0; k < cols * rows; k++) {
+          let f = food[k];
+          const t = taint[k];
+          const x = k % cols;
+          const y = (k / cols) | 0;
+
+          // Spatial bloom function
+          const bloom = 0.5 + 0.5 * Math.sin(x * 0.13 + Math.sin(y * 0.19)) * Math.cos(y * 0.11);
+          f += renewal * (0.0008 + 0.0022 * bloom) * (1 - f / 1.7);
+          if (Math.random() < 0.00013 * renewal) {
+            f += rand(0.15, 0.6);
+          }
+          food[k] = clamp(f, 0, 2.5);
+          taint[k] = Math.max(0, t * 0.994 - 0.0001);
+          scent[k] *= 0.954;
+          sum += food[k];
+        }
+
+        // Eclipse catastrophe dynamics
+        if (eclipse > 0) {
+          eclipse--;
+          if (tick % 2 === 0) {
+            for (let i = 0; i < 160; i++) {
+              const k = Math.floor(rand(food.length));
+              food[k] *= 0.73;
+              taint[k] = clamp(taint[k] + 0.14, 0, 2);
+            }
+          }
+        }
+
+        // Creature update
+        const snapshot = agents.slice();
+        for (const a of snapshot) {
+          if (a.energy <= 0) {
+            a.energy = 0;
+            die(a);
+            a.dead = true;
+            continue;
+          }
+
+          a.age++;
+          if (a.cooldown > 0) a.cooldown--;
+          if (a.birth > 0) a.birth--;
+
+          // Direction vectors & sensor reach
+          const fwdX = Math.cos(a.angle);
+          const fwdY = Math.sin(a.angle);
+          const sideX = -fwdY;
+          const sideY = fwdX;
+          const reach = 19 + 38 * a.tr[2]; // sight trait
+
+          // Sample food in front and at antenna points
+          const here = sample(food, a.x, a.y);
+          const forward = sample(food, a.x + fwdX * reach, a.y + fwdY * reach);
+          const left = sample(
+            food,
+            a.x + fwdX * reach * 0.7 + sideX * reach * 0.6,
+            a.y + fwdY * reach * 0.7 + sideY * reach * 0.6
+          );
+          const right = sample(
+            food,
+            a.x + fwdX * reach * 0.7 - sideX * reach * 0.6,
+            a.y + fwdY * reach * 0.7 - sideY * reach * 0.6
+          );
+
+          // Neighbor perception
+          const { best, density } = near(a);
+          const d = best?.d || 999;
+          let bearing = 0;
+          if (best) {
+            bearing = Math.atan2(best.dy, best.dx) - a.angle;
+          }
+
+          // 15 Sensory Inputs
+          const ins = [
+            clamp(a.energy / 75 - 1, -1, 1),                                                   // 0: Energy reserve
+            clamp(here - 1, -1, 1),                                                            // 1: Food underfoot
+            clamp(forward - left, -1, 1),                                                      // 2: Food gradient (forward - left)
+            clamp(forward - right, -1, 1),                                                     // 3: Food gradient (forward - right)
+            clamp(forward - here, -1, 1),                                                      // 4: Food gradient (forward - here)
+            clamp(sample(taint, a.x, a.y), 0, 1),                                              // 5: Soil taint/toxin
+            clamp(sample(scent, a.x + fwdX * reach, a.y + fwdY * reach) - sample(scent, a.x, a.y), -1, 1), // 6: Scent gradient
+            Math.sin(bearing),                                                                 // 7: Lateral bearing to neighbor
+            Math.cos(bearing),                                                                 // 8: Forward bearing to neighbor
+            clamp(1 - d / (100 + 70 * a.tr[2]), -1, 1),                                        // 9: Neighbor proximity
+            clamp(density / 9, 0, 1),                                                          // 10: Local crowd density
+            clamp(a.age / 600, 0, 1),                                                          // 11: Normalized age
+            Math.sin(tick * 0.08 + a.id),                                                      // 12: Internal biological oscillator
+            clamp(a.vx * fwdX + a.vy * fwdY, -1, 1),                                           // 13: Forward velocity (proprioception)
+            best ? clamp(best.b.energy / 70 - 1, -1, 1) : 0                                    // 14: Neighbor energy status
+          ];
+
+          // Neural forward pass
+          const o = brain(a, ins);
+
+          // Actuator 0: Steering
+          a.angle += o[0] * (0.11 + 0.09 * a.tr[1]);
+
+          // Actuator 1: Thrust & Physics
+          const thrust = (o[1] + 1) * 0.5;
+          const mot = 0.45 + 1.1 * a.tr[1];
+          a.vx = (a.vx + fwdX * thrust * mot * 0.22) * 0.89;
+          a.vy = (a.vy + fwdY * thrust * mot * 0.22) * 0.89;
+          a.x = wrap(a.x + a.vx, W);
+          a.y = wrap(a.y + a.vy, H);
+
+          a.trail.push([a.x, a.y]);
+          if (a.trail.length > 9) a.trail.shift();
+
+          // Actuators 2, 3, 4: Feeding, Attack, Signal
+          a.feeding = Math.max(0, o[2]);
+          a.attack = Math.max(0, o[3]);
+          a.signal = Math.max(0, o[4]);
+
+          // Scent emission
+          if (a.signal > 0.4) {
+            deposit(scent, a.x, a.y, (a.signal - 0.4) * 0.035, 1);
+          }
+
+          // Grazing / Foraging intake
+          const fi = idx(a.x, a.y);
+          const eaten = Math.min(food[fi], (0.016 + 0.064 * a.feeding) * (0.7 + a.tr[4]));
+          food[fi] -= eaten;
+          a.energy += eaten * (9 + 9 * a.tr[4]);
+
+          // Base metabolism and active exertion costs
+          a.energy -= 0.10 +
+            0.12 * a.tr[0] +
+            0.07 * a.tr[1] +
+            0.035 * a.tr[2] +
+            0.055 * a.tr[3] +
+            0.035 * a.attack +
+            0.014 * a.signal +
+            thrust * 0.06 +
+            sample(taint, a.x, a.y) * (0.10 + 0.18 * (1 - a.tr[3]));
+
+          // Predation / Combat
+          if (best && d < 14 + 10 * a.tr[0] && a.attack > 0.25 && a.cooldown === 0 && best.b.energy > 0) {
+            const b = best.b;
+            const damage = (0.5 + a.attack * 2.2) * hostility * (0.8 + a.tr[0]) * (1 - 0.65 * b.tr[3]);
+            b.energy -= damage;
+            a.energy += damage * (0.1 + 0.55 * a.tr[5]);
+            a.cooldown = 3;
+            a.lastVictim = b.id;
+
+            if (Math.random() < 0.13) {
+              spark((a.x + b.x) / 2, (a.y + b.y) / 2, '#ff7667', 2);
+            }
+
+            if (b.energy <= 0) {
+              kills++;
+              a.kills++;
+              a.energy += Math.min(9, 8 * a.tr[5]);
+              if (a.kills % 8 === 0) {
+                event('Lineage ' + a.root + ' has taken ' + a.kills + ' lives.');
+              }
+            }
+          }
+
+          // Reproduction (sexual crossover if viable partner nearby, otherwise asexual)
+          if (a.energy > 58 + 12 * a.tr[0] && a.age > 65 && a.birth === 0 && o[5] > -0.15 && agents.length < CAP) {
+            const mate = (best && d < 18 && best.b.energy > 42 && best.b.root !== a.root && Math.random() < 0.15)
+              ? best.b
+              : null;
+            child(a, mate);
+          }
+
+          a.energy = clamp(a.energy, -10, 110);
+          if (a.energy <= 0 || a.age > 2100) {
+            a.energy = Math.max(0, a.energy);
+            die(a);
+            a.dead = true;
+          }
+        }
+
+        // Filter dead agents
+        agents = agents.filter(a => !a.dead);
+
+        // Spore replenishment if population collapses
+        if (agents.length < 15 && tick % 45 === 0) {
+          const n = 15 - agents.length;
+          for (let i = 0; i < n; i++) {
+            agent(rand(W), rand(H));
+          }
+          event('Spores emerge from the sediment.');
+        }
+
+        // History record sampling
+        if (tick % 60 === 0) {
+          history.push({
+            p: agents.length,
+            f: sum / (cols * rows),
+            k: kills
+          });
+          if (history.length > 180) {
+            history.shift();
+          }
+        }
+
+        if (tick % 240 === 0) {
+          updateUI();
+        }
+
+        // Particle physics
+        for (const p of particles) {
+          p.x += p.vx;
+          p.y += p.vy;
+          p.vx *= 0.97;
+          p.vy *= 0.97;
+          p.life--;
+        }
+        particles = particles.filter(p => p.life > 0);
+      }
+
+      /* ==========================================================================
+         8. CANVAS RENDERING
+         ========================================================================== */
+
+      function drawField() {
+        const px = fieldImage.data;
+        for (let i = 0; i < food.length; i++) {
+          const f = clamp(food[i] / 1.8, 0, 1);
+          const t = clamp(taint[i], 0, 1);
+          const s = clamp(scent[i], 0, 1);
+          const j = i * 4;
+
+          px[j]     = Math.round(9 + f * 42 + t * 98 + s * 27);
+          px[j + 1] = Math.round(22 + f * 61 - t * 13 + s * 20);
+          px[j + 2] = Math.round(25 + f * 44 + t * 23 + s * 33);
+          px[j + 3] = 255;
+        }
+        fieldCtx.putImageData(fieldImage, 0, 0);
+        ctx.imageSmoothingEnabled = true;
+        ctx.drawImage(fieldCanvas, 0, 0, W, H);
+      }
+
+      function render() {
+        drawField();
+
+        // Agent trails
+        ctx.save();
+        ctx.globalCompositeOperation = 'screen';
+        for (const a of agents) {
+          if (a.trail.length > 1) {
+            ctx.beginPath();
+            for (let i = 0; i < a.trail.length; i++) {
+              const p = a.trail[i];
+              if (i && Math.abs(p[0] - a.trail[i - 1][0]) < W / 2 && Math.abs(p[1] - a.trail[i - 1][1]) < H / 2) {
+                ctx.lineTo(p[0], p[1]);
+              } else {
+                ctx.moveTo(p[0], p[1]);
+              }
+            }
+            ctx.strokeStyle = hue(a) + '40';
+            ctx.lineWidth = 1 + a.tr[0] * 2;
+            ctx.stroke();
+          }
+        }
+        ctx.restore();
+
+        // Agent bodies
+        for (const a of agents) {
+          const r = 2.3 + a.tr[0] * 4.5;
+          const c = hue(a);
+
+          ctx.save();
+          ctx.translate(a.x, a.y);
+          ctx.rotate(a.angle);
+          ctx.shadowColor = c;
+          ctx.shadowBlur = 9 + a.signal * 12;
+          ctx.fillStyle = c;
+          ctx.globalAlpha = clamp(0.55 + a.energy / 160, 0.55, 1);
+
+          // Body triangle
+          ctx.beginPath();
+          ctx.moveTo(r * 1.5, 0);
+          ctx.lineTo(-r * 0.75, r * (0.5 + a.tr[3] * 0.45));
+          ctx.lineTo(-r * (0.45 + a.tr[5]), 0);
+          ctx.lineTo(-r * 0.75, -r * (0.5 + a.tr[3] * 0.45));
+          ctx.closePath();
+          ctx.fill();
+
+          // Border outline (turns red when attacking)
+          ctx.shadowBlur = 0;
+          ctx.strokeStyle = a.attack > 0.5 ? '#ff544e' : '#153034';
+          ctx.lineWidth = a.attack > 0.5 ? 1.4 : 0.7;
+          ctx.stroke();
+
+          // Sensory antennae (if sight trait is high)
+          if (a.tr[2] > 0.56) {
+            ctx.strokeStyle = c + '8c';
+            ctx.beginPath();
+            ctx.moveTo(-r * 0.3, r * 0.6);
+            ctx.lineTo(-r * (1.5 + a.tr[2]), r * (1.1 + a.signal));
+            ctx.moveTo(-r * 0.3, -r * 0.6);
+            ctx.lineTo(-r * (1.5 + a.tr[2]), -r * (1.1 + a.signal));
+            ctx.stroke();
+          }
+
+          // Birth halo ring
+          if (a.birth > 0) {
+            ctx.strokeStyle = c;
+            ctx.globalAlpha = a.birth / 120;
+            ctx.beginPath();
+            ctx.arc(0, 0, r + 3 + (95 - a.birth) * 0.12, 0, TAU);
+            ctx.stroke();
+          }
+
+          // Selection reticle
+          if (a === selected) {
+            ctx.globalAlpha = 1;
+            ctx.strokeStyle = '#fff1d6';
+            ctx.lineWidth = 1;
+            ctx.setLineDash([2, 3]);
+            ctx.beginPath();
+            ctx.arc(0, 0, r + 8, 0, TAU);
+            ctx.stroke();
+          }
+
+          ctx.restore();
+        }
+
+        // Particles
+        ctx.save();
+        ctx.globalCompositeOperation = 'screen';
+        for (const p of particles) {
+          ctx.globalAlpha = clamp(p.life / p.max, 0, 1);
+          ctx.fillStyle = p.color;
+          ctx.fillRect(p.x, p.y, 2, 2);
+        }
+        ctx.restore();
+
+        // Eclipse visual overlay
+        if (eclipse > 0) {
+          ctx.fillStyle = 'rgba(20, 5, 7, ' + ((eclipse / 210) * 0.42) + ')';
+          ctx.fillRect(0, 0, W, H);
+          ctx.strokeStyle = 'rgba(244, 102, 83, 0.4)';
+          ctx.lineWidth = 2;
+          ctx.strokeRect(2, 2, W - 4, H - 4);
+        }
+      }
+
+      function drawChart() {
+        const w = chart.width;
+        const h = chart.height;
+        ch.clearRect(0, 0, w, h);
+        ch.strokeStyle = '#253a3b';
+        ch.lineWidth = 1;
+
+        for (let y = 20; y < h; y += 20) {
+          ch.beginPath();
+          ch.moveTo(0, y + 0.5);
+          ch.lineTo(w, y + 0.5);
+          ch.stroke();
+        }
+
+        if (history.length < 2) return;
+
+        const series = [
+          ['p', '#8fe3cf', v => v.p / 220],
+          ['f', '#d9ad72', v => v.f / 1.7],
+          ['k', '#ed7869', (_, i) => Math.min(1, Math.max(0, (history[i].k - history[Math.max(0, i - 10)].k) / 30))]
+        ];
+
+        for (const [key, color, fn] of series) {
+          ch.beginPath();
+          ch.strokeStyle = color;
+          ch.lineWidth = 1.5;
+          history.forEach((v, i) => {
+            const x = (i / (history.length - 1)) * (w - 2) + 1;
+            const y = h - 3 - clamp(fn(v, i), 0, 1) * (h - 7);
+            if (i === 0) ch.moveTo(x, y);
+            else ch.lineTo(x, y);
+          });
+          ch.stroke();
+        }
+      }
+
+      /* ==========================================================================
+         9. HUD & USER INTERACTION
+         ========================================================================== */
+
+      function updateUI() {
+        let max = 0;
+        const div = new Set();
+        for (const a of agents) {
+          max = Math.max(max, a.gen);
+          div.add(a.root);
+        }
+
+        $('pop').textContent = agents.length;
+        $('gen').textContent = max;
+        $('kills').textContent = kills;
+        $('diversity').textContent = div.size;
+
+        $('worldLabel').textContent =
+          'CYCLE ' +
+          String(tick).padStart(5, '0') +
+          ' / ' +
+          (eclipse
+            ? 'THE ECLIPSE'
+            : agents.length > 200
+            ? 'THE SWARM'
+            : agents.length < 25
+            ? 'THE REMNANT'
+            : 'THE HUNGER');
+
+        if (selected && !agents.includes(selected)) {
+          selected = null;
+        }
+
+        if (selected) {
+          const a = selected;
+          const labels = ['bulk', 'speed', 'sight', 'armor', 'foraging', 'carnivory'];
+          $('inspect').innerHTML =
+            '<b>SPECIMEN ' +
+            a.id +
+            '</b>  ·  lineage ' +
+            a.root +
+            '  ·  generation ' +
+            a.gen +
+            '<br>' +
+            'Energy ' +
+            a.energy.toFixed(1) +
+            '  ·  age ' +
+            a.age +
+            '  ·  kills ' +
+            a.kills +
+            '<br>' +
+            labels.map((v, i) => v + ' ' + Math.round(a.tr[i] * 100) + '%').join('  ·  ') +
+            '<br>' +
+            'Recurrent state ' +
+            Array.from(a.h.slice(0, 5), v => v.toFixed(2)).join(' / ');
+        }
+
+        drawChart();
+      }
+
+      function interaction(e) {
+        const r = canvas.getBoundingClientRect();
+        const x = ((e.clientX - r.left) / r.width) * W;
+        const y = ((e.clientY - r.top) / r.height) * H;
+
+        if (tool === 'inspect') {
+          let closest = null;
+          let dist = 25;
+          for (const a of agents) {
+            const d = Math.hypot(a.x - x, a.y - y);
+            if (d < dist) {
+              closest = a;
+              dist = d;
+            }
+          }
+          selected = closest;
+          updateUI();
+          return;
+        }
+
+        if (tool === 'food') {
+          deposit(food, x, y, 0.28, 3);
+          spark(x, y, '#dfbd79', 2);
+        } else if (tool === 'toxin') {
+          deposit(taint, x, y, 0.38, 3);
+          deposit(food, x, y, -0.14, 2);
+          spark(x, y, '#e0777a', 2);
+        } else if (tool === 'spawn' && agents.length < CAP) {
+          for (let i = 0; i < 2; i++) {
+            agent(x + rand(-11, 11), y + rand(-11, 11));
+          }
+          spark(x, y, '#9ce7d5', 5);
+        } else if (tool === 'erase') {
+          for (const a of agents) {
+            if (Math.hypot(a.x - x, a.y - y) < 23) {
+              a.energy = 0;
+              a.dead = true;
+              die(a);
+            }
+          }
+          agents = agents.filter(a => !a.dead);
+        }
+
+        updateUI();
+      }
+
+      // Pointer drag listeners on the canvas field
+      canvas.addEventListener('pointerdown', e => {
+        drag = true;
+        canvas.setPointerCapture(e.pointerId);
+        interaction(e);
+      });
+
+      canvas.addEventListener('pointermove', e => {
+        if (drag && tool !== 'inspect' && frame % 3 === 0) {
+          interaction(e);
+        }
+      });
+
+      canvas.addEventListener('pointerup', () => {
+        drag = false;
+      });
+
+      canvas.addEventListener('pointercancel', () => {
+        drag = false;
+      });
+
+      // Tool selection buttons
+      const toolHints = {
+        food: 'grow food',
+        toxin: 'spread blight',
+        spawn: 'seed life',
+        erase: 'extinguish creatures'
+      };
+
+      document.querySelectorAll('[data-tool]').forEach(b => {
+        b.addEventListener('click', () => {
+          document.querySelectorAll('[data-tool]').forEach(x => x.classList.remove('active'));
+          b.classList.add('active');
+          tool = b.dataset.tool;
+          $('hint').textContent =
+            tool === 'inspect'
+              ? 'Click a creature to inspect its lineage. Choose a tool, then paint on the world.'
+              : 'Drag on the world to ' + toolHints[tool] + '.';
+        });
+      });
+
+      /* ==========================================================================
+         10. STATE PERSISTENCE (EXPORT / IMPORT JSON)
+         ========================================================================== */
+
+      function exportWorld() {
+        const data = {
+          version: 1,
+          width: W,
+          height: H,
+          tick,
+          kills,
+          births,
+          nextId,
+          roots,
+          eclipse,
+          cols,
+          rows,
+          food: Array.from(food),
+          taint: Array.from(taint),
+          scent: Array.from(scent),
+          history,
+          agents: agents.map(a => ({
+            ...a,
+            w: Array.from(a.w),
+            h: Array.from(a.h)
+          }))
+        };
+
+        const blob = new Blob([JSON.stringify(data)], { type: 'application/json' });
+        const url = URL.createObjectURL(blob);
+        const link = document.createElement('a');
+        link.href = url;
+        link.download = 'clankolution-cycle-' + tick + '.json';
+        document.body.appendChild(link);
+        link.click();
+        link.remove();
+        setTimeout(() => URL.revokeObjectURL(url), 2000);
+
+        $('saveHint').textContent = 'Cycle ' + tick + ' exported. Keep the JSON file to restore this world.';
+      }
+
+      function importWorld(data) {
+        if (
+          data?.version !== 1 ||
+          !Array.isArray(data.agents) ||
+          data.agents.length > CAP ||
+          !Array.isArray(data.food) ||
+          !Number.isInteger(data.cols) ||
+          !Number.isInteger(data.rows) ||
+          data.cols < 1 ||
+          data.rows < 1 ||
+          data.cols * data.rows !== data.food.length ||
+          data.food.length > 100000 ||
+          !Number.isFinite(data.width) ||
+          !Number.isFinite(data.height) ||
+          data.width < 1 ||
+          data.height < 1
+        ) {
+          throw Error('Invalid world file');
+        }
+
+        const restored = data.agents.map(a => {
+          if (
+            !Array.isArray(a.w) ||
+            a.w.length !== GENES ||
+            !Array.isArray(a.h) ||
+            a.h.length !== Q ||
+            !Array.isArray(a.tr) ||
+            a.tr.length !== 6 ||
+            ![a.x, a.y, a.energy, a.age, a.gen, a.id, a.root, a.kills, a.angle, a.vx, a.vy, ...a.tr, ...a.h, ...a.w].every(
+              Number.isFinite
+            )
+          ) {
+            throw Error('Invalid creature data');
+          }
+          return {
+            ...a,
+            w: Int8Array.from(a.w),
+            h: Float32Array.from(a.h),
+            tr: a.tr.map(v => clamp(+v, 0, 1)),
+            x: wrap((a.x / data.width) * W, W),
+            y: wrap((a.y / data.height) * H, H),
+            trail: [],
+            dead: false
+          };
+        });
+
+        const oldCols = data.cols;
+        const oldRows = data.rows;
+        const oldFood = data.food;
+        const oldTaint = Array.isArray(data.taint) ? data.taint : [];
+        const oldScent = Array.isArray(data.scent) ? data.scent : [];
+
+        agents = restored;
+        selected = null;
+        particles = [];
+        tick = clamp(+data.tick || 0, 0, 1e10);
+        kills = clamp(+data.kills || 0, 0, 1e10);
+        births = clamp(+data.births || 0, 0, 1e10);
+        nextId = Math.max(+data.nextId || 1, ...agents.map(a => a.id + 1));
+        roots = Math.max(+data.roots || 1, ...agents.map(a => a.root + 1));
+        eclipse = clamp(+data.eclipse || 0, 0, 210);
+        history = Array.isArray(data.history) ? data.history.slice(-180) : [];
+
+        setupGrid(true);
+
+        for (let y = 0; y < rows; y++) {
+          for (let x = 0; x < cols; x++) {
+            const k = y * cols + x;
+            const j =
+              Math.min(oldRows - 1, Math.floor((y / rows) * oldRows)) * oldCols +
+              Math.min(oldCols - 1, Math.floor((x / cols) * oldCols));
+            food[k] = clamp(+oldFood[j] || 0, 0, 2.5);
+            taint[k] = clamp(+oldTaint[j] || 0, 0, 3);
+            scent[k] = clamp(+oldScent[j] || 0, 0, 3);
+          }
+        }
+
+        updateUI();
+        event('A world returns from its record.');
+        $('saveHint').textContent = 'Cycle ' + tick + ' restored. The simulation continues here.';
+      }
+
+      // Persistence and Header Control Listeners
+      $('saveWorld').onclick = exportWorld;
+      $('loadWorld').onclick = () => $('importFile').click();
+      $('saveNote').onclick = () => {
+        $('saveHint').textContent =
+          'Exports creatures, their neural weights and recurrent states, soil, toxins, ancestry, and the chronicle.';
+      };
+
+      $('importFile').addEventListener('change', async e => {
+        const file = e.target.files?.[0];
+        e.target.value = '';
+        if (!file) return;
+        try {
+          if (file.size > 6000000) throw Error('File exceeds 6 MB');
+          importWorld(JSON.parse(await file.text()));
+        } catch (err) {
+          $('saveHint').textContent = 'Could not load this world: ' + err.message;
+        }
+      });
+
+      $('pause').onclick = () => {
+        paused = !paused;
+        $('pause').textContent = paused ? 'RESUME' : 'PAUSE';
+      };
+
+      $('speed').onclick = () => {
+        speed = speed === 1 ? 2 : speed === 2 ? 4 : 1;
+        $('speed').textContent = speed + '× SPEED';
+      };
+
+      $('reset').onclick = () => {
+        reset();
+        updateUI();
+      };
+
+      $('catastrophe').onclick = () => {
+        eclipse = 210;
+        event('An eclipse consumes the harvest.');
+        spark(rand(W), rand(H), '#ff6659', 30);
+      };
+
+      // Pressure Sliders
+      const sliders = [
+        ['mutation', 'mutationValue', v => (v / 100).toFixed(2)],
+        ['growth', 'growthValue', v => (v / 100).toFixed(2) + '×'],
+        ['hostility', 'hostilityValue', v => (v / 100).toFixed(2) + '×']
+      ];
+
+      for (const [id, out, fn] of sliders) {
+        $(id).addEventListener('input', () => {
+          $(out).textContent = fn(+$(id).value);
+        });
+      }
+
+      /* ==========================================================================
+         11. MODEL CONTEXT PROTOCOL (MCP) AGENT TOOLS
+         ========================================================================== */
+
+      if (document.modelContext?.registerTool) {
+        const register = tool => {
+          try {
+            Promise.resolve(document.modelContext.registerTool(tool)).catch(() => {});
+          } catch (_) {}
+        };
+
+        register({
+          name: 'read_ecology',
+          title: 'Read ecology',
+          description: 'Read the current population, oldest living generation, predations, and active pressures.',
+          inputSchema: {
+            type: 'object',
+            properties: {},
+            additionalProperties: false
+          },
+          annotations: { readOnlyHint: true },
+          execute() {
+            return {
+              cycle: tick,
+              population: agents.length,
+              oldestGeneration: Math.max(0, ...agents.map(a => a.gen)),
+              predations: kills,
+              mutation: mutRate(),
+              foodRenewal: +$('growth').value / 100,
+              contactHostility: +$('hostility').value / 100
+            };
+          }
+        });
+
+        register({
+          name: 'configure_ecology',
+          title: 'Configure ecology',
+          description:
+            'Set the three visible selective-pressure sliders. Values are multipliers except mutation, which is a fraction.',
+          inputSchema: {
+            type: 'object',
+            properties: {
+              mutation: { type: 'number', minimum: 0, maximum: 0.5 },
+              foodRenewal: { type: 'number', minimum: 0, maximum: 2 },
+              contactHostility: { type: 'number', minimum: 0, maximum: 2 }
+            },
+            additionalProperties: false
+          },
+          annotations: { readOnlyHint: false },
+          execute(input) {
+            if (
+              !input ||
+              typeof input !== 'object' ||
+              Array.isArray(input) ||
+              Object.keys(input).some(k => !['mutation', 'foodRenewal', 'contactHostility'].includes(k))
+            ) {
+              throw Error('Invalid pressure settings');
+            }
+
+            const limits = [
+              ['mutation', 'mutation', 0.5],
+              ['foodRenewal', 'growth', 2],
+              ['contactHostility', 'hostility', 2]
+            ];
+
+            for (const [key, id, max] of limits) {
+              if (input[key] !== undefined) {
+                if (
+                  typeof input[key] !== 'number' ||
+                  !Number.isFinite(input[key]) ||
+                  input[key] < 0 ||
+                  input[key] > max
+                ) {
+                  throw Error('Invalid ' + key);
+                }
+              }
+            }
+
+            for (const [key, id] of [
+              ['mutation', 'mutation'],
+              ['foodRenewal', 'growth'],
+              ['contactHostility', 'hostility']
+            ]) {
+              if (input[key] !== undefined) {
+                $(id).value = Math.round(input[key] * 100);
+                $(id).dispatchEvent(new Event('input'));
+              }
+            }
+
+            return {
+              mutation: mutRate(),
+              foodRenewal: +$('growth').value / 100,
+              contactHostility: +$('hostility').value / 100
+            };
+          }
+        });
+      }
+
+      /* ==========================================================================
+         12. SIMULATION LOOP & BOOTSTRAP
+         ========================================================================== */
+
+      let last = 0;
+      let acc = 0;
+
+      function loop(now) {
+        requestAnimationFrame(loop);
+        const dt = Math.min(80, now - last || 16);
+        last = now;
+        frame++;
+
+        if (!paused) {
+          acc += dt * speed;
+          let n = 0;
+          while (acc >= 40 && n < 9) {
+            evolve();
+            acc -= 40;
+            n++;
+          }
+        }
+
+        render();
+
+        if (frame % 15 === 0) {
+          updateUI();
+        }
+      }
+
+      window.addEventListener('resize', resize);
+      resize();
+      reset();
+      updateUI();
+      requestAnimationFrame(loop);
+    })();
+  </script>
+</body>
+</html>
