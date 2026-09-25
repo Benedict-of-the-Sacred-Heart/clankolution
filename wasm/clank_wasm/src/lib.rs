@@ -121,9 +121,21 @@ pub extern "C" fn get_agents_mut_ptr() -> *mut AgentData {
 }
 
 #[no_mangle]
+pub extern "C" fn set_max_capacity(cap: u32) {
+    let w = get_world();
+    w.set_max_capacity(cap);
+}
+
+#[no_mangle]
+pub extern "C" fn get_max_capacity() -> u32 {
+    let w = get_world();
+    w.max_cap as u32
+}
+
+#[no_mangle]
 pub extern "C" fn set_agents_count(count: u32) {
     let w = get_world();
-    let count = (count as usize).min(agent::MAX_CAP);
+    let count = (count as usize).min(w.max_cap);
     w.agents.resize(count, AgentData::default());
 }
 

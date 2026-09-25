@@ -1,5 +1,5 @@
 use crate::math::{self, Prng};
-use crate::agent::{AgentData, MAX_CAP, GENES};
+use crate::agent::{AgentData, GENES};
 use crate::soil::SoilGrid;
 
 pub const TAU: f64 = std::f64::consts::TAU;
@@ -27,6 +27,7 @@ pub struct World {
     pub mutation: f64,
     pub growth: f64,
     pub hostility: f64,
+    pub max_cap: usize,
     pub w: f64,
     pub h: f64,
 }
@@ -36,7 +37,7 @@ impl World {
         let mut w = Self {
             prng: Prng::new(seed),
             soil: SoilGrid::new(),
-            agents: Vec::with_capacity(MAX_CAP),
+            agents: Vec::with_capacity(340),
             tick: 0,
             kills: 0,
             births: 0,
@@ -46,6 +47,7 @@ impl World {
             mutation: 16.0,
             growth: 100.0,
             hostility: 100.0,
+            max_cap: 340,
             w: 900.0,
             h: 600.0,
         };
@@ -55,6 +57,11 @@ impl World {
         }
         w.reset();
         w
+    }
+
+    pub fn set_max_capacity(&mut self, cap: u32) {
+        self.max_cap = (cap as usize).clamp(15, 10_000);
+        self.agents.reserve(self.max_cap);
     }
 
     pub fn resize(&mut self, w: f64, h: f64, cols: usize, rows: usize) {
@@ -546,7 +553,7 @@ impl World {
                 && self.agents[i].age > 65
                 && self.agents[i].birth == 0
                 && o5 > -0.15
-                && self.agents.len() < MAX_CAP
+                && self.agents.len() < self.max_cap
             {
                 let mut mate_idx = None;
                 if let Some(b_idx) = near_res.best_idx {

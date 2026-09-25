@@ -1,6 +1,8 @@
 use rkyv::{Archive, Deserialize, Serialize};
 
-pub const MAX_CAP: usize = 340;
+pub const ABSOLUTE_MAX_CAP: usize = 10_000;
+pub const MAX_CAP: usize = 10_000;
+pub const DEFAULT_CAP: usize = 340;
 pub const GENES: usize = 326;
 
 #[repr(C)]
