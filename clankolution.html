@@ -576,6 +576,7 @@
       let roots = 1;
       let eclipse = 0;
       let history = [];
+      let historyVersion = 0;
       let logCount = 0;
       let drag = false;
 
@@ -900,6 +901,7 @@
         roots = 1;
         eclipse = 0;
         history = [];
+        historyVersion++;
 
         setupGrid(true);
 
@@ -925,6 +927,7 @@
         let bestDx = 0;
         let bestDy = 0;
         let bd = 1e9;
+        let cutoff = 1e9;
         let density = 0;
 
         const ax = a.x;
@@ -943,7 +946,6 @@
           else if (dx < -halfW) dx += W;
 
           const dx2 = dx * dx;
-          const cutoff = bd > 10000 ? bd : 10000;
           if (dx2 >= cutoff) continue;
 
           let dy = b.y - ay;
@@ -956,6 +958,7 @@
           if (d < 10000) density++;
           if (d < bd) {
             bd = d;
+            cutoff = bd > 10000 ? bd : 10000;
             bestAgent = b;
             bestDx = dx;
             bestDy = dy;
@@ -1150,11 +1153,11 @@
           const o = brain(a, sensoryInputs);
 
           // Actuator 0: Steering
-          a.angle += o[0] * (0.11 + 0.09 * a.tr[1]);
+          a.angle += o[0] * (0.11 + 0.09 * tr1);
 
           // Actuator 1: Thrust & Physics
           const thrust = (o[1] + 1) * 0.5;
-          const mot = 0.45 + 1.1 * a.tr[1];
+          const mot = 0.45 + 1.1 * tr1;
           a.vx = (a.vx + fwdX * thrust * mot * 0.22) * 0.89;
           a.vy = (a.vy + fwdY * thrust * mot * 0.22) * 0.89;
           a.x = wrap(a.x + a.vx, W);
@@ -1181,27 +1184,27 @@
 
           // Grazing / Foraging intake
           const fi = idx(a.x, a.y);
-          const eaten = Math.min(food[fi], (0.016 + 0.064 * a.feeding) * (0.7 + a.tr[4]));
+          const eaten = Math.min(food[fi], (0.016 + 0.064 * a.feeding) * (0.7 + tr4));
           food[fi] -= eaten;
-          a.energy += eaten * (9 + 9 * a.tr[4]);
+          a.energy += eaten * (9 + 9 * tr4);
 
           // Base metabolism and active exertion costs
           a.energy -= 0.10 +
-            0.12 * a.tr[0] +
-            0.07 * a.tr[1] +
-            0.035 * a.tr[2] +
-            0.055 * a.tr[3] +
+            0.12 * tr0 +
+            0.07 * tr1 +
+            0.035 * tr2 +
+            0.055 * tr3 +
             0.035 * a.attack +
             0.014 * a.signal +
             thrust * 0.06 +
-            taint[fi] * (0.10 + 0.18 * (1 - a.tr[3]));
+            taint[fi] * (0.10 + 0.18 * (1 - tr3));
 
           // Predation / Combat
-          if (best && d < 14 + 10 * a.tr[0] && a.attack > 0.25 && a.cooldown === 0 && best.b.energy > 0) {
+          if (best && d < 14 + 10 * tr0 && a.attack > 0.25 && a.cooldown === 0 && best.b.energy > 0) {
             const b = best.b;
-            const damage = (0.5 + a.attack * 2.2) * hostility * (0.8 + a.tr[0]) * (1 - 0.65 * b.tr[3]);
+            const damage = (0.5 + a.attack * 2.2) * hostility * (0.8 + tr0) * (1 - 0.65 * b.tr[3]);
             b.energy -= damage;
-            a.energy += damage * (0.1 + 0.55 * a.tr[5]);
+            a.energy += damage * (0.1 + 0.55 * tr5);
             a.cooldown = 3;
             a.lastVictim = b.id;
 
@@ -1212,7 +1215,7 @@
             if (b.energy <= 0) {
               kills++;
               a.kills++;
-              a.energy += Math.min(9, 8 * a.tr[5]);
+              a.energy += Math.min(9, 8 * tr5);
               if (a.kills % 8 === 0) {
                 event('Lineage ' + a.root + ' has taken ' + a.kills + ' lives.');
               }
@@ -1220,7 +1223,7 @@
           }
 
           // Reproduction (sexual crossover if viable partner nearby, otherwise asexual)
-          if (a.energy > 58 + 12 * a.tr[0] && a.age > 65 && a.birth === 0 && o[5] > -0.15 && agents.length < CAP) {
+          if (a.energy > 58 + 12 * tr0 && a.age > 65 && a.birth === 0 && o[5] > -0.15 && agents.length < CAP) {
             const mate = (best && d < 18 && best.b.energy > 42 && best.b.root !== a.root && Math.random() < 0.15)
               ? best.b
               : null;
@@ -1263,6 +1266,7 @@
           if (history.length > 180) {
             history.shift();
           }
+          historyVersion++;
         }
 
         if (tick % 240 === 0) {
@@ -1440,7 +1444,18 @@
         ['k', '#ed7869', (_, i) => Math.min(1, Math.max(0, (history[i].k - history[Math.max(0, i - 10)].k) / 30))]
       ];
 
+      let drawnHistoryVersion = -1;
       function drawChart() {
+        if (history.length < 2) {
+          if (drawnHistoryVersion !== -1) {
+            ch.clearRect(0, 0, chart.width, chart.height);
+            drawnHistoryVersion = -1;
+          }
+          return;
+        }
+        if (drawnHistoryVersion === historyVersion) return;
+        drawnHistoryVersion = historyVersion;
+
         const w = chart.width;
         const h = chart.height;
         ch.clearRect(0, 0, w, h);
@@ -1453,8 +1468,6 @@
           ch.lineTo(w, y + 0.5);
           ch.stroke();
         }
-
-        if (history.length < 2) return;
 
         for (const [key, color, fn] of chartSeries) {
           ch.beginPath();
@@ -1731,6 +1744,7 @@
         roots = Math.max(+data.roots || 1, ...agents.map(a => a.root + 1));
         eclipse = clamp(+data.eclipse || 0, 0, 210);
         history = Array.isArray(data.history) ? data.history.slice(-180) : [];
+        historyVersion++;
 
         setupGrid(true);
 
