@@ -14,10 +14,20 @@ pub struct NearResult {
     pub density: f64,
 }
 
+#[repr(C)]
+#[derive(Clone, Copy, Debug)]
+pub struct SimEvent {
+    pub tick: u32,
+    pub event_type: u32, // 1 = SPORES, 2 = GENERATION, 3 = KILLS
+    pub p1: u32,         // gen (type 2) or root (type 3)
+    pub p2: u32,         // root (type 2) or kills (type 3)
+}
+
 pub struct World {
     pub prng: Prng,
     pub soil: SoilGrid,
     pub agents: Vec<AgentData>,
+    pub events: Vec<SimEvent>,
     pub tick: u32,
     pub kills: u32,
     pub births: u32,
@@ -47,6 +57,7 @@ impl World {
             prng: Prng::new(seed),
             soil: SoilGrid::new(),
             agents: Vec::with_capacity(340),
+            events: Vec::with_capacity(128),
             tick: 0,
             kills: 0,
             births: 0,
@@ -193,6 +204,7 @@ impl World {
 
     pub fn reset(&mut self) {
         self.agents.clear();
+        self.events.clear();
         self.tick = 0;
         self.kills = 0;
         self.births = 0;
@@ -702,6 +714,14 @@ impl World {
                         self.agents[i].kills += 1;
                         let kill_energy = 8.0 * tr5;
                         self.agents[i].energy += if kill_energy < 9.0 { kill_energy } else { 9.0 };
+                        if self.agents[i].kills % 8 == 0 && self.events.len() < 1024 {
+                            self.events.push(SimEvent {
+                                tick: self.tick,
+                                event_type: 3,
+                                p1: self.agents[i].root,
+                                p2: self.agents[i].kills,
+                            });
+                        }
                     }
                 }
             }
@@ -741,7 +761,14 @@ impl World {
                 self.spark_prng(9);
 
                 if self.agents[c_idx].gen > 0 && self.agents[c_idx].gen % 12 == 0 && self.prng.next_f64() < 0.08 {
-                    // lineage notification event
+                    if self.events.len() < 1024 {
+                        self.events.push(SimEvent {
+                            tick: self.tick,
+                            event_type: 2,
+                            p1: self.agents[c_idx].gen,
+                            p2: self.agents[c_idx].root,
+                        });
+                    }
                 }
             }
 
@@ -776,6 +803,14 @@ impl World {
                 let x = self.prng.rand(0.0, self.w);
                 let y = self.prng.rand(0.0, self.h);
                 self.create_agent(x, y, None, None);
+            }
+            if self.events.len() < 1024 {
+                self.events.push(SimEvent {
+                    tick: self.tick,
+                    event_type: 1,
+                    p1: 0,
+                    p2: 0,
+                });
             }
         }
     }

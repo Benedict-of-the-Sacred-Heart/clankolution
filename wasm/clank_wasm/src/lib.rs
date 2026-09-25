@@ -226,3 +226,22 @@ pub extern "C" fn get_grid_size() -> u32 {
     let w = get_world();
     w.soil.grid_size as u32
 }
+
+#[no_mangle]
+pub extern "C" fn get_events_count() -> u32 {
+    let w = get_world();
+    w.events.len() as u32
+}
+
+#[no_mangle]
+pub extern "C" fn get_events_ptr() -> *const world::SimEvent {
+    let w = get_world();
+    w.events.as_ptr()
+}
+
+#[no_mangle]
+pub extern "C" fn clear_events() {
+    let w = get_world();
+    w.events.clear();
+}
+
