@@ -509,8 +509,10 @@
       // Total genome size:
       // Hidden layer: Q * (N inputs + Q recurrent + 1 bias) = 10 * (15 + 10 + 1) = 260
       // Output layer: O * (Q hidden + 1 bias)               =  6 * (10 + 1)       =  66
-      // Total genes: 326 quantized Int8 weights
       const GENES = Q * (N + Q + 1) + O * (Q + 1);
+
+      // Shared static scratchpad buffer for actuator outputs (zero-allocation neural inference)
+      const brainOut = new Float32Array(O);
 
       // Maximum creature capacity in the arena
       const CAP = 340;
@@ -722,8 +724,8 @@
       // Outputs (out): 6 actuator values in [-1, 1]
       function brain(a, ins) {
         let p = 0;
-        const newH = new Float32Array(Q);
-        const out = new Float32Array(O);
+        const newH = a.hNext;
+        const hPrev = a.h;
 
         // Compute recurrent hidden layer: s = W_in * ins + W_rec * h_prev + b
         for (let j = 0; j < Q; j++) {
@@ -732,7 +734,7 @@
             s += a.w[p++] * ins[i];
           }
           for (let k = 0; k < Q; k++) {
-            s += a.w[p++] * a.h[k];
+            s += a.w[p++] * hPrev[k];
           }
           s += a.w[p++]; // bias
           newH[j] = Math.tanh(s * (0.61 / 127));
@@ -745,11 +747,12 @@
             s += a.w[p++] * newH[k];
           }
           s += a.w[p++]; // bias
-          out[j] = Math.tanh(s * (0.66 / 127));
+          brainOut[j] = Math.tanh(s * (0.66 / 127));
         }
 
         a.h = newH;
-        return out;
+        a.hNext = hPrev;
+        return brainOut;
       }
 
       /* ==========================================================================
@@ -771,6 +774,7 @@
           w: genome(parent, other),
           tr: traits(parent, other),
           h: new Float32Array(Q),
+          hNext: new Float32Array(Q),
           signal: 0,
           attack: 0,
           feeding: 0,
@@ -821,7 +825,9 @@
       }
 
       function near(a) {
-        let best = null;
+        let bestAgent = null;
+        let bestDx = 0;
+        let bestDy = 0;
         let bd = 1e9;
         let density = 0;
 
@@ -840,10 +846,15 @@
           if (d < 10000) density++;
           if (d < bd) {
             bd = d;
-            best = { b, dx, dy, d: Math.sqrt(d) };
+            bestAgent = b;
+            bestDx = dx;
+            bestDy = dy;
           }
         }
-        return { best, density };
+        return {
+          best: bestAgent ? { b: bestAgent, dx: bestDx, dy: bestDy, d: Math.sqrt(bd) } : null,
+          density
+        };
       }
 
       function spark(x, y, color, n = 5) {
@@ -1066,8 +1077,14 @@
           }
         }
 
-        // Filter dead agents
-        agents = agents.filter(a => !a.dead);
+        // Filter dead agents in-place
+        let aliveCount = 0;
+        for (let i = 0; i < agents.length; i++) {
+          if (!agents[i].dead) {
+            agents[aliveCount++] = agents[i];
+          }
+        }
+        agents.length = aliveCount;
 
         // Spore replenishment if population collapses
         if (agents.length < 15 && tick % 45 === 0) {
@@ -1094,15 +1111,20 @@
           updateUI();
         }
 
-        // Particle physics
-        for (const p of particles) {
+        // Particle physics and in-place compaction
+        let particleCount = 0;
+        for (let i = 0; i < particles.length; i++) {
+          const p = particles[i];
           p.x += p.vx;
           p.y += p.vy;
           p.vx *= 0.97;
           p.vy *= 0.97;
           p.life--;
+          if (p.life > 0) {
+            particles[particleCount++] = p;
+          }
         }
-        particles = particles.filter(p => p.life > 0);
+        particles.length = particleCount;
       }
 
       /* ==========================================================================
@@ -1368,7 +1390,13 @@
               die(a);
             }
           }
-          agents = agents.filter(a => !a.dead);
+          let eraseCount = 0;
+          for (let i = 0; i < agents.length; i++) {
+            if (!agents[i].dead) {
+              agents[eraseCount++] = agents[i];
+            }
+          }
+          agents.length = eraseCount;
         }
 
         updateUI();
@@ -1436,11 +1464,14 @@
           taint: Array.from(taint),
           scent: Array.from(scent),
           history,
-          agents: agents.map(a => ({
-            ...a,
-            w: Array.from(a.w),
-            h: Array.from(a.h)
-          }))
+          agents: agents.map(a => {
+            const { hNext, ...rest } = a;
+            return {
+              ...rest,
+              w: Array.from(a.w),
+              h: Array.from(a.h)
+            };
+          })
         };
 
         const blob = new Blob([JSON.stringify(data)], { type: 'application/json' });
@@ -1494,6 +1525,7 @@
             ...a,
             w: Int8Array.from(a.w),
             h: Float32Array.from(a.h),
+            hNext: new Float32Array(Q),
             tr: a.tr.map(v => clamp(+v, 0, 1)),
             x: wrap((a.x / data.width) * W, W),
             y: wrap((a.y / data.height) * H, H),
