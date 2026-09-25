@@ -88,6 +88,19 @@ impl SoilGrid {
     }
 
     #[inline(always)]
+    pub fn idx_fast(&self, x: f64, y: f64) -> usize {
+        let mut cx = (x * self.inv_cell_w) as usize;
+        if cx >= self.cols {
+            cx = self.cols - 1;
+        }
+        let mut cy = (y * self.inv_cell_h) as usize;
+        if cy >= self.rows {
+            cy = self.rows - 1;
+        }
+        cy * self.cols + cx
+    }
+
+    #[inline(always)]
     pub fn sample(arr: &[f32], idx: usize) -> f64 {
         arr[idx] as f64
     }

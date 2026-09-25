@@ -105,9 +105,11 @@ impl World {
         let ny_i = ny as i32;
         for cy in 0..ny_i {
             for cx in 0..nx_i {
+                self.neighbor_cells.push((cy as usize) * nx + (cx as usize));
                 for dy in -1..=1 {
-                    let ncy = (cy + dy).rem_euclid(ny_i) as usize;
                     for dx in -1..=1 {
+                        if dx == 0 && dy == 0 { continue; }
+                        let ncy = (cy + dy).rem_euclid(ny_i) as usize;
                         let ncx = (cx + dx).rem_euclid(nx_i) as usize;
                         self.neighbor_cells.push(ncy * nx + ncx);
                     }
@@ -554,7 +556,7 @@ impl World {
 
             let ax = self.agents[i].x;
             let ay = self.agents[i].y;
-            let idx_here = self.soil.idx(ax, ay);
+            let idx_here = self.soil.idx_fast(ax, ay);
             let here = self.soil.food[idx_here] as f64;
 
             let fwd_reach_x = ax + fwd_reach_x_term;
@@ -659,7 +661,7 @@ impl World {
                 self.soil.deposit(2, self.agents[i].x, self.agents[i].y, s_val, 1);
             }
 
-            let fi = self.soil.idx(self.agents[i].x, self.agents[i].y);
+            let fi = self.soil.idx_fast(self.agents[i].x, self.agents[i].y);
             let intake_cap = (0.016 + 0.064 * self.agents[i].feeding) * (0.7 + tr4);
             let cur_food = self.soil.food[fi] as f64;
             let eaten = if cur_food < intake_cap { cur_food } else { intake_cap };
