@@ -96,24 +96,34 @@ impl SoilGrid {
     pub fn step_soil(&mut self, prng: &mut Prng, growth: f64) {
         let renewal = growth;
         let spawn_threshold = 0.00013 * renewal;
+        let food_slice = self.food.as_mut_slice();
+        let taint_slice = self.taint.as_mut_slice();
+        let scent_slice = self.scent.as_mut_slice();
+        let bloom_slice = self.bloom.as_slice();
+
         for k in 0..self.grid_size {
-            let mut f = self.food[k] as f64;
-            let t = self.taint[k];
-            let s = self.scent[k];
+            let f_ptr = unsafe { food_slice.get_unchecked_mut(k) };
+            let t_ptr = unsafe { taint_slice.get_unchecked_mut(k) };
+            let s_ptr = unsafe { scent_slice.get_unchecked_mut(k) };
+            let b_val = unsafe { *bloom_slice.get_unchecked(k) };
+
+            let mut f = (*f_ptr) as f64;
+            let t = *t_ptr;
+            let s = *s_ptr;
 
             // Spatial bloom lookup
-            f += renewal * self.bloom[k] * (1.0 - f / 1.7);
+            f += renewal * b_val * (1.0 - f / 1.7);
             if prng.next_f64() < spawn_threshold {
                 f += prng.rand(0.15, 0.6);
             }
-            self.food[k] = if f < 0.0 { 0.0 } else if f > 2.5 { 2.5 } else { f as f32 };
+            *f_ptr = if f < 0.0 { 0.0 } else if f > 2.5 { 2.5 } else { f as f32 };
 
             if t > 0.0 {
                 let dec = (t as f64) * 0.994 - 0.0001;
-                self.taint[k] = if dec > 0.0 { dec as f32 } else { 0.0 };
+                *t_ptr = if dec > 0.0 { dec as f32 } else { 0.0 };
             }
             if s > 0.0 {
-                self.scent[k] = ((s as f64) * 0.954) as f32;
+                *s_ptr = ((s as f64) * 0.954) as f32;
             }
         }
     }

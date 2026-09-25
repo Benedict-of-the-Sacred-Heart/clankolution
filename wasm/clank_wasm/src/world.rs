@@ -30,6 +30,15 @@ pub struct World {
     pub max_cap: usize,
     pub w: f64,
     pub h: f64,
+    pub grid_nx: usize,
+    pub grid_ny: usize,
+    pub cell_w: f64,
+    pub cell_h: f64,
+    pub grid_head: Vec<i32>,
+    pub grid_prev: Vec<i32>,
+    pub grid_next: Vec<i32>,
+    pub agent_cell: Vec<usize>,
+    pub neighbor_cells: Vec<usize>,
 }
 
 impl World {
@@ -50,7 +59,17 @@ impl World {
             max_cap: 340,
             w: 900.0,
             h: 600.0,
+            grid_nx: 9,
+            grid_ny: 6,
+            cell_w: 100.0,
+            cell_h: 100.0,
+            grid_head: Vec::new(),
+            grid_prev: Vec::new(),
+            grid_next: Vec::new(),
+            agent_cell: Vec::new(),
+            neighbor_cells: Vec::new(),
         };
+        w.rebuild_grid_layout(900.0, 600.0);
         // Initial startup draws numbers during initial resize() -> setupGrid(false)
         for _ in 0..w.soil.grid_size {
             w.prng.rand(0.15, 0.5);
@@ -62,12 +81,112 @@ impl World {
     pub fn set_max_capacity(&mut self, cap: u32) {
         self.max_cap = (cap as usize).clamp(15, 10_000);
         self.agents.reserve(self.max_cap);
+        self.ensure_grid_capacity(self.max_cap);
     }
 
     pub fn resize(&mut self, w: f64, h: f64, cols: usize, rows: usize) {
         self.w = w;
         self.h = h;
         self.soil.resize(w, h, cols, rows);
+        self.rebuild_grid_layout(w, h);
+    }
+
+    pub fn rebuild_grid_layout(&mut self, w: f64, h: f64) {
+        let nx = ((w / 100.0).floor() as usize).clamp(3, 100);
+        let ny = ((h / 100.0).floor() as usize).clamp(3, 100);
+        self.grid_nx = nx;
+        self.grid_ny = ny;
+        self.cell_w = w / (nx as f64);
+        self.cell_h = h / (ny as f64);
+        let num_cells = nx * ny;
+        self.grid_head = vec![-1; num_cells];
+        self.neighbor_cells = Vec::with_capacity(num_cells * 9);
+        let nx_i = nx as i32;
+        let ny_i = ny as i32;
+        for cy in 0..ny_i {
+            for cx in 0..nx_i {
+                for dy in -1..=1 {
+                    let ncy = (cy + dy).rem_euclid(ny_i) as usize;
+                    for dx in -1..=1 {
+                        let ncx = (cx + dx).rem_euclid(nx_i) as usize;
+                        self.neighbor_cells.push(ncy * nx + ncx);
+                    }
+                }
+            }
+        }
+    }
+
+    pub fn ensure_grid_capacity(&mut self, cap: usize) {
+        if self.grid_prev.len() < cap {
+            self.grid_prev.resize(cap, -1);
+            self.grid_next.resize(cap, -1);
+            self.agent_cell.resize(cap, 0);
+        }
+    }
+
+    #[inline(always)]
+    pub fn get_agent_cell(&self, x: f64, y: f64) -> usize {
+        let mut cx = (math::wrap(x, self.w) / self.cell_w) as usize;
+        if cx >= self.grid_nx { cx = self.grid_nx - 1; }
+        let mut cy = (math::wrap(y, self.h) / self.cell_h) as usize;
+        if cy >= self.grid_ny { cy = self.grid_ny - 1; }
+        cy * self.grid_nx + cx
+    }
+
+    pub fn build_grid(&mut self) {
+        self.grid_head.fill(-1);
+        let count = self.agents.len();
+        self.ensure_grid_capacity(count);
+        for i in 0..count {
+            let c = self.get_agent_cell(self.agents[i].x, self.agents[i].y);
+            self.agent_cell[i] = c;
+            let old_head = self.grid_head[c];
+            self.grid_next[i] = old_head;
+            self.grid_prev[i] = -1;
+            if old_head != -1 {
+                self.grid_prev[old_head as usize] = i as i32;
+            }
+            self.grid_head[c] = i as i32;
+        }
+    }
+
+    #[inline(always)]
+    pub fn update_agent_cell(&mut self, i: usize, new_x: f64, new_y: f64) {
+        let new_c = self.get_agent_cell(new_x, new_y);
+        let cur_c = self.agent_cell[i];
+        if new_c == cur_c { return; }
+        let p = self.grid_prev[i];
+        let n = self.grid_next[i];
+        if p != -1 {
+            self.grid_next[p as usize] = n;
+        } else {
+            self.grid_head[cur_c] = n;
+        }
+        if n != -1 {
+            self.grid_prev[n as usize] = p;
+        }
+        self.agent_cell[i] = new_c;
+        let h = self.grid_head[new_c];
+        self.grid_next[i] = h;
+        self.grid_prev[i] = -1;
+        if h != -1 {
+            self.grid_prev[h as usize] = i as i32;
+        }
+        self.grid_head[new_c] = i as i32;
+    }
+
+    #[inline(always)]
+    pub fn insert_agent_cell(&mut self, i: usize, x: f64, y: f64) {
+        self.ensure_grid_capacity(i + 1);
+        let c = self.get_agent_cell(x, y);
+        self.agent_cell[i] = c;
+        let h = self.grid_head[c];
+        self.grid_next[i] = h;
+        self.grid_prev[i] = -1;
+        if h != -1 {
+            self.grid_prev[h as usize] = i as i32;
+        }
+        self.grid_head[c] = i as i32;
     }
 
     pub fn reset(&mut self) {
@@ -223,41 +342,76 @@ impl World {
         let mut best_dx = 0.0f64;
         let mut best_dy = 0.0f64;
 
-        let len = self.agents.len();
-        for i in 0..len {
-            if i == a_idx {
-                continue;
-            }
-            let b = &self.agents[i];
-            let mut dx = b.x - ax;
-            if dx > half_w {
-                dx -= self.w;
-            } else if dx < -half_w {
-                dx += self.w;
-            }
+        let cell = self.agent_cell[a_idx];
+        let neighbor_base = cell * 9;
 
-            let dx2 = dx * dx;
-            if dx2 >= cutoff {
-                continue;
-            }
+        for k in 0..9 {
+            let neighbor_cell = unsafe { *self.neighbor_cells.get_unchecked(neighbor_base + k) };
+            let mut b_idx = unsafe { *self.grid_head.get_unchecked(neighbor_cell) };
 
-            let mut dy = b.y - ay;
-            if dy > half_h {
-                dy -= self.h;
-            } else if dy < -half_h {
-                dy += self.h;
+            while b_idx != -1 {
+                let b_u = b_idx as usize;
+                if b_u != a_idx {
+                    let b = unsafe { self.agents.get_unchecked(b_u) };
+                    let mut dx = b.x - ax;
+                    if dx > half_w {
+                        dx -= self.w;
+                    } else if dx < -half_w {
+                        dx += self.w;
+                    }
+                    let dx2 = dx * dx;
+                    if dx2 < cutoff {
+                        let mut dy = b.y - ay;
+                        if dy > half_h {
+                            dy -= self.h;
+                        } else if dy < -half_h {
+                            dy += self.h;
+                        }
+                        let d = dx2 + dy * dy;
+                        if d < 10000.0 {
+                            density += 1.0;
+                        }
+                        if d < bd || (d == bd && best_idx.map_or(true, |prev| b_u < prev)) {
+                            bd = d;
+                            cutoff = if bd > 10000.0 { bd } else { 10000.0 };
+                            best_idx = Some(b_u);
+                            best_dx = dx;
+                            best_dy = dy;
+                        }
+                    }
+                }
+                b_idx = unsafe { *self.grid_next.get_unchecked(b_u) };
             }
+        }
 
-            let d = dx2 + dy * dy;
-            if d < 10000.0 {
-                density += 1.0;
-            }
-            if d < bd {
-                bd = d;
-                cutoff = if bd > 10000.0 { bd } else { 10000.0 };
-                best_idx = Some(i);
-                best_dx = dx;
-                best_dy = dy;
+        // Global fallback if no creature found in Moore neighborhood (sparse population)
+        if bd >= 10000.0 {
+            let len = self.agents.len();
+            for i in 0..len {
+                if i == a_idx { continue; }
+                let b = unsafe { self.agents.get_unchecked(i) };
+                let mut dx = b.x - ax;
+                if dx > half_w {
+                    dx -= self.w;
+                } else if dx < -half_w {
+                    dx += self.w;
+                }
+                let dx2 = dx * dx;
+                if dx2 >= cutoff { continue; }
+                let mut dy = b.y - ay;
+                if dy > half_h {
+                    dy -= self.h;
+                } else if dy < -half_h {
+                    dy += self.h;
+                }
+                let d = dx2 + dy * dy;
+                if d < bd || (d == bd && best_idx.map_or(true, |prev| i < prev)) {
+                    bd = d;
+                    cutoff = bd;
+                    best_idx = Some(i);
+                    best_dx = dx;
+                    best_dy = dy;
+                }
             }
         }
 
@@ -355,6 +509,7 @@ impl World {
         }
 
         let tick008 = (self.tick as f64) * 0.08;
+        self.build_grid();
         let initial_len = self.agents.len();
         let mut sensory_inputs = [0.0f64; 15];
 
@@ -475,6 +630,7 @@ impl World {
             self.agents[i].vy = (self.agents[i].vy + fwd_y * thrust * mot * 0.22) * 0.89;
             self.agents[i].x = math::wrap(self.agents[i].x + self.agents[i].vx, self.w);
             self.agents[i].y = math::wrap(self.agents[i].y + self.agents[i].vy, self.h);
+            self.update_agent_cell(i, self.agents[i].x, self.agents[i].y);
 
             // Trail management (in-place ring buffer)
             let cur_x = self.agents[i].x;
@@ -573,6 +729,7 @@ impl World {
                 let cy = self.agents[i].y + self.prng.rand(-9.0, 9.0);
 
                 let c_idx = self.create_agent(cx, cy, Some(&parent_clone), other_clone.as_ref());
+                self.insert_agent_cell(c_idx, self.agents[c_idx].x, self.agents[c_idx].y);
                 self.agents[c_idx].energy = 24.0;
                 self.agents[i].energy -= 24.0;
                 if let Some(b_idx) = mate_idx {
