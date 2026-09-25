@@ -649,7 +649,7 @@
         for (let y = 0; y < rows; y++) {
           for (let x = 0; x < cols; x++) {
             const i = y * cols + x;
-            bloom[i] = 0.5 + 0.5 * Math.sin(x * 0.13 + Math.sin(y * 0.19)) * Math.cos(y * 0.11);
+            bloom[i] = 0.0008 + 0.0022 * (0.5 + 0.5 * Math.sin(x * 0.13 + Math.sin(y * 0.19)) * Math.cos(y * 0.11));
             if (!fresh && old) {
               const sampleY = clamp(Math.floor((y / rows) * or), 0, or - 1);
               const sampleX = clamp(Math.floor((x / cols) * oc), 0, oc - 1);
@@ -952,18 +952,20 @@
         let sum = 0;
 
         // Environmental soil update
+        const spawnThreshold = 0.00013 * renewal;
         for (let k = 0; k < cols * rows; k++) {
           let f = food[k];
           const t = taint[k];
+          const s = scent[k];
 
-          // Spatial bloom lookup (precomputed in setupGrid)
-          f += renewal * (0.0008 + 0.0022 * bloom[k]) * (1 - f / 1.7);
-          if (Math.random() < 0.00013 * renewal) {
+          // Spatial bloom lookup (pre-fused rate table)
+          f += renewal * bloom[k] * (1 - f / 1.7);
+          if (Math.random() < spawnThreshold) {
             f += rand(0.15, 0.6);
           }
           food[k] = clamp(f, 0, 2.5);
-          taint[k] = Math.max(0, t * 0.994 - 0.0001);
-          scent[k] *= 0.954;
+          if (t > 0) taint[k] = Math.max(0, t * 0.994 - 0.0001);
+          if (s > 0) scent[k] = s * 0.954;
           sum += food[k];
         }
 
