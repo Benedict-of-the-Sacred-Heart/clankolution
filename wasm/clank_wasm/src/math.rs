@@ -58,7 +58,6 @@ extern "C" {
     fn host_sin(x: f64) -> f64;
     fn host_cos(x: f64) -> f64;
     fn host_atan2(y: f64, x: f64) -> f64;
-    fn host_tanh(x: f64) -> f64;
 }
 
 #[inline(always)]
@@ -78,7 +77,7 @@ pub fn atan2(y: f64, x: f64) -> f64 {
 
 #[inline(always)]
 pub fn tanh(x: f64) -> f64 {
-    unsafe { host_tanh(x) }
+    libm::tanh(x)
 }
 
 #[inline(always)]
