@@ -1574,8 +1574,7 @@
         }
         ctx.restore();
 
-        // Agent bodies
-        const enableGlow = speed < 16 && agents.length <= 500;
+        // Agent bodies (full bioluminescent aura with neural signal modulation)
         for (const a of agents) {
           const r = 2.3 + a.tr[0] * 4.5;
           const c = hue(a);
@@ -1583,10 +1582,8 @@
           ctx.save();
           ctx.translate(a.x, a.y);
           ctx.rotate(a.angle);
-          if (enableGlow) {
-            ctx.shadowColor = c;
-            ctx.shadowBlur = 9 + a.signal * 12;
-          }
+          ctx.shadowColor = c;
+          ctx.shadowBlur = 9 + a.signal * 12;
           ctx.fillStyle = c;
           ctx.globalAlpha = clamp(0.55 + a.energy / 160, 0.55, 1);
 
