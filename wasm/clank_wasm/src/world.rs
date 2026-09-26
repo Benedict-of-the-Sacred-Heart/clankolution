@@ -27,6 +27,8 @@ pub struct World {
     pub prng: Prng,
     pub soil: SoilGrid,
     pub agents: Vec<AgentData>,
+    pub pos_x: Vec<f64>,
+    pub pos_y: Vec<f64>,
     pub events: Vec<SimEvent>,
     pub tick: u32,
     pub kills: u32,
@@ -57,6 +59,8 @@ impl World {
             prng: Prng::new(seed),
             soil: SoilGrid::new(),
             agents: Vec::with_capacity(340),
+            pos_x: Vec::with_capacity(340),
+            pos_y: Vec::with_capacity(340),
             events: Vec::with_capacity(128),
             tick: 0,
             kills: 0,
@@ -92,6 +96,8 @@ impl World {
     pub fn set_max_capacity(&mut self, cap: u32) {
         self.max_cap = (cap as usize).clamp(15, 10_000);
         self.agents.reserve(self.max_cap);
+        self.pos_x.reserve(self.max_cap);
+        self.pos_y.reserve(self.max_cap);
         self.ensure_grid_capacity(self.max_cap);
     }
 
@@ -151,7 +157,7 @@ impl World {
         let count = self.agents.len();
         self.ensure_grid_capacity(count);
         for i in 0..count {
-            let c = self.get_agent_cell(self.agents[i].x, self.agents[i].y);
+            let c = self.get_agent_cell(self.pos_x[i], self.pos_y[i]);
             self.agent_cell[i] = c;
             let old_head = self.grid_head[c];
             self.grid_next[i] = old_head;
@@ -204,6 +210,8 @@ impl World {
 
     pub fn reset(&mut self) {
         self.agents.clear();
+        self.pos_x.clear();
+        self.pos_y.clear();
         self.events.clear();
         self.tick = 0;
         self.kills = 0;
@@ -337,6 +345,8 @@ impl World {
         }
 
         let idx = self.agents.len();
+        self.pos_x.push(a.x);
+        self.pos_y.push(a.y);
         self.agents.push(a);
         self.births += 1;
         idx
@@ -366,8 +376,8 @@ impl World {
             while b_idx != -1 {
                 let b_u = b_idx as usize;
                 if b_u != a_idx {
-                    let b = unsafe { self.agents.get_unchecked(b_u) };
-                    let mut dx = b.x - ax;
+                    let bx = unsafe { *self.pos_x.get_unchecked(b_u) };
+                    let mut dx = bx - ax;
                     if dx > half_w {
                         dx -= self.w;
                     } else if dx < -half_w {
@@ -375,7 +385,8 @@ impl World {
                     }
                     let dx2 = dx * dx;
                     if dx2 < cutoff {
-                        let mut dy = b.y - ay;
+                        let by = unsafe { *self.pos_y.get_unchecked(b_u) };
+                        let mut dy = by - ay;
                         if dy > half_h {
                             dy -= self.h;
                         } else if dy < -half_h {
@@ -403,8 +414,8 @@ impl World {
             let len = self.agents.len();
             for i in 0..len {
                 if i == a_idx { continue; }
-                let b = unsafe { self.agents.get_unchecked(i) };
-                let mut dx = b.x - ax;
+                let bx = unsafe { *self.pos_x.get_unchecked(i) };
+                let mut dx = bx - ax;
                 if dx > half_w {
                     dx -= self.w;
                 } else if dx < -half_w {
@@ -412,7 +423,8 @@ impl World {
                 }
                 let dx2 = dx * dx;
                 if dx2 >= cutoff { continue; }
-                let mut dy = b.y - ay;
+                let by = unsafe { *self.pos_y.get_unchecked(i) };
+                let mut dy = by - ay;
                 if dy > half_h {
                     dy -= self.h;
                 } else if dy < -half_h {
@@ -644,6 +656,8 @@ impl World {
             self.agents[i].vy = (self.agents[i].vy + fwd_y * thrust * mot * 0.22) * 0.89;
             self.agents[i].x = math::wrap(self.agents[i].x + self.agents[i].vx, self.w);
             self.agents[i].y = math::wrap(self.agents[i].y + self.agents[i].vy, self.h);
+            self.pos_x[i] = self.agents[i].x;
+            self.pos_y[i] = self.agents[i].y;
             self.update_agent_cell(i, self.agents[i].x, self.agents[i].y);
 
             // Trail management (in-place ring buffer)
@@ -790,11 +804,17 @@ impl World {
         let mut alive_count = 0;
         for i in 0..self.agents.len() {
             if self.agents[i].dead == 0 {
-                self.agents[alive_count] = self.agents[i];
+                if alive_count != i {
+                    self.agents[alive_count] = self.agents[i];
+                    self.pos_x[alive_count] = self.pos_x[i];
+                    self.pos_y[alive_count] = self.pos_y[i];
+                }
                 alive_count += 1;
             }
         }
         self.agents.truncate(alive_count);
+        self.pos_x.truncate(alive_count);
+        self.pos_y.truncate(alive_count);
 
         // Spore replenishment if population collapses
         if self.agents.len() < 15 && self.tick % 45 == 0 {
