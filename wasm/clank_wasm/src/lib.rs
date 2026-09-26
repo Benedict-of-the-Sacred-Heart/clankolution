@@ -260,3 +260,22 @@ pub extern "C" fn clear_events() {
     w.events.clear();
 }
 
+#[no_mangle]
+pub extern "C" fn get_sparks_count() -> u32 {
+    let w = get_world();
+    w.spark_events.len() as u32
+}
+
+#[no_mangle]
+pub extern "C" fn get_sparks_ptr() -> *const world::SparkEvent {
+    let w = get_world();
+    w.spark_events.as_ptr()
+}
+
+#[no_mangle]
+pub extern "C" fn clear_sparks() {
+    let w = get_world();
+    w.spark_events.clear();
+}
+
+

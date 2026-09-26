@@ -23,6 +23,15 @@ pub struct SimEvent {
     pub p2: u32,         // root (type 2) or kills (type 3)
 }
 
+#[repr(C)]
+#[derive(Clone, Copy, Debug)]
+pub struct SparkEvent {
+    pub x: f32,
+    pub y: f32,
+    pub color_idx: u32, // 0..7: lineage hue, 8: combat red (#ff7667), 9: catastrophe (#ff6659)
+    pub count: u32,
+}
+
 pub struct World {
     pub prng: Prng,
     pub soil: SoilGrid,
@@ -30,6 +39,7 @@ pub struct World {
     pub pos_x: Vec<f64>,
     pub pos_y: Vec<f64>,
     pub events: Vec<SimEvent>,
+    pub spark_events: Vec<SparkEvent>,
     pub tick: u32,
     pub kills: u32,
     pub births: u32,
@@ -62,6 +72,7 @@ impl World {
             pos_x: Vec::with_capacity(340),
             pos_y: Vec::with_capacity(340),
             events: Vec::with_capacity(128),
+            spark_events: Vec::with_capacity(512),
             tick: 0,
             kills: 0,
             births: 0,
@@ -229,6 +240,7 @@ impl World {
         self.pos_x.clear();
         self.pos_y.clear();
         self.events.clear();
+        self.spark_events.clear();
         self.tick = 0;
         self.kills = 0;
         self.births = 0;
@@ -568,6 +580,14 @@ impl World {
                 self.soil.deposit(0, ax, ay, deposit_food, 2);
                 self.soil.deposit(1, ax, ay, 0.1, 1);
                 self.spark_prng(5);
+                if self.spark_events.len() < 512 {
+                    self.spark_events.push(SparkEvent {
+                        x: ax as f32,
+                        y: ay as f32,
+                        color_idx: (self.agents[i].root % 8) as u32,
+                        count: 5,
+                    });
+                }
                 self.agents[i].dead = 1;
                 continue;
             }
@@ -737,6 +757,16 @@ impl World {
 
                     if self.prng.next_f64() < 0.13 {
                         self.spark_prng(2);
+                        if self.spark_events.len() < 512 {
+                            let mid_x = ((self.agents[i].x + self.agents[b_idx].x) * 0.5) as f32;
+                            let mid_y = ((self.agents[i].y + self.agents[b_idx].y) * 0.5) as f32;
+                            self.spark_events.push(SparkEvent {
+                                x: mid_x,
+                                y: mid_y,
+                                color_idx: 8,
+                                count: 2,
+                            });
+                        }
                     }
 
                     if self.agents[b_idx].energy <= 0.0 {
@@ -789,6 +819,14 @@ impl World {
                 }
                 self.agents[i].birth = 95;
                 self.spark_prng(9);
+                if self.spark_events.len() < 512 {
+                    self.spark_events.push(SparkEvent {
+                        x: self.agents[c_idx].x as f32,
+                        y: self.agents[c_idx].y as f32,
+                        color_idx: (self.agents[i].root % 8) as u32,
+                        count: 9,
+                    });
+                }
 
                 if self.agents[c_idx].gen > 0 && self.agents[c_idx].gen % 12 == 0 && self.prng.next_f64() < 0.08 {
                     if self.events.len() < 1024 {
@@ -812,6 +850,14 @@ impl World {
                 self.soil.deposit(0, ax, ay, deposit_food, 2);
                 self.soil.deposit(1, ax, ay, 0.1, 1);
                 self.spark_prng(5);
+                if self.spark_events.len() < 512 {
+                    self.spark_events.push(SparkEvent {
+                        x: ax as f32,
+                        y: ay as f32,
+                        color_idx: (self.agents[i].root % 8) as u32,
+                        count: 5,
+                    });
+                }
                 self.agents[i].dead = 1;
             }
         }
