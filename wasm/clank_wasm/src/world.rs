@@ -106,6 +106,9 @@ impl World {
         self.h = h;
         self.soil.resize(w, h, cols, rows);
         self.rebuild_grid_layout(w, h);
+        if !self.agents.is_empty() {
+            self.build_grid();
+        }
     }
 
     pub fn rebuild_grid_layout(&mut self, w: f64, h: f64) {
