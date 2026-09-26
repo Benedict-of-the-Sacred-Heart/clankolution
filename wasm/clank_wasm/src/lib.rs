@@ -13,17 +13,19 @@ static mut ARCHIVE_BUFFER: Vec<u8> = Vec::new();
 #[inline(always)]
 fn get_world() -> &'static mut World {
     unsafe {
-        if GLOBAL_WORLD.is_none() {
-            GLOBAL_WORLD = Some(World::new(1));
+        let ptr = core::ptr::addr_of_mut!(GLOBAL_WORLD);
+        if (*ptr).is_none() {
+            *ptr = Some(World::new(1));
         }
-        GLOBAL_WORLD.as_mut().unwrap()
+        (*ptr).as_mut().unwrap()
     }
 }
 
 #[no_mangle]
 pub extern "C" fn init_world(seed: u32) {
     unsafe {
-        GLOBAL_WORLD = Some(World::new(seed));
+        let ptr = core::ptr::addr_of_mut!(GLOBAL_WORLD);
+        *ptr = Some(World::new(seed));
     }
 }
 
@@ -104,14 +106,18 @@ pub extern "C" fn create_snapshot() -> u32 {
         &w.agents,
     );
     unsafe {
-        ARCHIVE_BUFFER = snap.to_bytes();
-        ARCHIVE_BUFFER.len() as u32
+        let buf_ptr = core::ptr::addr_of_mut!(ARCHIVE_BUFFER);
+        *buf_ptr = snap.to_bytes();
+        (*buf_ptr).len() as u32
     }
 }
 
 #[no_mangle]
 pub extern "C" fn get_archive_ptr() -> *const u8 {
-    unsafe { ARCHIVE_BUFFER.as_ptr() }
+    unsafe {
+        let buf_ptr = core::ptr::addr_of!(ARCHIVE_BUFFER);
+        (*buf_ptr).as_ptr()
+    }
 }
 
 #[no_mangle]
