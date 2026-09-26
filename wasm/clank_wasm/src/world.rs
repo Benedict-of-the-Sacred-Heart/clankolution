@@ -152,10 +152,23 @@ impl World {
         cy * self.grid_nx + cx
     }
 
+    pub fn sync_pos_cache(&mut self) {
+        let count = self.agents.len();
+        self.pos_x.resize(count, 0.0);
+        self.pos_y.resize(count, 0.0);
+        for i in 0..count {
+            self.pos_x[i] = self.agents[i].x;
+            self.pos_y[i] = self.agents[i].y;
+        }
+    }
+
     pub fn build_grid(&mut self) {
         self.grid_head.fill(-1);
         let count = self.agents.len();
         self.ensure_grid_capacity(count);
+        if self.pos_x.len() != count || self.pos_y.len() != count {
+            self.sync_pos_cache();
+        }
         for i in 0..count {
             let c = self.get_agent_cell(self.pos_x[i], self.pos_y[i]);
             self.agent_cell[i] = c;
