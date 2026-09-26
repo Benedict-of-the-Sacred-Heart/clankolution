@@ -1492,7 +1492,7 @@
          ========================================================================== */
 
       function drawField() {
-        if (activeEngine === 'wasm' && wasmExports && food.buffer.byteLength === 0) {
+        if (activeEngine === 'wasm' && wasmExports && (food.buffer.byteLength === 0 || food.buffer !== wasmMemory.buffer)) {
           const gridSize = cols * rows;
           food = new Float32Array(wasmMemory.buffer, wasmExports.get_food_ptr(), gridSize);
           taint = new Float32Array(wasmMemory.buffer, wasmExports.get_taint_ptr(), gridSize);
@@ -1735,7 +1735,12 @@
           (activeEngine === 'wasm' ? ' [WASM]' : ' [JS]');
 
         if (selected && !agents.includes(selected)) {
-          selected = null;
+          const found = agents.find(a => a.id === selected.id);
+          if (found) {
+            selected = found;
+          } else {
+            selected = null;
+          }
         }
 
         if (selected) {
@@ -1815,7 +1820,21 @@
         }
 
         if (activeEngine === 'wasm' && wasmExports) {
-          if (tool === 'spawn' || tool === 'erase') {
+          if (tool === 'spawn') {
+            wasmExports.sync_params_to_wasm(
+              tick,
+              kills,
+              births,
+              roots,
+              nextId,
+              eclipse,
+              +$('mutation').value,
+              +$('growth').value,
+              +$('hostility').value,
+              wasmExports.get_prng_state()
+            );
+            syncAgentsToWasm();
+          } else if (tool === 'erase') {
             syncAgentsToWasm();
           }
         }
@@ -2196,6 +2215,7 @@
           version: 1,
           width: W,
           height: H,
+          cap: CAP,
           tick,
           kills,
           births,
@@ -2218,6 +2238,13 @@
           })
         };
 
+        if (activeEngine === 'wasm' && wasmExports) {
+          const gridSize = cols * rows;
+          food = new Float32Array(wasmMemory.buffer, wasmExports.get_food_ptr(), gridSize);
+          taint = new Float32Array(wasmMemory.buffer, wasmExports.get_taint_ptr(), gridSize);
+          scent = new Float32Array(wasmMemory.buffer, wasmExports.get_scent_ptr(), gridSize);
+        }
+
         const blob = new Blob([JSON.stringify(data)], { type: 'application/json' });
         const url = URL.createObjectURL(blob);
         const link = document.createElement('a');
@@ -2235,7 +2262,7 @@
         if (
           data?.version !== 1 ||
           !Array.isArray(data.agents) ||
-          data.agents.length > CAP ||
+          data.agents.length > 10000 ||
           !Array.isArray(data.food) ||
           !Number.isInteger(data.cols) ||
           !Number.isInteger(data.rows) ||
@@ -2278,6 +2305,17 @@
           };
         });
 
+        const reqCap = Math.max(data.cap || 0, restored.length);
+        if (reqCap > CAP) {
+          CAP = Math.min(10000, reqCap);
+          elCapSlider.value = CAP;
+          elCapValue.textContent = String(CAP);
+          elCapDisplay.textContent = ' / ' + CAP + ' capacity';
+          if (activeEngine === 'wasm' && wasmExports) {
+            wasmExports.set_max_capacity(CAP);
+          }
+        }
+
         const oldCols = data.cols;
         const oldRows = data.rows;
         const oldFood = data.food;
@@ -2291,8 +2329,16 @@
         tick = clamp(+data.tick || 0, 0, 1e10);
         kills = clamp(+data.kills || 0, 0, 1e10);
         births = clamp(+data.births || 0, 0, 1e10);
-        nextId = Math.max(+data.nextId || 1, ...agents.map(a => a.id + 1));
-        roots = Math.max(+data.roots || 1, ...agents.map(a => a.root + 1));
+
+        let maxId = +data.nextId || 1;
+        let maxRoot = +data.roots || 1;
+        for (let i = 0; i < restored.length; i++) {
+          if (restored[i].id + 1 > maxId) maxId = restored[i].id + 1;
+          if (restored[i].root + 1 > maxRoot) maxRoot = restored[i].root + 1;
+        }
+        nextId = maxId;
+        roots = maxRoot;
+
         eclipse = clamp(+data.eclipse || 0, 0, 210);
         history = Array.isArray(data.history) ? data.history.slice(-180) : [];
         historyVersion++;
@@ -2365,6 +2411,9 @@
         reset();
         if (activeEngine === 'wasm' && wasmExports) {
           syncStateToWasm();
+          if (wasmExports.clear_events) {
+            wasmExports.clear_events();
+          }
         }
         updateUI();
       };
@@ -2439,10 +2488,14 @@
           },
           annotations: { readOnlyHint: true },
           execute() {
+            let oldestGen = 0;
+            for (let i = 0; i < agents.length; i++) {
+              if (agents[i].gen > oldestGen) oldestGen = agents[i].gen;
+            }
             return {
               cycle: tick,
               population: agents.length,
-              oldestGeneration: Math.max(0, ...agents.map(a => a.gen)),
+              oldestGeneration: oldestGen,
               predations: kills,
               mutation: mutRate(),
               foodRenewal: +$('growth').value / 100,
