@@ -135,10 +135,11 @@ pub extern "C" fn get_max_capacity() -> u32 {
 #[no_mangle]
 pub extern "C" fn set_agents_count(count: u32) {
     let w = get_world();
-    let count = (count as usize).min(w.max_cap);
+    let count = (count as usize).min(crate::agent::ABSOLUTE_MAX_CAP);
     w.agents.resize(count, AgentData::default());
     w.pos_x.resize(count, 0.0);
     w.pos_y.resize(count, 0.0);
+    w.ensure_grid_capacity(count);
 }
 
 #[no_mangle]
