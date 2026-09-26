@@ -776,8 +776,8 @@
       }
 
       function deposit(arr, x, y, value, radius = 1) {
-        const cx = Math.floor((((x % W) + W) % W) * invCellW);
-        const cy = Math.floor((((y % H) + H) % H) * invCellH);
+        const cx = clamp(Math.floor((((x % W) + W) % W) * invCellW), 0, cols - 1);
+        const cy = clamp(Math.floor((((y % H) + H) % H) * invCellH), 0, rows - 1);
 
         if (radius === 1) {
           const v18 = value / 1.8;

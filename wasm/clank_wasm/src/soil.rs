@@ -151,6 +151,8 @@ impl SoilGrid {
         let cy = (math::wrap(y, self.h) * self.inv_cell_h).floor() as i32;
         let rows_i = self.rows as i32;
         let cols_i = self.cols as i32;
+        let cx = cx.rem_euclid(cols_i);
+        let cy = cy.rem_euclid(rows_i);
 
         if radius == 1 {
             let v18 = value / 1.8;
