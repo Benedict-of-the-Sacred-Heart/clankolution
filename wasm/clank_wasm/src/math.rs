@@ -54,11 +54,19 @@ pub fn wrap(x: f64, m: f64) -> f64 {
     ((x % m) + m) % m
 }
 
+#[cfg(target_arch = "wasm32")]
 extern "C" {
     fn host_sin(x: f64) -> f64;
     fn host_cos(x: f64) -> f64;
     fn host_atan2(y: f64, x: f64) -> f64;
 }
+
+#[cfg(not(target_arch = "wasm32"))]
+unsafe fn host_sin(x: f64) -> f64 { x.sin() }
+#[cfg(not(target_arch = "wasm32"))]
+unsafe fn host_cos(x: f64) -> f64 { x.cos() }
+#[cfg(not(target_arch = "wasm32"))]
+unsafe fn host_atan2(y: f64, x: f64) -> f64 { y.atan2(x) }
 
 #[inline(always)]
 pub fn sin(x: f64) -> f64 {

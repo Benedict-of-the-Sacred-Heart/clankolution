@@ -6,6 +6,7 @@ pub mod world;
 
 use agent::AgentData;
 use world::World;
+use rkyv::Deserialize;
 
 static mut GLOBAL_WORLD: Option<World> = None;
 static mut ARCHIVE_BUFFER: Vec<u8> = Vec::new();
@@ -100,6 +101,14 @@ pub extern "C" fn create_snapshot() -> u32 {
         w.roots,
         w.next_id,
         w.eclipse,
+        w.w,
+        w.h,
+        w.soil.cols as u32,
+        w.soil.rows as u32,
+        w.mutation,
+        w.growth,
+        w.hostility,
+        w.prng.s,
         &w.soil.food,
         &w.soil.taint,
         &w.soil.scent,
@@ -109,6 +118,81 @@ pub extern "C" fn create_snapshot() -> u32 {
         let buf_ptr = core::ptr::addr_of_mut!(ARCHIVE_BUFFER);
         *buf_ptr = snap.to_bytes();
         (*buf_ptr).len() as u32
+    }
+}
+
+#[no_mangle]
+pub extern "C" fn alloc_archive_buffer(len: u32) -> *mut u8 {
+    unsafe {
+        let buf_ptr = core::ptr::addr_of_mut!(ARCHIVE_BUFFER);
+        (*buf_ptr).resize(len as usize, 0);
+        (*buf_ptr).as_mut_ptr()
+    }
+}
+
+#[no_mangle]
+pub extern "C" fn restore_snapshot() -> u32 {
+    unsafe {
+        let buf_ptr = core::ptr::addr_of!(ARCHIVE_BUFFER);
+        let bytes = (*buf_ptr).as_slice();
+        let archived = match rkyv::check_archived_root::<archive::WorldSnapshot>(bytes) {
+            Ok(a) => a,
+            Err(_) => return 1, // Corrupted / invalid archive
+        };
+
+        if archived.version != archive::WorldSnapshot::CURRENT_VERSION {
+            return 2; // Unsupported version
+        }
+
+        let w = get_world();
+
+        let target_w: f64 = archived.width.into();
+        let target_h: f64 = archived.height.into();
+        let target_cols: u32 = archived.cols.into();
+        let target_rows: u32 = archived.rows.into();
+        if w.w != target_w || w.h != target_h || w.soil.cols != target_cols as usize || w.soil.rows != target_rows as usize {
+            w.resize(target_w, target_h, target_cols as usize, target_rows as usize);
+        }
+
+        w.tick = archived.tick.into();
+        w.kills = archived.kills.into();
+        w.births = archived.births.into();
+        w.roots = archived.roots.into();
+        w.next_id = archived.next_id.into();
+        w.eclipse = archived.eclipse.into();
+        w.mutation = archived.mutation.into();
+        w.growth = archived.growth.into();
+        w.hostility = archived.hostility.into();
+        w.prng.s = archived.prng_state.into();
+
+        let food_len = archived.food.len().min(w.soil.food.len());
+        for i in 0..food_len {
+            w.soil.food[i] = archived.food[i].into();
+        }
+        let taint_len = archived.taint.len().min(w.soil.taint.len());
+        for i in 0..taint_len {
+            w.soil.taint[i] = archived.taint[i].into();
+        }
+        let scent_len = archived.scent.len().min(w.soil.scent.len());
+        for i in 0..scent_len {
+            w.soil.scent[i] = archived.scent[i].into();
+        }
+
+        let snap_agents: Vec<crate::agent::AgentData> = match archived.agents.deserialize(&mut rkyv::Infallible) {
+            Ok(ag) => ag,
+            Err(_) => return 3,
+        };
+
+        if snap_agents.len() > w.max_cap {
+            w.set_max_capacity(snap_agents.len() as u32);
+        }
+
+        w.agents.clear();
+        w.agents.extend(snap_agents);
+
+        w.build_grid();
+
+        0 // Success
     }
 }
 
@@ -205,6 +289,24 @@ pub extern "C" fn set_selective_pressures(mutation: f64, growth: f64, hostility:
 }
 
 #[no_mangle]
+pub extern "C" fn get_mutation() -> f64 {
+    let w = get_world();
+    w.mutation
+}
+
+#[no_mangle]
+pub extern "C" fn get_growth() -> f64 {
+    let w = get_world();
+    w.growth
+}
+
+#[no_mangle]
+pub extern "C" fn get_hostility() -> f64 {
+    let w = get_world();
+    w.hostility
+}
+
+#[no_mangle]
 pub extern "C" fn sync_params_to_wasm(
     tick: u32,
     kills: u32,
@@ -276,6 +378,56 @@ pub extern "C" fn get_sparks_ptr() -> *const world::SparkEvent {
 pub extern "C" fn clear_sparks() {
     let w = get_world();
     w.spark_events.clear();
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_create_and_restore_snapshot_roundtrip() {
+        init_world(42);
+        evolve_ticks(15);
+
+        let tick_saved = get_tick();
+        let kills_saved = get_kills();
+        let births_saved = get_births();
+        let agents_saved = get_agents_count();
+        let first_agent_x = get_world().agents[0].x;
+        let first_agent_energy = get_world().agents[0].energy;
+
+        let len = create_snapshot();
+        assert!(len > 0);
+
+        let mut saved_bytes = vec![0u8; len as usize];
+        unsafe {
+            saved_bytes.copy_from_slice(std::slice::from_raw_parts(get_archive_ptr(), len as usize));
+        }
+
+        // Simulate 50 more ticks to mutate world state
+        evolve_ticks(50);
+        assert!(get_tick() > tick_saved);
+
+        // Upload and restore
+        let buf_ptr = alloc_archive_buffer(len);
+        unsafe {
+            std::slice::from_raw_parts_mut(buf_ptr, len as usize).copy_from_slice(&saved_bytes);
+        }
+
+        let res = restore_snapshot();
+        assert_eq!(res, 0);
+
+        assert_eq!(get_tick(), tick_saved);
+        assert_eq!(get_kills(), kills_saved);
+        assert_eq!(get_births(), births_saved);
+        assert_eq!(get_agents_count(), agents_saved);
+        assert_eq!(get_world().agents[0].x, first_agent_x);
+        assert_eq!(get_world().agents[0].energy, first_agent_energy);
+
+        // Continue running after restore to ensure physics and lifecycle continue smoothly
+        evolve_ticks(20);
+        assert_eq!(get_tick(), tick_saved + 20);
+    }
 }
 
 
