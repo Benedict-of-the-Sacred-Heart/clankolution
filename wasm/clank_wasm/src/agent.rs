@@ -86,3 +86,17 @@ impl Default for AgentData {
 // Compile-time assertion that AgentData has exact 768-byte size and 8-byte alignment (12 cache lines)
 const _: () = assert!(std::mem::size_of::<AgentData>() == 768);
 const _: () = assert!(std::mem::align_of::<AgentData>() == 8);
+
+#[test]
+fn check_offsets() {
+    let dummy = AgentData::default();
+    let base = &dummy as *const _ as usize;
+    println!("x: {}", &dummy.x as *const _ as usize - base);
+    println!("tr: {}", &dummy.tr as *const _ as usize - base);
+    println!("trail_x: {}", &dummy.trail_x as *const _ as usize - base);
+    println!("trail_y: {}", &dummy.trail_y as *const _ as usize - base);
+    println!("h: {}", &dummy.h as *const _ as usize - base);
+    println!("h_next: {}", &dummy.h_next as *const _ as usize - base);
+    println!("id: {}", &dummy.id as *const _ as usize - base);
+    println!("genes: {}", &dummy.genes as *const _ as usize - base);
+}

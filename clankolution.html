@@ -708,6 +708,7 @@
           }
         }
         setupGrid(false);
+        rebuildGridLayout(W, H);
         if (activeEngine === 'wasm' && wasmExports) {
           syncStateToWasm();
         }
@@ -990,6 +991,7 @@
         historyVersion++;
 
         setupGrid(true);
+        rebuildGridLayout(W, H);
 
         for (let k = 0; k < 12; k++) {
           const cx = rand(W);
@@ -1008,29 +1010,41 @@
         event('The first hunger begins.');
       }
 
-      const GRID_NX = 9;
-      const GRID_NY = 6;
-      const GRID_CELLS = 54;
-      const NEIGHBOR_CELLS = new Int32Array(GRID_CELLS * 9);
-      for (let cy = 0; cy < GRID_NY; cy++) {
-        for (let cx = 0; cx < GRID_NX; cx++) {
-          const c = cy * GRID_NX + cx;
-          let idx = 0;
-          NEIGHBOR_CELLS[c * 9 + idx++] = c;
-          for (let dy = -1; dy <= 1; dy++) {
-            for (let dx = -1; dx <= 1; dx++) {
-              if (dx === 0 && dy === 0) continue;
-              const nx = (cx + dx + GRID_NX) % GRID_NX;
-              const ny = (cy + dy + GRID_NY) % GRID_NY;
-              NEIGHBOR_CELLS[c * 9 + idx++] = ny * GRID_NX + nx;
+      let gridNx = 9;
+      let gridNy = 6;
+      let invGridCellW = 9 / 900;
+      let invGridCellH = 6 / 600;
+      let NEIGHBOR_CELLS = new Int32Array(54 * 9);
+      let gridHead = new Int32Array(54);
+      let gridPrev = new Int32Array(1024);
+      let gridNext = new Int32Array(1024);
+      let gridCell = new Int32Array(1024);
+
+      function rebuildGridLayout(w, h) {
+        gridNx = Math.max(3, Math.min(100, Math.floor(w / 100)));
+        gridNy = Math.max(3, Math.min(100, Math.floor(h / 100)));
+        invGridCellW = gridNx / w;
+        invGridCellH = gridNy / h;
+        const numCells = gridNx * gridNy;
+        gridHead = new Int32Array(numCells);
+        NEIGHBOR_CELLS = new Int32Array(numCells * 9);
+        for (let cy = 0; cy < gridNy; cy++) {
+          for (let cx = 0; cx < gridNx; cx++) {
+            const c = cy * gridNx + cx;
+            let idx = 0;
+            NEIGHBOR_CELLS[c * 9 + idx++] = c;
+            for (let dy = -1; dy <= 1; dy++) {
+              for (let dx = -1; dx <= 1; dx++) {
+                if (dx === 0 && dy === 0) continue;
+                const nx = (cx + dx + gridNx) % gridNx;
+                const ny = (cy + dy + gridNy) % gridNy;
+                NEIGHBOR_CELLS[c * 9 + idx++] = ny * gridNx + nx;
+              }
             }
           }
         }
       }
-      const gridHead = new Int32Array(GRID_CELLS);
-      let gridPrev = new Int32Array(1024);
-      let gridNext = new Int32Array(1024);
-      let gridCell = new Int32Array(1024);
+      rebuildGridLayout(900, 600);
 
       function ensureGridCap(cap) {
         if (gridPrev.length < cap) {
@@ -1043,11 +1057,11 @@
       }
 
       function getAgentCell(x, y) {
-        let cx = (x * 0.01) | 0;
-        if (cx < 0) cx = 0; else if (cx >= GRID_NX) cx = GRID_NX - 1;
-        let cy = (y * 0.01) | 0;
-        if (cy < 0) cy = 0; else if (cy >= GRID_NY) cy = GRID_NY - 1;
-        return cy * GRID_NX + cx;
+        let cx = (wrap(x, W) * invGridCellW) | 0;
+        if (cx < 0) cx = 0; else if (cx >= gridNx) cx = gridNx - 1;
+        let cy = (wrap(y, H) * invGridCellH) | 0;
+        if (cy < 0) cy = 0; else if (cy >= gridNy) cy = gridNy - 1;
+        return cy * gridNx + cx;
       }
 
       function buildSpatialGrid() {
@@ -2015,6 +2029,8 @@
       }
 
       let cachedWasmBuf = null;
+      let cachedAgentsPtr = 0;
+      let cachedCap = 0;
       let cachedF64 = null;
       let cachedF32 = null;
       let cachedU32 = null;
@@ -2022,10 +2038,12 @@
 
       function getWasmViews() {
         const buf = wasmMemory.buffer;
-        if (cachedWasmBuf !== buf || !cachedF64) {
+        const ptr = wasmExports.get_agents_mut_ptr();
+        const cap = wasmExports.get_max_capacity();
+        if (cachedWasmBuf !== buf || cachedAgentsPtr !== ptr || cachedCap !== cap || !cachedF64) {
           cachedWasmBuf = buf;
-          const ptr = wasmExports.get_agents_mut_ptr();
-          const cap = wasmExports.get_max_capacity();
+          cachedAgentsPtr = ptr;
+          cachedCap = cap;
           const agentSize = wasmExports.get_agent_size();
           const totalBytes = cap * agentSize;
           cachedF64 = new Float64Array(buf, ptr, totalBytes >> 3);
@@ -2227,6 +2245,9 @@
           taint: Array.from(taint),
           scent: Array.from(scent),
           history,
+          mutation: +$('mutation').value,
+          growth: +$('growth').value,
+          hostility: +$('hostility').value,
           agents: agents.map(a => {
             const { hNext, ...rest } = a;
             return {
@@ -2342,7 +2363,21 @@
         history = Array.isArray(data.history) ? data.history.slice(-180) : [];
         historyVersion++;
 
+        if (data.mutation !== undefined) {
+          $('mutation').value = clamp(+data.mutation || 16, 0, 50);
+          $('mutation').dispatchEvent(new Event('input'));
+        }
+        if (data.growth !== undefined) {
+          $('growth').value = clamp(+data.growth || 100, 0, 200);
+          $('growth').dispatchEvent(new Event('input'));
+        }
+        if (data.hostility !== undefined) {
+          $('hostility').value = clamp(+data.hostility || 100, 0, 200);
+          $('hostility').dispatchEvent(new Event('input'));
+        }
+
         setupGrid(true);
+        rebuildGridLayout(W, H);
 
         for (let y = 0; y < rows; y++) {
           for (let x = 0; x < cols; x++) {
