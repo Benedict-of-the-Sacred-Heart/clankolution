@@ -36,12 +36,74 @@ pub fn track_target_position(current: Vec3, target: Vec2, lerp_factor: f32) -> V
     )
 }
 
+use bevy::camera::Viewport;
+
+#[inline]
+pub fn compute_arena_viewport(window_size: Vec2, scale_factor: f32) -> (Viewport, Vec2) {
+    let top_bar_h = 53.0;
+    let sidebar_w = 330.0;
+    let arena_w = (window_size.x - sidebar_w).max(320.0);
+    let arena_h = (window_size.y - top_bar_h).max(250.0);
+    let arena_size = Vec2::new(arena_w, arena_h);
+    let vp = Viewport {
+        physical_position: UVec2::new(0, (top_bar_h * scale_factor).round() as u32),
+        physical_size: UVec2::new(
+            (arena_size.x * scale_factor).round() as u32,
+            (arena_size.y * scale_factor).round() as u32,
+        ),
+        depth: 0.0..1.0,
+    };
+    (vp, arena_size)
+}
+
 pub fn setup_camera(mut commands: Commands) {
     commands.spawn((
         Camera2d,
-        Transform::from_xyz(450.0, 300.0, 0.0),
+        Transform::from_xyz(475.0, 373.5, 0.0),
         MainCamera,
     ));
+}
+
+pub fn camera_viewport_sync_system(
+    window_query: Query<&Window>,
+    mut camera_query: Query<(&mut Camera, &mut Transform), With<MainCamera>>,
+    mut sim: Option<ResMut<SimWorld>>,
+) {
+    let Ok(window) = window_query.single() else { return };
+    let (vp, arena_size) = compute_arena_viewport(
+        Vec2::new(window.width(), window.height()),
+        window.scale_factor(),
+    );
+
+    if let Ok((mut camera, mut transform)) = camera_query.single_mut() {
+        let needs_update = match &camera.viewport {
+            Some(existing) => {
+                existing.physical_position != vp.physical_position
+                    || existing.physical_size != vp.physical_size
+            }
+            None => true,
+        };
+
+        if needs_update {
+            camera.viewport = Some(vp);
+            transform.translation.x = arena_size.x * 0.5;
+            transform.translation.y = arena_size.y * 0.5;
+
+            if let Some(ref mut sim) = sim {
+                if (sim.world_width - arena_size.x as f64).abs() > 0.5
+                    || (sim.world_height - arena_size.y as f64).abs() > 0.5
+                {
+                    let w = arena_size.x as f64;
+                    let h = arena_size.y as f64;
+                    sim.world_width = w;
+                    sim.world_height = h;
+                    let cols = ((arena_size.x / 12.0).ceil() as usize).clamp(20, 200);
+                    let rows = ((arena_size.y / 12.0).ceil() as usize).clamp(20, 200);
+                    sim.world.resize(w, h, cols, rows);
+                }
+            }
+        }
+    }
 }
 
 pub fn camera_control_system(
@@ -98,6 +160,6 @@ pub struct ClankCameraPlugin;
 impl Plugin for ClankCameraPlugin {
     fn build(&self, app: &mut App) {
         app.add_systems(Startup, setup_camera)
-            .add_systems(Update, camera_control_system);
+            .add_systems(Update, (camera_viewport_sync_system, camera_control_system));
     }
 }

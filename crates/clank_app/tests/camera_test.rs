@@ -62,3 +62,17 @@ fn test_world_pointer_conversion() {
     assert!(world_pos.x >= 0.0 && world_pos.x <= 900.0);
     assert!(world_pos.y >= 0.0 && world_pos.y <= 600.0);
 }
+
+#[test]
+fn test_compute_arena_viewport() {
+    use clank_app::camera::compute_arena_viewport;
+    let (vp, arena_size) = compute_arena_viewport(Vec2::new(1280.0, 800.0), 1.0);
+    assert_eq!(arena_size, Vec2::new(950.0, 747.0));
+    assert_eq!(vp.physical_position, UVec2::new(0, 53));
+    assert_eq!(vp.physical_size, UVec2::new(950, 747));
+
+    let (vp2, arena_size2) = compute_arena_viewport(Vec2::new(1280.0, 800.0), 2.0);
+    assert_eq!(arena_size2, Vec2::new(950.0, 747.0));
+    assert_eq!(vp2.physical_position, UVec2::new(0, 106));
+    assert_eq!(vp2.physical_size, UVec2::new(1900, 1494));
+}
