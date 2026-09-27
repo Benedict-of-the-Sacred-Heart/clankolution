@@ -1,5 +1,6 @@
 use bevy::prelude::*;
 use bevy::asset::RenderAssetUsages;
+use bevy::render::mesh::PrimitiveTopology;
 use bevy::render::render_resource::{Extent3d, TextureDimension, TextureFormat};
 use bevy::image::ImageSampler;
 use clank_core::agent::AgentData;
@@ -12,6 +13,11 @@ pub struct SoilTextureHandle(pub Handle<Image>);
 
 #[derive(Resource)]
 pub struct VignetteTextureHandle(pub Handle<Image>);
+
+#[derive(Resource)]
+pub struct AgentMeshResource {
+    pub mesh_handle: Handle<Mesh>,
+}
 
 #[derive(Component)]
 pub struct SoilSprite;
@@ -282,6 +288,109 @@ pub fn update_soil_texture_system(
     }
 }
 
+pub fn generate_dart_mesh_data(
+    sim: &SimWorld,
+    positions: &mut Vec<[f32; 3]>,
+    colors: &mut Vec<[f32; 4]>,
+) {
+    positions.clear();
+    colors.clear();
+
+    let items = extract_agent_render_data(sim);
+    positions.reserve(items.len() * 12);
+    colors.reserve(items.len() * 12);
+
+    for item in &items {
+        let rot = Mat2::from_angle(-item.angle);
+        let r = item.radius;
+        let c = item.color.to_srgba();
+
+        // 1. Glow Halo: 2 Triangles scaled by (1.5 + item.signal * 0.4), with low alpha (0.15 + item.signal * 0.15)
+        let halo_scale = 1.5 + item.signal * 0.4;
+        let halo_r = r * halo_scale;
+        let halo_nose = item.bevy_pos + rot * Vec2::new(halo_r * 1.5, 0.0);
+        let halo_right = item.bevy_pos + rot * Vec2::new(-halo_r * 0.75, halo_r * (0.5 + item.armor * 0.45));
+        let halo_rear = item.bevy_pos + rot * Vec2::new(-halo_r * (0.45 + item.carnivory), 0.0);
+        let halo_left = item.bevy_pos + rot * Vec2::new(-halo_r * 0.75, -halo_r * (0.5 + item.armor * 0.45));
+
+        let halo_alpha = (0.15 + item.signal * 0.18).min(0.4);
+        let halo_rgba = [c.red, c.green, c.blue, halo_alpha];
+
+        // Halo Triangle 1: [nose, right, rear]
+        positions.push([halo_nose.x, halo_nose.y, -3.0]);
+        positions.push([halo_right.x, halo_right.y, -3.0]);
+        positions.push([halo_rear.x, halo_rear.y, -3.0]);
+        colors.push(halo_rgba);
+        colors.push(halo_rgba);
+        colors.push(halo_rgba);
+
+        // Halo Triangle 2: [nose, rear, left]
+        positions.push([halo_nose.x, halo_nose.y, -3.0]);
+        positions.push([halo_rear.x, halo_rear.y, -3.0]);
+        positions.push([halo_left.x, halo_left.y, -3.0]);
+        colors.push(halo_rgba);
+        colors.push(halo_rgba);
+        colors.push(halo_rgba);
+
+        // 2. Solid Body: 2 Triangles
+        let nose = item.bevy_pos + rot * Vec2::new(r * 1.5, 0.0);
+        let right = item.bevy_pos + rot * Vec2::new(-r * 0.75, r * (0.5 + item.armor * 0.45));
+        let rear = item.bevy_pos + rot * Vec2::new(-r * (0.45 + item.carnivory), 0.0);
+        let left = item.bevy_pos + rot * Vec2::new(-r * 0.75, -r * (0.5 + item.armor * 0.45));
+
+        let body_rgba = [c.red, c.green, c.blue, c.alpha];
+
+        // Body Triangle 1: [nose, right, rear]
+        positions.push([nose.x, nose.y, -2.0]);
+        positions.push([right.x, right.y, -2.0]);
+        positions.push([rear.x, rear.y, -2.0]);
+        colors.push(body_rgba);
+        colors.push(body_rgba);
+        colors.push(body_rgba);
+
+        // Body Triangle 2: [nose, rear, left]
+        positions.push([nose.x, nose.y, -2.0]);
+        positions.push([rear.x, rear.y, -2.0]);
+        positions.push([left.x, left.y, -2.0]);
+        colors.push(body_rgba);
+        colors.push(body_rgba);
+        colors.push(body_rgba);
+    }
+}
+
+pub fn setup_agent_rendering(
+    mut commands: Commands,
+    mut meshes: ResMut<Assets<Mesh>>,
+    mut materials: ResMut<Assets<ColorMaterial>>,
+) {
+    let mesh = Mesh::new(PrimitiveTopology::TriangleList, RenderAssetUsages::default());
+    let mesh_handle = meshes.add(mesh);
+    let mat_handle = materials.add(ColorMaterial::default());
+
+    commands.spawn((
+        Mesh2d(mesh_handle.clone()),
+        MeshMaterial2d(mat_handle),
+        Transform::default(),
+    ));
+    commands.insert_resource(AgentMeshResource { mesh_handle });
+}
+
+pub fn update_agent_mesh_system(
+    sim: Option<Res<SimWorld>>,
+    res: Option<Res<AgentMeshResource>>,
+    mut meshes: ResMut<Assets<Mesh>>,
+) {
+    let (Some(sim), Some(res)) = (sim, res) else { return };
+    let Some(mut mesh) = meshes.get_mut(&res.mesh_handle) else { return };
+
+    let mut positions = Vec::new();
+    let mut colors = Vec::new();
+    generate_dart_mesh_data(&sim, &mut positions, &mut colors);
+
+    mesh.insert_attribute(Mesh::ATTRIBUTE_POSITION, positions);
+    mesh.insert_attribute(Mesh::ATTRIBUTE_COLOR, colors);
+}
+
 pub fn render_sim_gizmos_system(sim: Option<Res<SimWorld>>, mut gizmos: Gizmos) {
     let Some(sim) = sim else { return };
 
@@ -302,7 +411,7 @@ pub fn render_sim_gizmos_system(sim: Option<Res<SimWorld>>, mut gizmos: Gizmos) 
             }
         }
 
-        // 2. Exact Dart Polygon Body
+        // 2. Exact Dart Polygon Body Outline
         let rot = Mat2::from_angle(-item.angle);
         let r = item.radius;
         let nose = item.bevy_pos + rot * Vec2::new(r * 1.5, 0.0);
@@ -321,9 +430,6 @@ pub fn render_sim_gizmos_system(sim: Option<Res<SimWorld>>, mut gizmos: Gizmos) 
         gizmos.line_2d(right_wing, rear_notch, border_color);
         gizmos.line_2d(rear_notch, left_wing, border_color);
         gizmos.line_2d(left_wing, nose, border_color);
-
-        // Fill / bioluminescent core
-        gizmos.circle_2d(item.bevy_pos, r * 0.45, item.color);
 
         // 3. Sensory Antennae (Whiskers if sight trait > 0.56)
         if item.sight > 0.56 {
@@ -469,11 +575,12 @@ pub struct ClankRenderPlugin;
 
 impl Plugin for ClankRenderPlugin {
     fn build(&self, app: &mut App) {
-        app.add_systems(Startup, setup_soil_rendering)
+        app.add_systems(Startup, (setup_soil_rendering, setup_agent_rendering))
             .add_systems(
                 Update,
                 (
                     update_soil_texture_system,
+                    update_agent_mesh_system,
                     render_sim_gizmos_system,
                     agent_picking_system,
                 ),

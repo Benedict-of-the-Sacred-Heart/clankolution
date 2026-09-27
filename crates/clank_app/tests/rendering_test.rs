@@ -72,8 +72,8 @@ fn test_extract_agent_render_data() {
     assert_eq!(render_items.len(), 72);
 
     for item in render_items {
-        assert!(item.bevy_pos.x >= 0.0 && item.bevy_pos.x <= 900.0);
-        assert!(item.bevy_pos.y >= 0.0 && item.bevy_pos.y <= 600.0);
+        assert!(item.bevy_pos.x >= 0.0 && item.bevy_pos.x <= sim.world_width as f32);
+        assert!(item.bevy_pos.y >= 0.0 && item.bevy_pos.y <= sim.world_height as f32);
         assert!(item.radius > 2.0 && item.radius < 10.0);
     }
 }
@@ -134,4 +134,24 @@ fn test_vignette_rgba_generation() {
     // Corner pixel (0, 0) should be heavily shadowed (alpha > 150)
     let corner_alpha = buf[3];
     assert!(corner_alpha > 150, "Corner should have high vignette alpha, got {}", corner_alpha);
+}
+
+#[test]
+fn test_dart_triangles_generation() {
+    use clank_app::rendering::generate_dart_mesh_data;
+    let sim = SimWorld::new(42);
+    let mut positions = Vec::new();
+    let mut colors = Vec::new();
+
+    generate_dart_mesh_data(&sim, &mut positions, &mut colors);
+
+    // 72 creatures, each creature has:
+    // 6 vertices for glow halo (2 triangles) + 6 vertices for body (2 triangles) = 12 vertices
+    assert_eq!(positions.len(), 72 * 12);
+    assert_eq!(colors.len(), 72 * 12);
+
+    // Body vertices must have non-zero alpha
+    for c in &colors {
+        assert!(c[3] > 0.05, "Alpha must be positive");
+    }
 }
