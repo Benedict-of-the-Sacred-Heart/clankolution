@@ -2113,6 +2113,7 @@ dependencies = [
  "bevy",
  "bevy_egui",
  "clank_core",
+ "image",
  "rkyv",
  "serde",
  "serde_json",
