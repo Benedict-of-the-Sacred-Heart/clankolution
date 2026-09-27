@@ -267,10 +267,12 @@ pub fn agent_picking_system(
     window_query: Query<&Window, With<bevy::window::PrimaryWindow>>,
     camera_query: Query<(&Camera, &GlobalTransform), With<crate::camera::MainCamera>>,
     sim: Option<ResMut<SimWorld>>,
+    ui_state: Option<Res<crate::ui::UiState>>,
     mut egui_contexts: Option<bevy_egui::EguiContexts>,
 ) {
     let (Some(mouse_buttons), Some(mut sim)) = (mouse_buttons, sim) else { return };
-    if !mouse_buttons.just_pressed(MouseButton::Left) {
+    let is_down = mouse_buttons.pressed(MouseButton::Left);
+    if !is_down {
         return;
     }
 
@@ -289,7 +291,44 @@ pub fn agent_picking_system(
     let Ok(world_pos) = camera.viewport_to_world_2d(camera_transform, cursor_pos) else { return };
 
     let sim_pos = bevy_to_sim_coord(world_pos, sim.world_height as f32);
-    sim.selected_agent_id = find_agent_at_position(&sim, sim_pos, 6.0);
+    let active_tool = ui_state.map(|s| s.active_tool).unwrap_or(crate::ui::ActiveTool::Observe);
+
+    match active_tool {
+        crate::ui::ActiveTool::Observe => {
+            if mouse_buttons.just_pressed(MouseButton::Left) {
+                sim.selected_agent_id = find_agent_at_position(&sim, sim_pos, 8.0);
+            }
+        }
+        crate::ui::ActiveTool::Nourish => {
+            let soil = &mut sim.world.soil;
+            let col = ((sim_pos.x as f64 / soil.w * soil.cols as f64) as usize).clamp(0, soil.cols - 1);
+            let row = ((sim_pos.y as f64 / soil.h * soil.rows as f64) as usize).clamp(0, soil.rows - 1);
+            let idx = row * soil.cols + col;
+            soil.food[idx] = (soil.food[idx] + 0.6).min(10.0);
+        }
+        crate::ui::ActiveTool::Blight => {
+            let soil = &mut sim.world.soil;
+            let col = ((sim_pos.x as f64 / soil.w * soil.cols as f64) as usize).clamp(0, soil.cols - 1);
+            let row = ((sim_pos.y as f64 / soil.h * soil.rows as f64) as usize).clamp(0, soil.rows - 1);
+            let idx = row * soil.cols + col;
+            soil.taint[idx] = (soil.taint[idx] + 0.8).min(5.0);
+            soil.food[idx] = 0.0;
+        }
+        crate::ui::ActiveTool::SeedLife => {
+            if mouse_buttons.just_pressed(MouseButton::Left) {
+                sim.world.create_agent(sim_pos.x as f64, sim_pos.y as f64, None, None);
+            }
+        }
+        crate::ui::ActiveTool::Extinguish => {
+            if let Some(target_id) = find_agent_at_position(&sim, sim_pos, 25.0) {
+                if let Some(a) = sim.world.agents.iter_mut().find(|a| a.id == target_id) {
+                    a.dead = 1;
+                    a.energy = 0.0;
+                }
+            }
+        }
+        crate::ui::ActiveTool::Eclipse => {}
+    }
 }
 
 pub struct ClankRenderPlugin;

@@ -53,3 +53,12 @@ fn test_camera_plugin_spawns_main_camera() {
     let count = query.iter(app.world()).count();
     assert_eq!(count, 1);
 }
+
+#[test]
+fn test_world_pointer_conversion() {
+    use clank_app::camera::screen_to_world;
+    let win_pos = Vec2::new(100.0, 150.0);
+    let world_pos = screen_to_world(win_pos, Vec2::new(900.0, 600.0), 1.0, Vec2::ZERO);
+    assert!(world_pos.x >= 0.0 && world_pos.x <= 900.0);
+    assert!(world_pos.y >= 0.0 && world_pos.y <= 600.0);
+}

@@ -20,6 +20,14 @@ pub fn compute_camera_pan(current: Vec3, mouse_delta: Vec2, zoom_scale: f32) -> 
 }
 
 #[inline]
+pub fn screen_to_world(win_pos: Vec2, world_size: Vec2, _zoom_scale: f32, _cam_pos: Vec2) -> Vec2 {
+    Vec2::new(
+        win_pos.x.clamp(0.0, world_size.x),
+        win_pos.y.clamp(0.0, world_size.y),
+    )
+}
+
+#[inline]
 pub fn track_target_position(current: Vec3, target: Vec2, lerp_factor: f32) -> Vec3 {
     Vec3::new(
         current.x + (target.x - current.x) * lerp_factor,
