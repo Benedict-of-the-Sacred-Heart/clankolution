@@ -4,6 +4,7 @@ use clank_app::sim::ClankSimPlugin;
 use clank_app::camera::ClankCameraPlugin;
 use clank_app::rendering::ClankRenderPlugin;
 use clank_app::ui::ClankUiPlugin;
+use clank_app::api::ClankApiPlugin;
 
 fn main() {
     App::new()
@@ -24,6 +25,7 @@ fn main() {
             ClankCameraPlugin,
             ClankRenderPlugin,
             ClankUiPlugin,
+            ClankApiPlugin::default(),
         ))
         .run();
 }

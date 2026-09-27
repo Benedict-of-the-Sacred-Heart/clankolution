@@ -60,9 +60,13 @@ pub struct LiveMetrics {
 }
 
 impl LiveMetrics {
-    pub fn update(&mut self, fps: f64, frame_time_ms: f64, tick: u32, population: usize, uptime_secs: f64) {
+    pub fn update(&mut self, fps: f64, frame_time: f64, tick: u32, population: usize, uptime_secs: f64) {
         self.fps = fps;
-        self.frame_time_ms = frame_time_ms;
+        self.frame_time_ms = if frame_time <= 1.0 {
+            frame_time * 1000.0
+        } else {
+            frame_time
+        };
         self.tick = tick;
         self.population = population;
         self.uptime_secs = uptime_secs;
@@ -431,4 +435,260 @@ pub fn start_api_server(
         port,
         thread: Some(thread),
     })
+}
+
+use bevy::prelude::*;
+use bevy::diagnostic::{DiagnosticsStore, FrameTimeDiagnosticsPlugin};
+use bevy::render::view::screenshot::{Screenshot, ScreenshotCaptured};
+use crate::sim::SimWorld;
+use crate::ui::{UiState, ActiveTool, trigger_spore_catastrophe};
+use crate::persistence::{save_clank_file, load_clank_file};
+use std::sync::{Arc, Mutex, RwLock};
+
+#[derive(Resource)]
+pub struct ApiReceiverResource(pub Arc<Mutex<Receiver<ApiCommand>>>);
+
+#[derive(Resource)]
+pub struct ApiSenderResource(pub Sender<ApiCommand>);
+
+#[derive(Resource)]
+pub struct SharedApiResource(pub Arc<RwLock<SharedApiData>>);
+
+#[derive(Resource)]
+pub struct ApiServerResource(pub Option<ApiServerHandle>);
+
+pub struct ClankApiPlugin {
+    pub port: u16,
+}
+
+impl Default for ClankApiPlugin {
+    fn default() -> Self {
+        let port = std::env::var("CLANK_API_PORT")
+            .ok()
+            .and_then(|p| p.parse::<u16>().ok())
+            .unwrap_or(9335);
+        Self { port }
+    }
+}
+
+impl Plugin for ClankApiPlugin {
+    fn build(&self, app: &mut App) {
+        if !app.is_plugin_added::<FrameTimeDiagnosticsPlugin>() {
+            app.add_plugins(FrameTimeDiagnosticsPlugin::default());
+        }
+
+        let (tx, rx) = std::sync::mpsc::channel();
+        let shared = Arc::new(RwLock::new(SharedApiData::default()));
+
+        let server_handle = match start_api_server(self.port, tx.clone(), shared.clone()) {
+            Ok(server) => {
+                bevy::log::info!("Clankolution HTTP API listening on 127.0.0.1:{}", self.port);
+                Some(server)
+            }
+            Err(e) => {
+                bevy::log::warn!("Could not bind Clankolution HTTP API on port {}: {}", self.port, e);
+                None
+            }
+        };
+
+        app.insert_resource(ApiSenderResource(tx))
+            .insert_resource(ApiReceiverResource(Arc::new(Mutex::new(rx))))
+            .insert_resource(SharedApiResource(shared))
+            .insert_resource(ApiServerResource(server_handle))
+            .add_systems(
+                Update,
+                (api_dispatch_system, api_metrics_sync_system, api_state_sync_system),
+            );
+    }
+}
+
+pub fn api_dispatch_system(
+    mut commands: Commands,
+    rx_res: Option<Res<ApiReceiverResource>>,
+    mut sim_res: Option<ResMut<SimWorld>>,
+    mut ui_res: Option<ResMut<UiState>>,
+) {
+    let Some(rx_res) = rx_res else { return; };
+    let rx = match rx_res.0.lock() {
+        Ok(guard) => guard,
+        Err(_) => return,
+    };
+
+    while let Ok(cmd) = rx.try_recv() {
+        match cmd {
+            ApiCommand::TakeScreenshot { path, response_tx } => {
+                let resp_tx = response_tx.clone();
+                let save_path = path.clone();
+                commands
+                    .spawn(Screenshot::primary_window())
+                    .observe(move |captured: On<ScreenshotCaptured>| {
+                        match captured.image.clone().try_into_dynamic() {
+                            Ok(dyn_img) => {
+                                let _ = save_screenshot_to_disk(&dyn_img, &save_path, resp_tx.clone());
+                            }
+                            Err(e) => {
+                                let _ = resp_tx.send(Err(format!("dynamic image conversion error: {}", e)));
+                            }
+                        }
+                    });
+            }
+            ApiCommand::UpdateSettings(req) => {
+                if let Some(ref mut sim) = sim_res {
+                    if let Some(speed) = req.speed {
+                        sim.speed = (speed.max(1.0).min(64.0)) as u32;
+                    }
+                    if let Some(paused) = req.paused {
+                        sim.paused = paused;
+                    }
+                    if let Some(mut_rate) = req.mutation {
+                        sim.world.mutation = mut_rate.clamp(0.0, 1.0);
+                    }
+                    if let Some(growth) = req.growth {
+                        sim.world.growth = growth.clamp(0.0, 5.0);
+                    }
+                    if let Some(hostility) = req.hostility {
+                        sim.world.hostility = hostility.clamp(0.0, 5.0);
+                    }
+                    if let Some(cap) = req.max_cap {
+                        sim.world.max_cap = cap.clamp(50, 2000);
+                    }
+                }
+                if let Some(ref mut ui) = ui_res {
+                    if let Some(speed) = req.speed {
+                        ui.speed = speed.max(1.0).min(64.0);
+                    }
+                }
+            }
+            ApiCommand::ApplyTool(req) => {
+                let tool_lower = req.tool.to_lowercase();
+                if let Some(ref mut ui) = ui_res {
+                    match tool_lower.as_str() {
+                        "observe" => ui.active_tool = ActiveTool::Observe,
+                        "nourish" => ui.active_tool = ActiveTool::Nourish,
+                        "blight" => ui.active_tool = ActiveTool::Blight,
+                        "seed" | "seedlife" => ui.active_tool = ActiveTool::SeedLife,
+                        "extinguish" | "kill" => ui.active_tool = ActiveTool::Extinguish,
+                        "eclipse" => ui.active_tool = ActiveTool::Eclipse,
+                        _ => {}
+                    }
+                }
+                if let Some(ref mut sim) = sim_res {
+                    let x = req.x.unwrap_or(sim.world_width / 2.0);
+                    let y = req.y.unwrap_or(sim.world_height / 2.0);
+                    match tool_lower.as_str() {
+                        "nourish" => {
+                            let soil = &mut sim.world.soil;
+                            let col = ((x / soil.w * soil.cols as f64) as usize).clamp(0, soil.cols - 1);
+                            let row = ((y / soil.h * soil.rows as f64) as usize).clamp(0, soil.rows - 1);
+                            let idx = row * soil.cols + col;
+                            soil.food[idx] = (soil.food[idx] + 0.6).min(10.0);
+                        }
+                        "blight" => {
+                            let soil = &mut sim.world.soil;
+                            let col = ((x / soil.w * soil.cols as f64) as usize).clamp(0, soil.cols - 1);
+                            let row = ((y / soil.h * soil.rows as f64) as usize).clamp(0, soil.rows - 1);
+                            let idx = row * soil.cols + col;
+                            soil.taint[idx] = (soil.taint[idx] + 0.8).min(5.0);
+                            soil.food[idx] = 0.0;
+                        }
+                        "seed" | "seedlife" => {
+                            sim.world.create_agent(x, y, None, None);
+                        }
+                        "extinguish" | "kill" => {
+                            let radius = 40.0;
+                            sim.world.agents.retain(|a| {
+                                let dx = a.x - x;
+                                let dy = a.y - y;
+                                (dx * dx + dy * dy) > radius * radius
+                            });
+                        }
+                        "eclipse" => {
+                            trigger_spore_catastrophe(sim);
+                        }
+                        _ => {}
+                    }
+                }
+            }
+            ApiCommand::Reset { seed } => {
+                if let Some(ref mut sim) = sim_res {
+                    sim.world = clank_core::world::World::new(seed as u32);
+                    sim.selected_agent_id = None;
+                }
+            }
+            ApiCommand::PersistSave { path, response_tx } => {
+                if let Some(ref sim) = sim_res {
+                    let res = save_clank_file(sim, &path).map_err(|e| e.to_string());
+                    let _ = response_tx.send(res);
+                } else {
+                    let _ = response_tx.send(Err("Simulation not initialized".to_string()));
+                }
+            }
+            ApiCommand::PersistLoad { path, response_tx } => {
+                if let Some(ref mut sim) = sim_res {
+                    let res = load_clank_file(sim, &path).map_err(|e| e.to_string());
+                    let _ = response_tx.send(res);
+                } else {
+                    let _ = response_tx.send(Err("Simulation not initialized".to_string()));
+                }
+            }
+        }
+    }
+}
+
+pub fn api_state_sync_system(
+    sim_res: Option<Res<SimWorld>>,
+    ui_res: Option<Res<UiState>>,
+    shared: Option<Res<SharedApiResource>>,
+) {
+    let (Some(sim), Some(shared)) = (sim_res, shared) else { return; };
+    let ui_tool = ui_res
+        .as_ref()
+        .map(|u| format!("{:?}", u.active_tool))
+        .unwrap_or_else(|| "Observe".to_string());
+
+    let max_gen = sim.world.agents.iter().map(|a| a.gen).max().unwrap_or(0);
+    let state = ApiStateResponse {
+        tick: sim.world.tick,
+        paused: sim.paused,
+        speed: sim.speed,
+        population: sim.world.agents.iter().filter(|a| a.dead == 0).count(),
+        max_capacity: sim.world.max_cap,
+        generation: max_gen as u32,
+        kills: sim.world.kills,
+        births: sim.world.births,
+        roots: sim.world.roots,
+        eclipse: sim.world.eclipse,
+        active_tool: ui_tool,
+        mutation: sim.world.mutation,
+        growth: sim.world.growth,
+        hostility: sim.world.hostility,
+    };
+    if let Ok(mut lock) = shared.0.write() {
+        lock.state = Some(state);
+    };
+}
+
+pub fn api_metrics_sync_system(
+    diagnostics: Res<DiagnosticsStore>,
+    time: Res<Time>,
+    sim_res: Option<Res<SimWorld>>,
+    shared: Option<Res<SharedApiResource>>,
+) {
+    let Some(shared) = shared else { return; };
+    let fps = diagnostics
+        .get(&FrameTimeDiagnosticsPlugin::FPS)
+        .and_then(|d| d.smoothed().or_else(|| d.average()).or_else(|| d.value()))
+        .unwrap_or(0.0);
+    let frame_time_ms = diagnostics
+        .get(&FrameTimeDiagnosticsPlugin::FRAME_TIME)
+        .and_then(|d| d.smoothed().or_else(|| d.average()).or_else(|| d.value()))
+        .unwrap_or(0.0);
+    let (tick, pop) = if let Some(ref sim) = sim_res {
+        (sim.world.tick, sim.world.agents.iter().filter(|a| a.dead == 0).count())
+    } else {
+        (0, 0)
+    };
+    if let Ok(mut lock) = shared.0.write() {
+        lock.metrics.update(fps, frame_time_ms, tick, pop, time.elapsed_secs_f64());
+    };
 }
