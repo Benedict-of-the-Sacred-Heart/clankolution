@@ -118,3 +118,20 @@ fn test_dart_body_morphology() {
     // Rear notch must be indented
     assert!(vertices[2].x < 0.0);
 }
+
+#[test]
+fn test_vignette_rgba_generation() {
+    use clank_app::rendering::generate_vignette_rgba;
+    let size = 64;
+    let mut buf = vec![0u8; size * size * 4];
+    generate_vignette_rgba(size, size, &mut buf);
+
+    // Center pixel should be nearly transparent (alpha ~ 0..30)
+    let center_idx = ((size / 2) * size + (size / 2)) * 4;
+    let center_alpha = buf[center_idx + 3];
+    assert!(center_alpha < 40, "Center should have low vignette alpha, got {}", center_alpha);
+
+    // Corner pixel (0, 0) should be heavily shadowed (alpha > 150)
+    let corner_alpha = buf[3];
+    assert!(corner_alpha > 150, "Corner should have high vignette alpha, got {}", corner_alpha);
+}

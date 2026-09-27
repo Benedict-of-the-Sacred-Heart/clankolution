@@ -1,8 +1,23 @@
 use bevy::prelude::*;
+use bevy::asset::RenderAssetUsages;
+use bevy::render::render_resource::{Extent3d, TextureDimension, TextureFormat};
+use bevy::image::ImageSampler;
 use clank_core::agent::AgentData;
 use clank_core::soil::SoilGrid;
 use crate::sim::SimWorld;
 use crate::theme::PALETTE;
+
+#[derive(Resource)]
+pub struct SoilTextureHandle(pub Handle<Image>);
+
+#[derive(Resource)]
+pub struct VignetteTextureHandle(pub Handle<Image>);
+
+#[derive(Component)]
+pub struct SoilSprite;
+
+#[derive(Component)]
+pub struct VignetteSprite;
 
 #[inline]
 pub fn sim_to_bevy_coord(sim_pos: Vec2, world_height: f32) -> Vec2 {
@@ -108,7 +123,7 @@ pub fn extract_agent_render_data(sim: &SimWorld) -> Vec<AgentRenderItem> {
 }
 
 pub fn generate_soil_rgba(soil: &SoilGrid, out_buf: &mut [u8]) {
-    let inv18 = 1.0 / 18.0;
+    let inv18 = 1.0 / 1.8;
     for i in 0..soil.grid_size {
         let f_val = ((soil.food[i] * inv18) as f64).min(1.0);
         let mut r = 9.5 + f_val * 42.0;
@@ -141,18 +156,137 @@ pub fn generate_soil_rgba(soil: &SoilGrid, out_buf: &mut [u8]) {
     }
 }
 
+pub fn generate_vignette_rgba(w: usize, h: usize, out_buf: &mut [u8]) {
+    let inv_w = 1.0 / (w as f32);
+    let inv_h = 1.0 / (h as f32);
+    for y in 0..h {
+        let ny = (y as f32) * inv_h - 0.45;
+        for x in 0..w {
+            let nx = (x as f32) * inv_w - 0.5;
+            let dist = (nx * nx * 1.2 + ny * ny).sqrt();
+            let norm_dist = ((dist - 0.25) / 0.45).clamp(0.0, 1.0);
+            let alpha = (norm_dist * norm_dist * 220.0).clamp(0.0, 255.0) as u8;
+            let idx = (y * w + x) * 4;
+            if idx + 3 < out_buf.len() {
+                out_buf[idx] = 7;
+                out_buf[idx + 1] = 16;
+                out_buf[idx + 2] = 18;
+                out_buf[idx + 3] = alpha;
+            }
+        }
+    }
+}
+
+pub fn setup_soil_rendering(
+    mut commands: Commands,
+    mut images: ResMut<Assets<Image>>,
+) {
+    // 1. Dynamic Soil Image with Linear Sampler for Smooth Cellular Texture
+    let mut soil_img = Image::new_fill(
+        Extent3d { width: 75, height: 50, depth_or_array_layers: 1 },
+        TextureDimension::D2,
+        &[10, 23, 26, 255],
+        TextureFormat::Rgba8UnormSrgb,
+        RenderAssetUsages::default(),
+    );
+    soil_img.sampler = ImageSampler::linear();
+    let soil_handle = images.add(soil_img);
+
+    commands.spawn((
+        Sprite {
+            image: soil_handle.clone(),
+            custom_size: Some(Vec2::new(950.0, 747.0)),
+            ..default()
+        },
+        Transform::from_xyz(475.0, 373.5, -20.0),
+        SoilSprite,
+    ));
+    commands.insert_resource(SoilTextureHandle(soil_handle));
+
+    // 2. Atmospheric Radial Vignette Overlay Quad
+    let vig_size = 128;
+    let mut vig_buf = vec![0u8; vig_size * vig_size * 4];
+    generate_vignette_rgba(vig_size, vig_size, &mut vig_buf);
+    let mut vig_img = Image::new_fill(
+        Extent3d { width: vig_size as u32, height: vig_size as u32, depth_or_array_layers: 1 },
+        TextureDimension::D2,
+        &vig_buf,
+        TextureFormat::Rgba8UnormSrgb,
+        RenderAssetUsages::default(),
+    );
+    vig_img.sampler = ImageSampler::linear();
+    let vig_handle = images.add(vig_img);
+
+    commands.spawn((
+        Sprite {
+            image: vig_handle.clone(),
+            custom_size: Some(Vec2::new(950.0, 747.0)),
+            ..default()
+        },
+        Transform::from_xyz(475.0, 373.5, -5.0),
+        VignetteSprite,
+    ));
+    commands.insert_resource(VignetteTextureHandle(vig_handle));
+}
+
+pub fn update_soil_texture_system(
+    sim: Option<Res<SimWorld>>,
+    soil_handle: Option<Res<SoilTextureHandle>>,
+    mut images: ResMut<Assets<Image>>,
+    mut query: Query<(&mut Sprite, &mut Transform), (With<SoilSprite>, Without<VignetteSprite>)>,
+    mut vig_query: Query<(&mut Sprite, &mut Transform), (With<VignetteSprite>, Without<SoilSprite>)>,
+) {
+    let (Some(sim), Some(soil_handle)) = (sim, soil_handle) else { return };
+    let Some(mut image) = images.get_mut(&soil_handle.0) else { return };
+
+    let cols = sim.world.soil.cols;
+    let rows = sim.world.soil.rows;
+    let expected_len = cols * rows * 4;
+
+    let needs_resize = image.texture_descriptor.size.width != cols as u32
+        || image.texture_descriptor.size.height != rows as u32
+        || match &image.data {
+            Some(d) => d.len() != expected_len,
+            None => true,
+        };
+
+    if needs_resize {
+        image.resize(Extent3d {
+            width: cols as u32,
+            height: rows as u32,
+            depth_or_array_layers: 1,
+        });
+        if let Some(ref mut d) = image.data {
+            d.resize(expected_len, 0);
+        } else {
+            image.data = Some(vec![0u8; expected_len]);
+        }
+    }
+
+    if let Some(ref mut data) = image.data {
+        generate_soil_rgba(&sim.world.soil, data);
+    }
+
+    let w = sim.world_width as f32;
+    let h = sim.world_height as f32;
+
+    if let Ok((mut sprite, mut transform)) = query.single_mut() {
+        sprite.custom_size = Some(Vec2::new(w, h));
+        transform.translation.x = w * 0.5;
+        transform.translation.y = h * 0.5;
+    }
+    if let Ok((mut sprite, mut transform)) = vig_query.single_mut() {
+        sprite.custom_size = Some(Vec2::new(w, h));
+        transform.translation.x = w * 0.5;
+        transform.translation.y = h * 0.5;
+    }
+}
+
 pub fn render_sim_gizmos_system(sim: Option<Res<SimWorld>>, mut gizmos: Gizmos) {
     let Some(sim) = sim else { return };
 
     let w = sim.world_width as f32;
     let h = sim.world_height as f32;
-
-    // Field arena background and outer border
-    gizmos.rect_2d(
-        Vec2::new(w * 0.5, h * 0.5),
-        Vec2::new(w, h),
-        Color::srgb(0.043, 0.098, 0.106),
-    );
 
     let items = extract_agent_render_data(&sim);
     for item in items {
@@ -335,6 +469,14 @@ pub struct ClankRenderPlugin;
 
 impl Plugin for ClankRenderPlugin {
     fn build(&self, app: &mut App) {
-        app.add_systems(Update, (render_sim_gizmos_system, agent_picking_system));
+        app.add_systems(Startup, setup_soil_rendering)
+            .add_systems(
+                Update,
+                (
+                    update_soil_texture_system,
+                    render_sim_gizmos_system,
+                    agent_picking_system,
+                ),
+            );
     }
 }
