@@ -1,11 +1,6 @@
-pub mod math;
-pub mod agent;
-pub mod soil;
-pub mod archive;
-pub mod world;
-
-use agent::AgentData;
-use world::World;
+use clank_core::agent::AgentData;
+use clank_core::world::{self, World};
+use clank_core::archive;
 use rkyv::Deserialize;
 
 static mut GLOBAL_WORLD: Option<World> = None;
@@ -178,7 +173,7 @@ pub extern "C" fn restore_snapshot() -> u32 {
             w.soil.scent[i] = archived.scent[i].into();
         }
 
-        let snap_agents: Vec<crate::agent::AgentData> = match archived.agents.deserialize(&mut rkyv::Infallible) {
+        let snap_agents: Vec<clank_core::agent::AgentData> = match archived.agents.deserialize(&mut rkyv::Infallible) {
             Ok(ag) => ag,
             Err(_) => return 3,
         };
@@ -225,7 +220,7 @@ pub extern "C" fn get_max_capacity() -> u32 {
 #[no_mangle]
 pub extern "C" fn set_agents_count(count: u32) {
     let w = get_world();
-    let count = (count as usize).min(crate::agent::ABSOLUTE_MAX_CAP);
+    let count = (count as usize).min(clank_core::agent::ABSOLUTE_MAX_CAP);
     w.agents.resize(count, AgentData::default());
     w.pos_x.resize(count, 0.0);
     w.pos_y.resize(count, 0.0);

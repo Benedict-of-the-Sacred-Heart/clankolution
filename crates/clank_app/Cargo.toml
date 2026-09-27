@@ -1,0 +1,12 @@
+[package]
+name = "clank_app"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+clank_core = { path = "../clank_core" }
+bevy = { version = "0.19.1", default-features = true }
+bevy_egui = "0.41.0"
+rkyv = { workspace = true }
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"

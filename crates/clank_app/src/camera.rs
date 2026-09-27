@@ -1,0 +1,95 @@
+use bevy::prelude::*;
+use bevy::input::mouse::{AccumulatedMouseMotion, AccumulatedMouseScroll};
+use crate::sim::SimWorld;
+
+#[derive(Component)]
+pub struct MainCamera;
+
+#[inline]
+pub fn clamp_zoom(current: f32, factor: f32) -> f32 {
+    (current * factor).clamp(0.1, 10.0)
+}
+
+#[inline]
+pub fn compute_camera_pan(current: Vec3, mouse_delta: Vec2, zoom_scale: f32) -> Vec3 {
+    Vec3::new(
+        current.x - mouse_delta.x * zoom_scale,
+        current.y - mouse_delta.y * zoom_scale,
+        current.z,
+    )
+}
+
+#[inline]
+pub fn track_target_position(current: Vec3, target: Vec2, lerp_factor: f32) -> Vec3 {
+    Vec3::new(
+        current.x + (target.x - current.x) * lerp_factor,
+        current.y + (target.y - current.y) * lerp_factor,
+        current.z,
+    )
+}
+
+pub fn setup_camera(mut commands: Commands) {
+    commands.spawn((
+        Camera2d,
+        Transform::from_xyz(450.0, 300.0, 0.0),
+        MainCamera,
+    ));
+}
+
+pub fn camera_control_system(
+    mouse_buttons: Option<Res<ButtonInput<MouseButton>>>,
+    mouse_motion: Option<Res<AccumulatedMouseMotion>>,
+    mouse_scroll: Option<Res<AccumulatedMouseScroll>>,
+    sim: Option<Res<SimWorld>>,
+    mut camera_query: Query<(&mut Transform, &mut Projection), With<MainCamera>>,
+) {
+    let Ok((mut transform, mut projection)) = camera_query.single_mut() else {
+        return;
+    };
+
+    let mut current_scale = match *projection {
+        Projection::Orthographic(ref ortho) => ortho.scale,
+        _ => 1.0,
+    };
+
+    // Zooming
+    if let Some(scroll) = mouse_scroll {
+        if scroll.delta.y != 0.0 {
+            let zoom_factor = if scroll.delta.y > 0.0 { 0.9 } else { 1.1 };
+            current_scale = clamp_zoom(current_scale, zoom_factor);
+            if let Projection::Orthographic(ref mut ortho) = *projection {
+                ortho.scale = current_scale;
+            }
+        }
+    }
+
+    // Panning (Right click or Middle click drag)
+    if let (Some(buttons), Some(motion)) = (mouse_buttons, mouse_motion) {
+        if buttons.pressed(MouseButton::Right) || buttons.pressed(MouseButton::Middle) {
+            if motion.delta != Vec2::ZERO {
+                let world_delta = Vec2::new(motion.delta.x, -motion.delta.y);
+                transform.translation = compute_camera_pan(transform.translation, world_delta, current_scale);
+            }
+        }
+    }
+
+    // Creature tracking
+    if let Some(sim) = sim {
+        if let Some(agent) = sim.get_selected_agent() {
+            transform.translation = track_target_position(
+                transform.translation,
+                Vec2::new(agent.x as f32, (sim.world_height - agent.y) as f32),
+                0.1,
+            );
+        }
+    }
+}
+
+pub struct ClankCameraPlugin;
+
+impl Plugin for ClankCameraPlugin {
+    fn build(&self, app: &mut App) {
+        app.add_systems(Startup, setup_camera)
+            .add_systems(Update, camera_control_system);
+    }
+}

@@ -3,13 +3,12 @@ const path = require('path');
 const { execSync } = require('child_process');
 
 const repoRoot = path.resolve(__dirname, '..');
-const wasmDir = path.join(repoRoot, 'wasm', 'clank_wasm');
-const wasmPath = path.join(wasmDir, 'target', 'wasm32-unknown-unknown', 'release', 'clank_wasm.wasm');
+const wasmPath = path.join(repoRoot, 'target', 'wasm32-unknown-unknown', 'release', 'clank_wasm.wasm');
 const htmlPath = path.join(repoRoot, 'clankolution.html');
 
 console.log('Compiling Rust to wasm32-unknown-unknown...');
-execSync('RUSTFLAGS="-C link-arg=--allow-undefined" cargo build --target wasm32-unknown-unknown --release --manifest-path Cargo.toml', {
-  cwd: wasmDir,
+execSync('RUSTFLAGS="-C link-arg=--allow-undefined" cargo build -p clank_wasm --target wasm32-unknown-unknown --release', {
+  cwd: repoRoot,
   stdio: 'inherit'
 });
 

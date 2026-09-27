@@ -1,0 +1,22 @@
+[workspace]
+resolver = "2"
+members = [
+    "crates/clank_core",
+    "crates/clank_wasm",
+    "crates/clank_app",
+]
+
+[workspace.dependencies]
+rkyv = { version = "0.7.44", default-features = false, features = ["alloc", "size_32", "validation"] }
+libm = "0.2.11"
+bevy = { version = "0.19.1", default-features = false, features = [
+    "bevy_render",
+    "bevy_core_pipeline",
+    "bevy_sprite",
+    "bevy_winit",
+    "x11",
+    "wayland",
+    "multi_threaded",
+    "png",
+] }
+bevy_egui = "0.41.0"
