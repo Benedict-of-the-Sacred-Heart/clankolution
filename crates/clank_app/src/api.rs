@@ -82,6 +82,41 @@ pub struct ScreenshotResult {
     pub height: u32,
 }
 
+pub fn save_screenshot_to_disk(
+    dyn_img: &image::DynamicImage,
+    path_str: &str,
+    response_tx: Sender<Result<ScreenshotResult, String>>,
+) -> Result<ScreenshotResult, String> {
+    let path = std::path::Path::new(path_str);
+    if let Some(parent) = path.parent() {
+        if !parent.as_os_str().is_empty() {
+            let _ = std::fs::create_dir_all(parent);
+        }
+    }
+    let img = dyn_img.to_rgb8();
+    let width = img.width();
+    let height = img.height();
+    match img.save(path) {
+        Ok(_) => {
+            let full_path = std::fs::canonicalize(path)
+                .map(|p| p.to_string_lossy().to_string())
+                .unwrap_or_else(|_| path_str.to_string());
+            let result = ScreenshotResult {
+                path: full_path,
+                width,
+                height,
+            };
+            let _ = response_tx.send(Ok(result.clone()));
+            Ok(result)
+        }
+        Err(e) => {
+            let err_msg = format!("Failed to save screenshot: {}", e);
+            let _ = response_tx.send(Err(err_msg.clone()));
+            Err(err_msg)
+        }
+    }
+}
+
 #[derive(Debug)]
 pub enum ApiCommand {
     TakeScreenshot {
