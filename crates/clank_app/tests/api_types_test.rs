@@ -9,6 +9,7 @@ fn test_api_types_json_roundtrip() {
         growth: Some(1.5),
         hostility: Some(1.2),
         max_cap: Some(500),
+        scroll_offset: Some(100.0),
     };
     let json = serde_json::to_string(&settings).expect("serialize settings");
     let deserialized: ApiSettingsRequest = serde_json::from_str(&json).expect("deserialize settings");

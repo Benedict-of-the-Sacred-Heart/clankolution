@@ -34,12 +34,13 @@ pub struct UiState {
     pub status_message: Option<String>,
     pub theme_initialized: bool,
     pub history_timer: f32,
+    pub scroll_offset: Option<f32>,
 }
 
 impl Default for UiState {
     fn default() -> Self {
         let mut chronicle = Vec::new();
-        chronicle.push("World seeded. Primordial creatures awakened.".to_string());
+        chronicle.push("00000  The first hunger begins.".to_string());
         Self {
             speed: 1.0,
             active_tool: ActiveTool::Observe,
@@ -51,6 +52,7 @@ impl Default for UiState {
             status_message: None,
             theme_initialized: false,
             history_timer: 0.0,
+            scroll_offset: None,
         }
     }
 }
@@ -68,10 +70,10 @@ impl UiState {
     }
 
     pub fn add_chronicle(&mut self, text: String) {
-        if self.chronicle.len() >= 50 {
-            self.chronicle.remove(0);
+        self.chronicle.insert(0, text);
+        if self.chronicle.len() > 50 {
+            self.chronicle.truncate(50);
         }
-        self.chronicle.push(text);
     }
 }
 
@@ -113,6 +115,18 @@ pub fn clank_ui_system(
         state.record_history(pop, food_sum, kills);
     }
 
+    // Drain simulation chronicle events from clank_core
+    let sim_events: Vec<_> = sim.world.events.drain(..).collect();
+    for ev in sim_events {
+        let msg = match ev.event_type {
+            1 => "Spores emerge from the sediment.".to_string(),
+            2 => format!("Generation {} opens in lineage {}.", ev.p1, ev.p2),
+            3 => format!("Lineage {} has taken {} lives.", ev.p1, ev.p2),
+            _ => continue,
+        };
+        state.add_chronicle(format!("{:05}  {}", ev.tick, msg));
+    }
+
     let mut root_ui = Ui::new(
         ctx.clone(),
         "root_ui".into(),
@@ -121,12 +135,17 @@ pub fn clank_ui_system(
             .max_rect(ctx.viewport_rect()),
     );
 
-    // 1. Top Panel (Exact Brand Header: height 53px, background #0b1719, line #1a3033)
+    // 1. Top Panel (Exact Brand Header: height 53px, background #0b1719, bottom line #1a3033)
     egui::Panel::top("top_header")
         .exact_size(53.0)
         .resizable(false)
-        .frame(egui::Frame::NONE.fill(COLOR_TOP_BG).stroke(Stroke::new(1.0, COLOR_PANEL_LINE)))
+        .frame(egui::Frame::NONE.fill(COLOR_TOP_BG))
         .show(&mut root_ui, |ui| {
+            let r = ui.max_rect();
+            ui.painter().line_segment(
+                [Pos2::new(r.left(), r.bottom()), Pos2::new(r.right(), r.bottom())],
+                Stroke::new(1.0, COLOR_PANEL_LINE),
+            );
             ui.add_space(6.0);
             ui.horizontal_centered(|ui| {
                 ui.add_space(18.0);
@@ -148,7 +167,7 @@ pub fn clank_ui_system(
                         .corner_radius(CornerRadius::same(3));
                     if ui.add_sized([95.0, 28.0], btn_new).clicked() {
                         sim.reset();
-                        state.add_chronicle("Cycle 00000: New primordial world seeded.".to_string());
+                        state.add_chronicle(format!("{:05}  The first hunger begins.", sim.world.tick));
                     }
 
                     ui.add_space(6.0);
@@ -169,7 +188,7 @@ pub fn clank_ui_system(
                                         let mut speed_val = state.speed;
                                         ui.spacing_mut().slider_width = 44.0;
                                         if ui.add(egui::Slider::new(&mut speed_val, 1.0..=10.0).show_value(false)).changed() {
-                                            set_simulation_speed(&mut sim, &mut state, speed_val);
+                                             set_simulation_speed(&mut sim, &mut state, speed_val);
                                         }
                                         ui.label(RichText::new(format!("{}×", sim.speed)).size(10.5).monospace().strong().color(COLOR_GOLD));
                                     });
@@ -191,14 +210,23 @@ pub fn clank_ui_system(
             });
         });
 
-    // 2. Right Sidebar Panel (Exact 330px width, #0c191b background)
+    // 2. Right Sidebar Panel (Exact 330px width, #0c191b background, left line #1a3033)
     egui::Panel::right("right_sidebar")
         .exact_size(330.0)
         .resizable(false)
-        .frame(egui::Frame::NONE.fill(COLOR_SIDE_BG).stroke(Stroke::new(1.0, COLOR_PANEL_LINE)))
+        .frame(egui::Frame::NONE.fill(COLOR_SIDE_BG))
         .show(&mut root_ui, |ui| {
+            let r = ui.max_rect();
+            ui.painter().line_segment(
+                [Pos2::new(r.left(), r.top()), Pos2::new(r.left(), r.bottom())],
+                Stroke::new(1.0, COLOR_PANEL_LINE),
+            );
             ui.add_space(4.0);
-            egui::ScrollArea::vertical().auto_shrink([false, false]).show(ui, |ui| {
+            let mut scroll_area = egui::ScrollArea::vertical().auto_shrink([false, false]);
+            if let Some(offset) = state.scroll_offset {
+                scroll_area = scroll_area.vertical_scroll_offset(offset);
+            }
+            scroll_area.show(ui, |ui| {
                 ui.add_space(8.0);
                 ui.horizontal(|ui| {
                     ui.add_space(10.0);
@@ -227,7 +255,11 @@ pub fn clank_ui_system(
                         // 2x2 Stat Grid
                         let active_count = sim.world.agents.iter().filter(|a| a.dead == 0).count();
                         let max_gen = sim.world.agents.iter().map(|a| a.gen).max().unwrap_or(0);
-                        let root_count = sim.world.roots;
+                        let living_roots = sim.world.agents.iter()
+                            .filter(|a| a.dead == 0)
+                            .map(|a| a.root)
+                            .collect::<std::collections::HashSet<_>>()
+                            .len();
                         let kills_count = sim.world.kills;
 
                         egui::Grid::new("stat_grid").num_columns(2).spacing([8.0, 8.0]).show(ui, |ui| {
@@ -235,7 +267,7 @@ pub fn clank_ui_system(
                             render_stat_box(ui, "GENERATION", &format!("{}", max_gen), " / oldest", Some("living"));
                             ui.end_row();
                             render_stat_box(ui, "PREDATIONS", &format!("{}", kills_count), " / total", None);
-                            render_stat_box(ui, "LINEAGES", &format!("{}", root_count), " / living", Some("roots"));
+                            render_stat_box(ui, "LINEAGES", &format!("{}", living_roots), " / living", Some("roots"));
                             ui.end_row();
                         });
 
@@ -378,7 +410,7 @@ fn render_tool_matrix(ui: &mut egui::Ui, state: &mut UiState, sim: &mut SimWorld
             if ui.add_sized([96.0, 30.0], btn).clicked() {
                 if tool == ActiveTool::Eclipse {
                     trigger_spore_catastrophe(sim);
-                    state.add_chronicle(format!("Cycle {:05}: Spore Catastrophe triggered! Sunlight obscured.", sim.world.tick));
+                    state.add_chronicle(format!("{:05}  An eclipse consumes the harvest.", sim.world.tick));
                 } else {
                     state.active_tool = tool;
                 }
@@ -399,7 +431,6 @@ fn render_persistence_section(ui: &mut egui::Ui, state: &mut UiState, sim: &mut 
             match save_clank_file(sim, &state.file_path) {
                 Ok(bytes) => {
                     let msg = format!("Exported {} bytes to {}", bytes, state.file_path);
-                    state.add_chronicle(msg.clone());
                     state.status_message = Some(msg);
                 }
                 Err(e) => state.status_message = Some(format!("Export error: {}", e)),
@@ -413,7 +444,6 @@ fn render_persistence_section(ui: &mut egui::Ui, state: &mut UiState, sim: &mut 
             match export_json_file(sim, &json_path) {
                 Ok(bytes) => {
                     let msg = format!("Exported JSON ({} bytes) to {}", bytes, json_path);
-                    state.add_chronicle(msg.clone());
                     state.status_message = Some(msg);
                 }
                 Err(e) => state.status_message = Some(format!("JSON error: {}", e)),
@@ -432,9 +462,13 @@ fn render_persistence_section(ui: &mut egui::Ui, state: &mut UiState, sim: &mut 
             match result {
                 Ok(()) => {
                     sim.selected_agent_id = None;
-                    let msg = format!("Imported {} successfully", state.file_path);
-                    state.add_chronicle(msg.clone());
-                    state.status_message = Some(msg);
+                    let msg = if file_is_json {
+                        "A world returns from its record."
+                    } else {
+                        "A world returns from its .clank record."
+                    };
+                    state.add_chronicle(format!("{:05}  {}", sim.world.tick, msg));
+                    state.status_message = Some(format!("Imported {} successfully", state.file_path));
                 }
                 Err(e) => state.status_message = Some(format!("Import error: {}", e)),
             }
@@ -524,44 +558,41 @@ fn render_history_chart(ui: &mut egui::Ui, state: &UiState, max_cap: usize) {
     }
 
     let count = state.history.len();
-    let x_step = rect.width() / (count - 1) as f32;
+    let x_step = (rect.width() - 2.0) / (count - 1) as f32;
 
     // Series 1: Population (Life: #8fe3cf)
     let color_life = Color32::from_rgb(143, 227, 207);
     let cap_f = (max_cap as f32).max(220.0);
-    for i in 0..count - 1 {
-        let p0 = &state.history[i];
-        let p1 = &state.history[i + 1];
-        let y0 = rect.bottom() - 3.0 - (p0.population as f32 / cap_f).clamp(0.0, 1.0) * (rect.height() - 7.0);
-        let y1 = rect.bottom() - 3.0 - (p1.population as f32 / cap_f).clamp(0.0, 1.0) * (rect.height() - 7.0);
-        painter.line_segment([Pos2::new(rect.left() + i as f32 * x_step, y0), Pos2::new(rect.left() + (i + 1) as f32 * x_step, y1)], Stroke::new(1.5, color_life));
+    let mut life_pts = Vec::with_capacity(count);
+    for (i, p) in state.history.iter().enumerate() {
+        let x = rect.left() + 1.0 + i as f32 * x_step;
+        let y = rect.bottom() - 3.0 - (p.population as f32 / cap_f).clamp(0.0, 1.0) * (rect.height() - 7.0);
+        life_pts.push(Pos2::new(x, y));
     }
+    painter.line(life_pts, Stroke::new(1.5, color_life));
 
     // Series 2: Food (Food: #d9ad72)
     let color_food = Color32::from_rgb(217, 173, 114);
-    for i in 0..count - 1 {
-        let p0 = &state.history[i];
-        let p1 = &state.history[i + 1];
-        let y0 = rect.bottom() - 3.0 - (p0.food / 1.7).clamp(0.0, 1.0) * (rect.height() - 7.0);
-        let y1 = rect.bottom() - 3.0 - (p1.food / 1.7).clamp(0.0, 1.0) * (rect.height() - 7.0);
-        painter.line_segment([Pos2::new(rect.left() + i as f32 * x_step, y0), Pos2::new(rect.left() + (i + 1) as f32 * x_step, y1)], Stroke::new(1.5, color_food));
+    let mut food_pts = Vec::with_capacity(count);
+    for (i, p) in state.history.iter().enumerate() {
+        let x = rect.left() + 1.0 + i as f32 * x_step;
+        let y = rect.bottom() - 3.0 - (p.food / 1.7).clamp(0.0, 1.0) * (rect.height() - 7.0);
+        food_pts.push(Pos2::new(x, y));
     }
+    painter.line(food_pts, Stroke::new(1.5, color_food));
 
     // Series 3: Violence (Predations: #ed7869)
     let color_pred = Color32::from_rgb(237, 120, 105);
-    for i in 0..count - 1 {
+    let mut pred_pts = Vec::with_capacity(count);
+    for i in 0..count {
+        let x = rect.left() + 1.0 + i as f32 * x_step;
         let k0 = state.history[i].kills;
         let k_prev = state.history[i.saturating_sub(10)].kills;
-        let delta0 = (k0.saturating_sub(k_prev) as f32 / 30.0).clamp(0.0, 1.0);
-
-        let k1 = state.history[i + 1].kills;
-        let k_prev1 = state.history[(i + 1).saturating_sub(10)].kills;
-        let delta1 = (k1.saturating_sub(k_prev1) as f32 / 30.0).clamp(0.0, 1.0);
-
-        let y0 = rect.bottom() - 3.0 - delta0 * (rect.height() - 7.0);
-        let y1 = rect.bottom() - 3.0 - delta1 * (rect.height() - 7.0);
-        painter.line_segment([Pos2::new(rect.left() + i as f32 * x_step, y0), Pos2::new(rect.left() + (i + 1) as f32 * x_step, y1)], Stroke::new(1.5, color_pred));
+        let delta = (k0.saturating_sub(k_prev) as f32 / 30.0).clamp(0.0, 1.0);
+        let y = rect.bottom() - 3.0 - delta * (rect.height() - 7.0);
+        pred_pts.push(Pos2::new(x, y));
     }
+    painter.line(pred_pts, Stroke::new(1.5, color_pred));
 }
 
 fn render_chart_legend(ui: &mut egui::Ui) {
@@ -619,20 +650,26 @@ fn render_specimen_box(ui: &mut egui::Ui, sim: &SimWorld) {
 }
 
 fn render_chronicle_log(ui: &mut egui::Ui, state: &UiState) {
-    egui::Frame::NONE
-        .fill(Color32::from_rgb(10, 21, 23))
-        .stroke(Stroke::new(1.0, Color32::from_rgb(37, 58, 59)))
-        .inner_margin(egui::Margin::same(8))
-        .show(ui, |ui| {
-            ui.set_width(300.0);
-            ui.set_height(100.0);
-            egui::ScrollArea::vertical().stick_to_bottom(true).show(ui, |ui| {
-                for (i, entry) in state.chronicle.iter().rev().take(6).enumerate() {
-                    let color = if i == 0 { Color32::from_rgb(234, 215, 184) } else { Color32::from_rgb(167, 184, 175) };
-                    ui.label(RichText::new(entry).size(10.5).color(color));
-                }
-            });
-        });
+    ui.allocate_ui_with_layout(
+        Vec2::new(300.0, 112.0),
+        egui::Layout::top_down(egui::Align::Min),
+        |ui| {
+            for (i, entry) in state.chronicle.iter().take(7).enumerate() {
+                let color = if i == 0 {
+                    Color32::from_rgb(234, 215, 184)
+                } else {
+                    Color32::from_rgb(167, 184, 175)
+                };
+                ui.label(
+                    RichText::new(entry)
+                        .size(11.0)
+                        .monospace()
+                        .color(color)
+                        .line_height(Some(16.0)),
+                );
+            }
+        },
+    );
 }
 
 pub struct ClankUiPlugin;

@@ -146,9 +146,9 @@ fn test_dart_triangles_generation() {
     generate_dart_mesh_data(&sim, &mut positions, &mut colors);
 
     // 72 creatures, each creature has:
-    // 6 vertices for glow halo (2 triangles) + 6 vertices for body (2 triangles) = 12 vertices
-    assert_eq!(positions.len(), 72 * 12);
-    assert_eq!(colors.len(), 72 * 12);
+    // 6 vertices for body (2 triangles) forming a 4-vertex concave dart
+    assert_eq!(positions.len(), 72 * 6);
+    assert_eq!(colors.len(), 72 * 6);
 
     // Body vertices must have non-zero alpha
     for c in &colors {

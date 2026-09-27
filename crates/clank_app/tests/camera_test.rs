@@ -76,3 +76,19 @@ fn test_compute_arena_viewport() {
     assert_eq!(vp2.physical_position, UVec2::new(0, 106));
     assert_eq!(vp2.physical_size, UVec2::new(1900, 1494));
 }
+
+#[test]
+fn test_camera_locked_to_viewport() {
+    let mut app = App::new();
+    app.add_plugins(MinimalPlugins)
+        .add_plugins(ClankCameraPlugin);
+
+    app.update();
+
+    let mut query = app.world_mut().query_filtered::<(&Transform, &Projection), With<MainCamera>>();
+    for (_transform, projection) in query.iter(app.world()) {
+        if let Projection::Orthographic(ref ortho) = *projection {
+            assert_eq!(ortho.scale, 1.0);
+        }
+    }
+}

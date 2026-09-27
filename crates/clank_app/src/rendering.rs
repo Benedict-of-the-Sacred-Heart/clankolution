@@ -351,42 +351,15 @@ pub fn generate_dart_mesh_data(
     colors.clear();
 
     let items = extract_agent_render_data(sim);
-    positions.reserve(items.len() * 12);
-    colors.reserve(items.len() * 12);
+    positions.reserve(items.len() * 6);
+    colors.reserve(items.len() * 6);
 
     for item in &items {
         let rot = Mat2::from_angle(-item.angle);
         let r = item.radius;
         let c = item.color.to_srgba();
 
-        // 1. Glow Halo: 2 Triangles scaled by (1.5 + item.signal * 0.4), with low alpha (0.15 + item.signal * 0.15)
-        let halo_scale = 1.5 + item.signal * 0.4;
-        let halo_r = r * halo_scale;
-        let halo_nose = item.bevy_pos + rot * Vec2::new(halo_r * 1.5, 0.0);
-        let halo_right = item.bevy_pos + rot * Vec2::new(-halo_r * 0.75, halo_r * (0.5 + item.armor * 0.45));
-        let halo_rear = item.bevy_pos + rot * Vec2::new(-halo_r * (0.45 + item.carnivory), 0.0);
-        let halo_left = item.bevy_pos + rot * Vec2::new(-halo_r * 0.75, -halo_r * (0.5 + item.armor * 0.45));
-
-        let halo_alpha = (0.15 + item.signal * 0.18).min(0.4);
-        let halo_rgba = [c.red, c.green, c.blue, halo_alpha];
-
-        // Halo Triangle 1: [nose, right, rear]
-        positions.push([halo_nose.x, halo_nose.y, -3.0]);
-        positions.push([halo_right.x, halo_right.y, -3.0]);
-        positions.push([halo_rear.x, halo_rear.y, -3.0]);
-        colors.push(halo_rgba);
-        colors.push(halo_rgba);
-        colors.push(halo_rgba);
-
-        // Halo Triangle 2: [nose, rear, left]
-        positions.push([halo_nose.x, halo_nose.y, -3.0]);
-        positions.push([halo_rear.x, halo_rear.y, -3.0]);
-        positions.push([halo_left.x, halo_left.y, -3.0]);
-        colors.push(halo_rgba);
-        colors.push(halo_rgba);
-        colors.push(halo_rgba);
-
-        // 2. Solid Body: 2 Triangles
+        // Solid Body: 2 Triangles forming the 4-vertex concave dart
         let nose = item.bevy_pos + rot * Vec2::new(r * 1.5, 0.0);
         let right = item.bevy_pos + rot * Vec2::new(-r * 0.75, r * (0.5 + item.armor * 0.45));
         let rear = item.bevy_pos + rot * Vec2::new(-r * (0.45 + item.carnivory), 0.0);
@@ -545,7 +518,7 @@ pub fn update_particles_system(
         for _ in 0..count {
             let vx = res.next_f32(-2.4, 2.4);
             let vy = res.next_f32(-2.4, 2.4);
-            let life = res.next_f32(15.0, 36.0);
+            let life = res.next_f32(36.0, 86.0);
 
             res.particles.push(SparkParticle {
                 x: spark_pos.x,
@@ -553,13 +526,18 @@ pub fn update_particles_system(
                 vx,
                 vy,
                 life,
-                max_life: 36.0,
+                max_life: 86.0,
                 color,
             });
         }
     }
 
-    step_particles(&mut res.particles);
+    if !sim.paused {
+        let steps = sim.speed.clamp(1, 10);
+        for _ in 0..steps {
+            step_particles(&mut res.particles);
+        }
+    }
 
     if res.particles.len() > 850 {
         let excess = res.particles.len() - 850;

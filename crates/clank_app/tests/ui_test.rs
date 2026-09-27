@@ -65,3 +65,35 @@ fn test_history_buffer_push() {
     assert_eq!(state.history[0].population, 100);
     assert_eq!(state.history[0].kills, 5);
 }
+
+#[test]
+fn test_living_roots_count() {
+    let mut sim = SimWorld::new(42);
+    // Genesis starts with 72 creatures, all root 1..72
+    let living_roots = sim.world.agents.iter()
+        .filter(|a| a.dead == 0)
+        .map(|a| a.root)
+        .collect::<std::collections::HashSet<_>>()
+        .len();
+    assert_eq!(living_roots, 72);
+
+    // If one agent dies, unique roots count should still reflect living roots
+    let _killed_root = sim.world.agents[0].root;
+    sim.world.agents[0].dead = 1;
+    let living_roots_after = sim.world.agents.iter()
+        .filter(|a| a.dead == 0)
+        .map(|a| a.root)
+        .collect::<std::collections::HashSet<_>>()
+        .len();
+    assert_eq!(living_roots_after, 71);
+    assert_ne!(sim.world.roots, living_roots_after as u32);
+}
+
+#[test]
+fn test_chronicle_event_formatting() {
+    let mut state = UiState::default();
+    state.add_chronicle("00100  Generation 2 opens in lineage 5.".to_string());
+    assert_eq!(state.chronicle.len(), 2); // 1 default + 1 added
+    assert_eq!(state.chronicle[0], "00100  Generation 2 opens in lineage 5.");
+}
+

@@ -9,6 +9,7 @@ pub struct ApiSettingsRequest {
     pub growth: Option<f64>,
     pub hostility: Option<f64>,
     pub max_cap: Option<usize>,
+    pub scroll_offset: Option<f32>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -578,6 +579,9 @@ pub fn api_dispatch_system(
                     if let Some(speed) = req.speed {
                         ui.speed = speed.max(1.0).min(64.0);
                     }
+                    if req.scroll_offset.is_some() {
+                        ui.scroll_offset = req.scroll_offset;
+                    }
                 }
             }
             ApiCommand::ApplyTool(req) => {
@@ -625,6 +629,9 @@ pub fn api_dispatch_system(
                         }
                         "eclipse" => {
                             trigger_spore_catastrophe(sim);
+                            if let Some(ref mut ui) = ui_res {
+                                ui.add_chronicle(format!("{:05}  An eclipse consumes the harvest.", sim.world.tick));
+                            }
                         }
                         _ => {}
                     }
@@ -634,6 +641,9 @@ pub fn api_dispatch_system(
                 if let Some(ref mut sim) = sim_res {
                     sim.world = clank_core::world::World::new(seed as u32);
                     sim.selected_agent_id = None;
+                    if let Some(ref mut ui) = ui_res {
+                        ui.add_chronicle(format!("{:05}  The first hunger begins.", sim.world.tick));
+                    }
                 }
             }
             ApiCommand::PersistSave { path, response_tx } => {
@@ -647,6 +657,11 @@ pub fn api_dispatch_system(
             ApiCommand::PersistLoad { path, response_tx } => {
                 if let Some(ref mut sim) = sim_res {
                     let res = load_clank_file(sim, &path).map_err(|e| e.to_string());
+                    if res.is_ok() {
+                        if let Some(ref mut ui) = ui_res {
+                            ui.add_chronicle(format!("{:05}  A world returns from its .clank record.", sim.world.tick));
+                        }
+                    }
                     let _ = response_tx.send(res);
                 } else {
                     let _ = response_tx.send(Err("Simulation not initialized".to_string()));
