@@ -155,3 +155,29 @@ fn test_dart_triangles_generation() {
         assert!(c[3] > 0.05, "Alpha must be positive");
     }
 }
+
+#[test]
+fn test_particle_physics_simulation() {
+    use clank_app::rendering::{SparkParticle, step_particles};
+    let mut particles = vec![
+        SparkParticle {
+            x: 100.0,
+            y: 100.0,
+            vx: 2.0,
+            vy: -1.0,
+            life: 2.0,
+            max_life: 20.0,
+            color: Color::WHITE,
+        }
+    ];
+
+    step_particles(&mut particles);
+    assert_eq!(particles.len(), 1);
+    assert!((particles[0].x - 102.0).abs() < 1e-4);
+    assert!((particles[0].y - 99.0).abs() < 1e-4);
+    assert!((particles[0].vx - (2.0 * 0.97)).abs() < 1e-4);
+    assert_eq!(particles[0].life, 1.0);
+
+    step_particles(&mut particles);
+    assert_eq!(particles.len(), 0);
+}

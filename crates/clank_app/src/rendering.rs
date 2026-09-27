@@ -25,6 +25,34 @@ pub struct SoilSprite;
 #[derive(Component)]
 pub struct VignetteSprite;
 
+#[derive(Clone, Copy, Debug)]
+pub struct SparkParticle {
+    pub x: f32,
+    pub y: f32,
+    pub vx: f32,
+    pub vy: f32,
+    pub life: f32,
+    pub max_life: f32,
+    pub color: Color,
+}
+
+#[derive(Resource, Default)]
+pub struct ParticleSystemResource {
+    pub particles: Vec<SparkParticle>,
+}
+
+#[inline]
+pub fn step_particles(particles: &mut Vec<SparkParticle>) {
+    particles.retain_mut(|p| {
+        p.x += p.vx;
+        p.y += p.vy;
+        p.vx *= 0.97;
+        p.vy *= 0.97;
+        p.life -= 1.0;
+        p.life > 0.0
+    });
+}
+
 #[inline]
 pub fn sim_to_bevy_coord(sim_pos: Vec2, world_height: f32) -> Vec2 {
     Vec2::new(sim_pos.x, world_height - sim_pos.y)
@@ -391,7 +419,56 @@ pub fn update_agent_mesh_system(
     mesh.insert_attribute(Mesh::ATTRIBUTE_COLOR, colors);
 }
 
-pub fn render_sim_gizmos_system(sim: Option<Res<SimWorld>>, mut gizmos: Gizmos) {
+pub fn update_particles_system(
+    sim: Option<Res<SimWorld>>,
+    res: Option<ResMut<ParticleSystemResource>>,
+) {
+    let (Some(sim), Some(mut res)) = (sim, res) else { return };
+    let h = sim.world_height as f32;
+
+    for spark in &sim.world.spark_events {
+        let spark_pos = sim_to_bevy_coord(Vec2::new(spark.x, spark.y), h);
+        let color = if spark.color_idx == 8 {
+            Color::srgb(1.0, 0.46, 0.40)
+        } else if spark.color_idx == 9 {
+            Color::srgb(1.0, 0.40, 0.35)
+        } else {
+            lineage_color(spark.color_idx)
+        };
+
+        let count = spark.count.clamp(1, 10);
+        for i in 0..count {
+            let angle = (i as f32 / count as f32) * std::f32::consts::TAU + (spark.x * 0.17);
+            let speed = 1.0 + ((spark.y * 13.0 + i as f32 * 7.0).sin().abs()) * 1.4;
+            let vx = angle.cos() * speed;
+            let vy = angle.sin() * speed;
+            let life = 15.0 + ((spark.x * 5.0 + i as f32).cos().abs()) * 21.0;
+
+            res.particles.push(SparkParticle {
+                x: spark_pos.x,
+                y: spark_pos.y,
+                vx,
+                vy,
+                life,
+                max_life: 36.0,
+                color,
+            });
+        }
+    }
+
+    step_particles(&mut res.particles);
+
+    if res.particles.len() > 850 {
+        let excess = res.particles.len() - 850;
+        res.particles.drain(0..excess);
+    }
+}
+
+pub fn render_sim_gizmos_system(
+    sim: Option<Res<SimWorld>>,
+    particles: Option<Res<ParticleSystemResource>>,
+    mut gizmos: Gizmos,
+) {
     let Some(sim) = sim else { return };
 
     let w = sim.world_width as f32;
@@ -455,17 +532,16 @@ pub fn render_sim_gizmos_system(sim: Option<Res<SimWorld>>, mut gizmos: Gizmos) 
         }
     }
 
-    // 6. Combat / Bite Sparks
-    for spark in &sim.world.spark_events {
-        let spark_pos = sim_to_bevy_coord(Vec2::new(spark.x, spark.y), h);
-        let spark_color = if spark.color_idx == 8 {
-            Color::srgb(1.0, 0.46, 0.40)
-        } else if spark.color_idx == 9 {
-            Color::srgb(1.0, 0.40, 0.35)
-        } else {
-            lineage_color(spark.color_idx)
-        };
-        gizmos.rect_2d(spark_pos, Vec2::splat(3.0), spark_color);
+    // 6. Combat / Bite Sparks with Velocity Decay & Fading Alpha
+    if let Some(ref particles) = particles {
+        for p in &particles.particles {
+            let alpha = (p.life / p.max_life).clamp(0.0, 1.0);
+            gizmos.rect_2d(
+                Vec2::new(p.x, p.y),
+                Vec2::splat(2.5),
+                p.color.with_alpha(alpha),
+            );
+        }
     }
 
     // 7. Eclipse Visual Overlay
@@ -575,12 +651,14 @@ pub struct ClankRenderPlugin;
 
 impl Plugin for ClankRenderPlugin {
     fn build(&self, app: &mut App) {
-        app.add_systems(Startup, (setup_soil_rendering, setup_agent_rendering))
+        app.init_resource::<ParticleSystemResource>()
+            .add_systems(Startup, (setup_soil_rendering, setup_agent_rendering))
             .add_systems(
                 Update,
                 (
                     update_soil_texture_system,
                     update_agent_mesh_system,
+                    update_particles_system,
                     render_sim_gizmos_system,
                     agent_picking_system,
                 ),
