@@ -3,3 +3,4 @@ pub mod persistence;
 pub mod camera;
 pub mod rendering;
 pub mod ui;
+pub mod theme;
