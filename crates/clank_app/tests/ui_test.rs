@@ -48,3 +48,20 @@ fn test_ui_trigger_spore_catastrophe() {
     trigger_spore_catastrophe(&mut sim);
     assert!(sim.world.eclipse > 0);
 }
+
+#[test]
+fn test_ui_active_tool_selection() {
+    let mut state = UiState::default();
+    assert_eq!(state.active_tool, clank_app::ui::ActiveTool::Observe);
+    state.active_tool = clank_app::ui::ActiveTool::Nourish;
+    assert_eq!(state.active_tool, clank_app::ui::ActiveTool::Nourish);
+}
+
+#[test]
+fn test_history_buffer_push() {
+    let mut state = UiState::default();
+    state.record_history(100, 1.2, 5);
+    assert_eq!(state.history.len(), 1);
+    assert_eq!(state.history[0].population, 100);
+    assert_eq!(state.history[0].kills, 5);
+}

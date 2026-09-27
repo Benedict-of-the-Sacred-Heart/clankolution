@@ -1,26 +1,77 @@
 use bevy::prelude::*;
 use bevy_egui::{egui, EguiContexts, EguiPlugin, EguiPrimaryContextPass};
+use egui::{Color32, CornerRadius, LayerId, Pos2, RichText, Sense, Stroke, Ui, UiBuilder, Vec2};
 use crate::sim::SimWorld;
 use crate::persistence::{save_clank_file, load_clank_file, export_json_file, import_json_file};
+use crate::theme::{self, COLOR_CYAN, COLOR_GOLD, COLOR_INK, COLOR_MUTED, COLOR_PANEL_LINE, COLOR_RED, COLOR_SIDE_BG, COLOR_STAT_BG, COLOR_STAT_BORDER, COLOR_TOP_BG, COLOR_BTN_BG, COLOR_BTN_BORDER, COLOR_BTN_HOVER};
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ActiveTool {
+    Observe,
+    Nourish,
+    Blight,
+    SeedLife,
+    Extinguish,
+    Eclipse,
+}
+
+#[derive(Debug, Clone)]
+pub struct HistoryPoint {
+    pub population: usize,
+    pub food: f32,
+    pub kills: usize,
+}
 
 #[derive(Resource)]
 pub struct UiState {
     pub speed: f32,
+    pub active_tool: ActiveTool,
+    pub history: Vec<HistoryPoint>,
+    pub chronicle: Vec<String>,
     pub show_stats: bool,
     pub show_controls: bool,
     pub file_path: String,
     pub status_message: Option<String>,
+    pub theme_initialized: bool,
+    pub history_timer: f32,
 }
 
 impl Default for UiState {
     fn default() -> Self {
+        let mut chronicle = Vec::new();
+        chronicle.push("World seeded. Primordial creatures awakened.".to_string());
         Self {
             speed: 1.0,
+            active_tool: ActiveTool::Observe,
+            history: Vec::new(),
+            chronicle,
             show_stats: true,
             show_controls: true,
             file_path: "clankolution_save.clank".to_string(),
             status_message: None,
+            theme_initialized: false,
+            history_timer: 0.0,
         }
+    }
+}
+
+impl UiState {
+    pub fn record_history(&mut self, population: usize, food: f32, kills: usize) {
+        if self.history.len() >= 300 {
+            self.history.remove(0);
+        }
+        self.history.push(HistoryPoint {
+            population,
+            food,
+            kills,
+        });
+    }
+
+    pub fn add_chronicle(&mut self, text: String) {
+        if self.chronicle.len() >= 50 {
+            self.chronicle.remove(0);
+        }
+        self.chronicle.push(text);
     }
 }
 
@@ -42,155 +93,476 @@ pub fn clank_ui_system(
     mut contexts: EguiContexts,
     mut sim: ResMut<SimWorld>,
     mut state: ResMut<UiState>,
+    time: Res<Time>,
 ) {
     let Ok(ctx) = contexts.ctx_mut() else { return };
 
-    egui::Window::new("CLANKOLUTION 2.0")
-        .default_pos([16.0, 16.0])
-        .default_width(320.0)
-        .resizable(true)
-        .show(ctx, |ui| {
-            ui.heading("CLANKOLUTION 2.0");
-            ui.label(egui::RichText::new("Native Bevy High-Performance Core").italics().weak());
-            ui.separator();
+    if !state.theme_initialized {
+        theme::setup_clank_theme(ctx);
+        state.theme_initialized = true;
+    }
 
-            // Simulation Controls
-            ui.heading("Controls");
-            ui.horizontal(|ui| {
-                let play_pause_label = if sim.paused { "▶ Play" } else { "⏸ Pause" };
-                if ui.button(play_pause_label).clicked() {
-                    toggle_pause(&mut sim);
-                }
-                if ui.button("⏭ Step").clicked() {
-                    sim.force_step(1);
-                }
-                if ui.button("↺ Reset").clicked() {
-                    sim.reset();
-                    state.status_message = Some("World reset".into());
-                }
-            });
+    // Periodic history recorder
+    state.history_timer += time.delta_secs();
+    if state.history_timer >= 0.25 {
+        state.history_timer = 0.0;
+        let pop = sim.world.agents.iter().filter(|a| a.dead == 0).count();
+        let food_sum: f32 = sim.world.soil.food.iter().sum::<f32>() / (sim.world.soil.cols * sim.world.soil.rows) as f32;
+        let kills = sim.world.kills as usize;
+        state.record_history(pop, food_sum, kills);
+    }
 
-            let mut speed_val = state.speed;
-            ui.add(egui::Slider::new(&mut speed_val, 1.0..=10.0).text("Speed Multiplier"));
-            if (speed_val - state.speed).abs() > 0.01 {
-                set_simulation_speed(&mut sim, &mut state, speed_val);
-            }
+    let mut root_ui = Ui::new(
+        ctx.clone(),
+        "root_ui".into(),
+        UiBuilder::new()
+            .layer_id(LayerId::background())
+            .max_rect(ctx.viewport_rect()),
+    );
 
-            ui.separator();
-
-            // Ecosystem Stats
-            let active_count = sim.world.agents.iter().filter(|a| a.dead == 0).count();
-            ui.heading("Ecosystem Stats");
-            ui.label(format!("Tick: {}", sim.world.tick));
-            ui.label(format!("Active Creatures: {} / {}", active_count, sim.world.max_cap));
-            ui.label(format!("Total Births: {}", sim.world.births));
-            ui.label(format!("Total Kills: {}", sim.world.kills));
-            ui.label(format!("Lineage Roots: {}", sim.world.roots));
-            if sim.world.eclipse > 0 {
-                ui.colored_label(egui::Color32::from_rgb(255, 100, 100), format!("Eclipse Active: {} ticks remaining", sim.world.eclipse));
-            }
-
-            ui.separator();
-
-            // Selective Pressures
-            ui.heading("Selective Pressures");
-            let mut mutation = sim.world.mutation as f32;
-            if ui.add(egui::Slider::new(&mut mutation, 0.0..=1.0).text("Mutation Rate")).changed() {
-                sim.world.mutation = mutation as f64;
-            }
-
-            let mut growth = sim.world.growth as f32;
-            if ui.add(egui::Slider::new(&mut growth, 0.0..=3.0).text("Soil Growth")).changed() {
-                sim.world.growth = growth as f64;
-            }
-
-            let mut hostility = sim.world.hostility as f32;
-            if ui.add(egui::Slider::new(&mut hostility, 0.0..=1.0).text("Hostility")).changed() {
-                sim.world.hostility = hostility as f64;
-            }
-
-            let mut cap = sim.world.max_cap;
-            if ui.add(egui::Slider::new(&mut cap, 50..=1000).text("Max Population")).changed() {
-                sim.world.max_cap = cap;
-            }
-
-            if ui.button("⚡ Trigger Spore Catastrophe").clicked() {
-                trigger_spore_catastrophe(&mut sim);
-                state.status_message = Some("Spore catastrophe triggered!".into());
-            }
-
-            ui.separator();
-
-            // Persistence
-            ui.heading("Persistence");
-            ui.text_edit_singleline(&mut state.file_path);
-            ui.horizontal(|ui| {
-                if ui.button("💾 Save .clank").clicked() {
-                    match save_clank_file(&sim, &state.file_path) {
-                        Ok(bytes) => state.status_message = Some(format!("Saved {} bytes to {}", bytes, state.file_path)),
-                        Err(e) => state.status_message = Some(format!("Save error: {}", e)),
-                    }
-                }
-                if ui.button("📂 Load .clank").clicked() {
-                    match load_clank_file(&mut sim, &state.file_path) {
-                        Ok(()) => {
-                            sim.selected_agent_id = None;
-                            state.status_message = Some(format!("Loaded {} successfully", state.file_path));
-                        }
-                        Err(e) => state.status_message = Some(format!("Load error: {}", e)),
-                    }
-                }
-            });
-
-            ui.horizontal(|ui| {
-                if ui.button("Export JSON").clicked() {
-                    let json_path = state.file_path.replace(".clank", ".json");
-                    match export_json_file(&sim, &json_path) {
-                        Ok(bytes) => state.status_message = Some(format!("Exported {} bytes to {}", bytes, json_path)),
-                        Err(e) => state.status_message = Some(format!("JSON error: {}", e)),
-                    }
-                }
-                if ui.button("Import JSON").clicked() {
-                    let json_path = state.file_path.replace(".clank", ".json");
-                    match import_json_file(&mut sim, &json_path) {
-                        Ok(()) => {
-                            sim.selected_agent_id = None;
-                            state.status_message = Some(format!("Imported {} successfully", json_path));
-                        }
-                        Err(e) => state.status_message = Some(format!("Import error: {}", e)),
-                    }
-                }
-            });
-
-            if let Some(ref msg) = state.status_message {
-                ui.label(egui::RichText::new(msg).color(egui::Color32::from_rgb(250, 204, 21)));
-            }
-
-            ui.separator();
-
-            // Creature Inspector
-            if let Some(agent) = sim.get_selected_agent() {
-                ui.heading(format!("Creature #{} (Gen {})", agent.id, agent.gen));
-                ui.label(format!("Energy: {:.1}", agent.energy));
-                ui.label(format!("Age: {} ticks", agent.age));
-                ui.label(format!("Lineage Root: {}", agent.root));
-                ui.label(format!("Kills: {}", agent.kills));
-                ui.label(format!("Traits: Bulk={:.2} Spd={:.2} Sight={:.2}", agent.tr[0], agent.tr[1], agent.tr[2]));
-                ui.label(format!("Armor={:.2} Forage={:.2} Carn={:.2}", agent.tr[3], agent.tr[4], agent.tr[5]));
-                ui.label(format!("Attack={:.2} Signal={:.2}", agent.attack, agent.signal));
-
-                ui.collapsing("Neural Hidden State (h[0..10])", |ui| {
-                    for (i, val) in agent.h.iter().enumerate() {
-                        ui.label(format!("h[{}]: {:.3}", i, val));
-                    }
+    // 1. Top Panel (Exact Brand Header: height 53px, background #0b1719, line #294041)
+    egui::Panel::top("top_header")
+        .exact_size(53.0)
+        .resizable(false)
+        .frame(egui::Frame::NONE.fill(COLOR_TOP_BG).stroke(Stroke::new(1.0, COLOR_PANEL_LINE)))
+        .show(&mut root_ui, |ui| {
+            ui.add_space(4.0);
+            ui.horizontal_centered(|ui| {
+                ui.add_space(14.0);
+                // Brand
+                ui.horizontal(|ui| {
+                    ui.label(RichText::new("CLANK").size(15.0).strong().color(Color32::from_rgb(243, 233, 215)));
+                    ui.label(RichText::new("O").size(15.0).strong().color(COLOR_RED));
+                    ui.label(RichText::new("LUTION").size(15.0).strong().color(Color32::from_rgb(243, 233, 215)));
+                    ui.add_space(10.0);
+                    ui.label(RichText::new("AN EXPERIMENT IN INHERITED APPETITE").size(10.0).color(COLOR_MUTED));
                 });
 
-                if ui.button("Deselect").clicked() {
+                // Top Controls on Right
+                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    ui.add_space(14.0);
+                    if ui.button("NEW WORLD").clicked() {
+                        sim.reset();
+                        state.add_chronicle("Cycle 00000: New primordial world seeded.".to_string());
+                    }
+
+                    // Speed slider with gold readout
+                    ui.horizontal(|ui| {
+                        ui.label(RichText::new(format!("{}×", sim.speed)).size(11.0).strong().color(COLOR_GOLD));
+                        let mut speed_val = state.speed;
+                        if ui.add(egui::Slider::new(&mut speed_val, 1.0..=10.0).show_value(false)).changed() {
+                            set_simulation_speed(&mut sim, &mut state, speed_val);
+                        }
+                        ui.label(RichText::new("SPEED").size(10.0).color(COLOR_MUTED));
+                    });
+
+                    let pause_label = if sim.paused { "RESUME" } else { "PAUSE" };
+                    if ui.button(pause_label).clicked() {
+                        toggle_pause(&mut sim);
+                    }
+                });
+            });
+        });
+
+    // 2. Right Sidebar Panel (Exact 330px width, #0c191b background)
+    egui::Panel::right("right_sidebar")
+        .exact_size(330.0)
+        .resizable(false)
+        .frame(egui::Frame::NONE.fill(COLOR_SIDE_BG).stroke(Stroke::new(1.0, COLOR_PANEL_LINE)))
+        .show(&mut root_ui, |ui| {
+            ui.add_space(8.0);
+            egui::ScrollArea::vertical().auto_shrink([false, false]).show(ui, |ui| {
+                ui.add_space(8.0);
+                ui.horizontal(|ui| {
+                    ui.add_space(8.0);
+                    ui.vertical(|ui| {
+                        // Eyebrow & Hero Title
+                        ui.label(RichText::new("FIELD NOTES / 001").size(10.0).strong().color(COLOR_CYAN));
+                        ui.add_space(2.0);
+                        ui.label(RichText::new("Let them become\nsomething else.").size(22.0).strong().color(Color32::from_rgb(238, 229, 213)));
+                        ui.add_space(4.0);
+                        ui.label(RichText::new("Each creature inherits a tiny quantized recurrent brain and a body. Food blooms. Blood feeds the soil. Nothing is told how to behave.").size(11.5).color(Color32::from_rgb(174, 188, 186)));
+                        ui.add_space(10.0);
+
+                        // 2x2 Stat Grid
+                        let active_count = sim.world.agents.iter().filter(|a| a.dead == 0).count();
+                        let max_gen = sim.world.agents.iter().map(|a| a.gen).max().unwrap_or(0);
+                        let root_count = sim.world.roots;
+                        let kills_count = sim.world.kills;
+
+                        egui::Grid::new("stat_grid").num_columns(2).spacing([7.0, 7.0]).show(ui, |ui| {
+                            render_stat_box(ui, "POPULATION", &format!("{}", active_count), &format!(" / {} capacity", sim.world.max_cap));
+                            render_stat_box(ui, "GENERATION", &format!("{}", max_gen), " / oldest living");
+                            ui.end_row();
+                            render_stat_box(ui, "PREDATIONS", &format!("{}", kills_count), " / total");
+                            render_stat_box(ui, "LINEAGES", &format!("{}", root_count), " / living roots");
+                            ui.end_row();
+                        });
+
+                        ui.add_space(14.0);
+                        ui.separator();
+
+                        // INTERVENE Section
+                        ui.label(RichText::new("INTERVENE").size(10.0).color(COLOR_GOLD));
+                        ui.add_space(4.0);
+                        render_tool_matrix(ui, &mut state, &mut sim);
+                        ui.add_space(4.0);
+                        ui.label(RichText::new("Drag to paint. Blight is a fading toxin: it destroys food and drains creatures crossing it. An eclipse starves the surface, then it regrows.").size(10.5).color(COLOR_MUTED));
+
+                        ui.add_space(14.0);
+                        ui.separator();
+
+                        // KEEP YOUR WORLD Section
+                        ui.label(RichText::new("KEEP YOUR WORLD").size(10.0).color(COLOR_GOLD));
+                        ui.add_space(4.0);
+                        render_persistence_section(ui, &mut state, &mut sim);
+
+                        ui.add_space(14.0);
+                        ui.separator();
+
+                        // SELECTIVE PRESSURE Section
+                        ui.label(RichText::new("SELECTIVE PRESSURE").size(10.0).color(COLOR_GOLD));
+                        ui.add_space(4.0);
+                        render_pressure_sliders(ui, &mut sim);
+
+                        ui.add_space(14.0);
+                        ui.separator();
+
+                        // THE RECORD Section (3-Series Live History Chart)
+                        ui.label(RichText::new("THE RECORD").size(10.0).color(COLOR_GOLD));
+                        ui.add_space(4.0);
+                        render_history_chart(ui, &state, sim.world.max_cap);
+                        ui.add_space(4.0);
+                        render_chart_legend(ui);
+
+                        ui.add_space(14.0);
+                        ui.separator();
+
+                        // SPECIMEN Section
+                        ui.label(RichText::new("SPECIMEN").size(10.0).color(COLOR_GOLD));
+                        ui.add_space(4.0);
+                        render_specimen_box(ui, &sim);
+
+                        ui.add_space(14.0);
+                        ui.separator();
+
+                        // CHRONICLE Section
+                        ui.label(RichText::new("CHRONICLE").size(10.0).color(COLOR_GOLD));
+                        ui.add_space(4.0);
+                        render_chronicle_log(ui, &state);
+
+                        ui.add_space(14.0);
+                        ui.label(RichText::new("One file. No assets. No API. All decisions happen on your machine.").size(10.0).color(Color32::from_rgb(111, 136, 130)));
+                        ui.add_space(14.0);
+                    });
+                });
+            });
+        });
+
+    // 3. Central Transparent Panel with HUD Overlays
+    egui::CentralPanel::no_frame()
+        .show(&mut root_ui, |ui| {
+            ui.add_space(12.0);
+            ui.horizontal(|ui| {
+                ui.add_space(18.0);
+                let cycle_sub = if sim.world.eclipse > 0 {
+                    format!("THE HUNGER ECLIPSE ({})", sim.world.eclipse)
+                } else {
+                    "THE FIRST HUNGER".to_string()
+                };
+                let cycle_text = format!("CYCLE {:05} / {}", sim.world.tick, cycle_sub);
+                ui.label(RichText::new(cycle_text).size(10.5).monospace().color(Color32::from_rgb(168, 209, 201)));
+            });
+
+            ui.with_layout(egui::Layout::bottom_up(egui::Align::Min), |ui| {
+                ui.add_space(14.0);
+                ui.horizontal(|ui| {
+                    ui.add_space(18.0);
+                    ui.label(RichText::new("Click a creature to inspect its lineage. Choose a tool, then paint on the world.").size(11.0).color(Color32::from_rgb(184, 203, 195)));
+                });
+            });
+        });
+}
+
+fn render_stat_box(ui: &mut egui::Ui, label: &str, value: &str, sub: &str) {
+    egui::Frame::NONE
+        .fill(COLOR_STAT_BG)
+        .stroke(Stroke::new(1.0, COLOR_STAT_BORDER))
+        .corner_radius(CornerRadius::same(2))
+        .inner_margin(egui::Margin::same(8))
+        .show(ui, |ui| {
+            ui.set_width(140.0);
+            ui.set_min_height(54.0);
+            ui.label(RichText::new(label).size(9.5).color(Color32::from_rgb(141, 165, 162)));
+            ui.horizontal(|ui| {
+                ui.label(RichText::new(value).size(20.0).strong().color(Color32::from_rgb(233, 235, 226)));
+                ui.label(RichText::new(sub).size(10.0).color(Color32::from_rgb(113, 139, 137)));
+            });
+        });
+}
+
+fn render_tool_matrix(ui: &mut egui::Ui, state: &mut UiState, sim: &mut SimWorld) {
+    let tools = [
+        ("OBSERVE", ActiveTool::Observe),
+        ("NOURISH", ActiveTool::Nourish),
+        ("BLIGHT", ActiveTool::Blight),
+        ("SEED LIFE", ActiveTool::SeedLife),
+        ("EXTINGUISH", ActiveTool::Extinguish),
+        ("ECLIPSE", ActiveTool::Eclipse),
+    ];
+
+    egui::Grid::new("tool_grid").num_columns(3).spacing([6.0, 6.0]).show(ui, |ui| {
+        for (i, (name, tool)) in tools.into_iter().enumerate() {
+            let is_active = state.active_tool == tool;
+            let btn_fill = if is_active { COLOR_BTN_HOVER } else { COLOR_BTN_BG };
+            let btn_stroke = if is_active { Stroke::new(1.0, COLOR_CYAN) } else { Stroke::new(1.0, COLOR_BTN_BORDER) };
+
+            let btn = egui::Button::new(RichText::new(name).size(10.5).color(if is_active { COLOR_CYAN } else { COLOR_INK }))
+                .fill(btn_fill)
+                .stroke(btn_stroke);
+
+            if ui.add_sized([94.0, 28.0], btn).clicked() {
+                if tool == ActiveTool::Eclipse {
+                    trigger_spore_catastrophe(sim);
+                    state.add_chronicle(format!("Cycle {:05}: Spore Catastrophe triggered! Sunlight obscured.", sim.world.tick));
+                } else {
+                    state.active_tool = tool;
+                }
+            }
+
+            if (i + 1) % 3 == 0 {
+                ui.end_row();
+            }
+        }
+    });
+}
+
+fn render_persistence_section(ui: &mut egui::Ui, state: &mut UiState, sim: &mut SimWorld) {
+    egui::Grid::new("persist_grid").num_columns(2).spacing([6.0, 6.0]).show(ui, |ui| {
+        if ui.add_sized([145.0, 26.0], egui::Button::new("EXPORT (.CLANK)")).clicked() {
+            match save_clank_file(sim, &state.file_path) {
+                Ok(bytes) => {
+                    let msg = format!("Exported {} bytes to {}", bytes, state.file_path);
+                    state.add_chronicle(msg.clone());
+                    state.status_message = Some(msg);
+                }
+                Err(e) => state.status_message = Some(format!("Export error: {}", e)),
+            }
+        }
+        if ui.add_sized([145.0, 26.0], egui::Button::new("EXPORT (.JSON)")).clicked() {
+            let json_path = state.file_path.replace(".clank", ".json");
+            match export_json_file(sim, &json_path) {
+                Ok(bytes) => {
+                    let msg = format!("Exported JSON ({} bytes) to {}", bytes, json_path);
+                    state.add_chronicle(msg.clone());
+                    state.status_message = Some(msg);
+                }
+                Err(e) => state.status_message = Some(format!("JSON error: {}", e)),
+            }
+        }
+        ui.end_row();
+        if ui.add_sized([145.0, 26.0], egui::Button::new("IMPORT")).clicked() {
+            let file_is_json = state.file_path.ends_with(".json");
+            let result = if file_is_json {
+                import_json_file(sim, &state.file_path)
+            } else {
+                load_clank_file(sim, &state.file_path)
+            };
+            match result {
+                Ok(()) => {
                     sim.selected_agent_id = None;
+                    let msg = format!("Imported {} successfully", state.file_path);
+                    state.add_chronicle(msg.clone());
+                    state.status_message = Some(msg);
+                }
+                Err(e) => state.status_message = Some(format!("Import error: {}", e)),
+            }
+        }
+        if ui.add_sized([145.0, 26.0], egui::Button::new("WHAT SAVES?")).clicked() {
+            state.status_message = Some("Zero-copy .clank saves all creatures, soil grids, genes, brains & PRNG state.".to_string());
+        }
+        ui.end_row();
+    });
+
+    if let Some(ref msg) = state.status_message {
+        ui.add_space(2.0);
+        ui.label(RichText::new(msg).size(10.5).color(COLOR_GOLD));
+    }
+}
+
+fn render_pressure_sliders(ui: &mut egui::Ui, sim: &mut SimWorld) {
+    let mut mutation = sim.world.mutation as f32;
+    ui.horizontal(|ui| {
+        ui.label(RichText::new("Mutation").size(11.0).color(Color32::from_rgb(196, 208, 202)));
+        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+            ui.label(RichText::new(format!("{:.2}", mutation)).size(11.0).color(COLOR_CYAN));
+        });
+    });
+    if ui.add(egui::Slider::new(&mut mutation, 0.0..=0.5).show_value(false)).changed() {
+        sim.world.mutation = mutation as f64;
+    }
+
+    let mut growth = sim.world.growth as f32;
+    ui.horizontal(|ui| {
+        ui.label(RichText::new("Food renewal").size(11.0).color(Color32::from_rgb(196, 208, 202)));
+        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+            ui.label(RichText::new(format!("{:.2}×", growth)).size(11.0).color(COLOR_CYAN));
+        });
+    });
+    if ui.add(egui::Slider::new(&mut growth, 0.0..=2.0).show_value(false)).changed() {
+        sim.world.growth = growth as f64;
+    }
+
+    let mut hostility = sim.world.hostility as f32;
+    ui.horizontal(|ui| {
+        ui.label(RichText::new("Hostility of contact").size(11.0).color(Color32::from_rgb(196, 208, 202)));
+        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+            ui.label(RichText::new(format!("{:.2}×", hostility)).size(11.0).color(COLOR_CYAN));
+        });
+    });
+    if ui.add(egui::Slider::new(&mut hostility, 0.0..=2.0).show_value(false)).changed() {
+        sim.world.hostility = hostility as f64;
+    }
+
+    let mut cap = sim.world.max_cap;
+    ui.horizontal(|ui| {
+        ui.label(RichText::new("Creature capacity").size(11.0).color(Color32::from_rgb(196, 208, 202)));
+        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+            ui.label(RichText::new(format!("{}", cap)).size(11.0).color(COLOR_CYAN));
+        });
+    });
+    if ui.add(egui::Slider::new(&mut cap, 50..=1000).show_value(false)).changed() {
+        sim.world.max_cap = cap;
+    }
+}
+
+fn render_history_chart(ui: &mut egui::Ui, state: &UiState, max_cap: usize) {
+    let (response, painter) = ui.allocate_painter(Vec2::new(300.0, 82.0), Sense::hover());
+    let rect = response.rect;
+
+    // Background and border
+    painter.rect_filled(rect, CornerRadius::same(0), Color32::from_rgb(10, 21, 23));
+    painter.rect_stroke(rect, CornerRadius::same(0), Stroke::new(1.0, Color32::from_rgb(37, 58, 59)), egui::StrokeKind::Outside);
+
+    // Grid lines
+    for dy in [20.0, 40.0, 60.0] {
+        let y = rect.top() + dy;
+        painter.line_segment([Pos2::new(rect.left(), y), Pos2::new(rect.right(), y)], Stroke::new(1.0, Color32::from_rgb(25, 42, 43)));
+    }
+
+    if state.history.len() < 2 {
+        return;
+    }
+
+    let count = state.history.len();
+    let x_step = rect.width() / (count - 1) as f32;
+
+    // Series 1: Population (Life: #8fe3cf)
+    let color_life = Color32::from_rgb(143, 227, 207);
+    let cap_f = (max_cap as f32).max(220.0);
+    for i in 0..count - 1 {
+        let p0 = &state.history[i];
+        let p1 = &state.history[i + 1];
+        let y0 = rect.bottom() - 3.0 - (p0.population as f32 / cap_f).clamp(0.0, 1.0) * (rect.height() - 7.0);
+        let y1 = rect.bottom() - 3.0 - (p1.population as f32 / cap_f).clamp(0.0, 1.0) * (rect.height() - 7.0);
+        painter.line_segment([Pos2::new(rect.left() + i as f32 * x_step, y0), Pos2::new(rect.left() + (i + 1) as f32 * x_step, y1)], Stroke::new(1.5, color_life));
+    }
+
+    // Series 2: Food (Food: #d9ad72)
+    let color_food = Color32::from_rgb(217, 173, 114);
+    for i in 0..count - 1 {
+        let p0 = &state.history[i];
+        let p1 = &state.history[i + 1];
+        let y0 = rect.bottom() - 3.0 - (p0.food / 1.7).clamp(0.0, 1.0) * (rect.height() - 7.0);
+        let y1 = rect.bottom() - 3.0 - (p1.food / 1.7).clamp(0.0, 1.0) * (rect.height() - 7.0);
+        painter.line_segment([Pos2::new(rect.left() + i as f32 * x_step, y0), Pos2::new(rect.left() + (i + 1) as f32 * x_step, y1)], Stroke::new(1.5, color_food));
+    }
+
+    // Series 3: Violence (Predations: #ed7869)
+    let color_pred = Color32::from_rgb(237, 120, 105);
+    for i in 0..count - 1 {
+        let k0 = state.history[i].kills;
+        let k_prev = state.history[i.saturating_sub(10)].kills;
+        let delta0 = (k0.saturating_sub(k_prev) as f32 / 30.0).clamp(0.0, 1.0);
+
+        let k1 = state.history[i + 1].kills;
+        let k_prev1 = state.history[(i + 1).saturating_sub(10)].kills;
+        let delta1 = (k1.saturating_sub(k_prev1) as f32 / 30.0).clamp(0.0, 1.0);
+
+        let y0 = rect.bottom() - 3.0 - delta0 * (rect.height() - 7.0);
+        let y1 = rect.bottom() - 3.0 - delta1 * (rect.height() - 7.0);
+        painter.line_segment([Pos2::new(rect.left() + i as f32 * x_step, y0), Pos2::new(rect.left() + (i + 1) as f32 * x_step, y1)], Stroke::new(1.5, color_pred));
+    }
+}
+
+fn render_chart_legend(ui: &mut egui::Ui) {
+    ui.horizontal(|ui| {
+        ui.label(RichText::new("■").color(Color32::from_rgb(143, 227, 207)));
+        ui.label(RichText::new("life").size(10.0).color(COLOR_MUTED));
+        ui.add_space(8.0);
+        ui.label(RichText::new("■").color(Color32::from_rgb(217, 173, 114)));
+        ui.label(RichText::new("food").size(10.0).color(COLOR_MUTED));
+        ui.add_space(8.0);
+        ui.label(RichText::new("■").color(Color32::from_rgb(237, 120, 105)));
+        ui.label(RichText::new("violence").size(10.0).color(COLOR_MUTED));
+    });
+}
+
+fn render_specimen_box(ui: &mut egui::Ui, sim: &SimWorld) {
+    egui::Frame::NONE
+        .fill(Color32::from_rgb(16, 30, 31))
+        .stroke(Stroke::new(1.0, Color32::from_rgb(45, 65, 64)))
+        .corner_radius(CornerRadius::same(2))
+        .inner_margin(egui::Margin::same(10))
+        .show(ui, |ui| {
+            ui.set_width(300.0);
+            if let Some(agent) = sim.get_selected_agent() {
+                ui.label(RichText::new(format!("Creature #{} (Gen {})", agent.id, agent.gen)).size(13.0).strong().color(Color32::from_rgb(240, 230, 217)));
+                ui.add_space(4.0);
+                ui.label(RichText::new(format!("Energy: {:.1}  |  Age: {} ticks  |  Kills: {}", agent.energy, agent.age, agent.kills)).size(10.5).color(Color32::from_rgb(173, 191, 186)));
+                ui.label(RichText::new(format!("Lineage Root: {}", agent.root)).size(10.5).color(COLOR_GOLD));
+                ui.add_space(4.0);
+
+                // Trait display
+                let trait_names = ["Bulk", "Speed", "Sight", "Armor", "Forage", "Carn"];
+                for (name, val) in trait_names.iter().zip(agent.tr.iter()) {
+                    ui.horizontal(|ui| {
+                        ui.label(RichText::new(*name).size(10.0).color(COLOR_MUTED));
+                        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                            ui.label(RichText::new(format!("{:.2}", val)).size(10.0).color(COLOR_CYAN));
+                        });
+                    });
+                }
+
+                ui.add_space(6.0);
+                ui.label(RichText::new("Recurrent Brain Activations (h[0..9]):").size(10.0).color(COLOR_GOLD));
+                for (i, val) in agent.h.iter().enumerate() {
+                    let norm = ((*val as f32 + 1.0) * 0.5).clamp(0.0, 1.0);
+                    ui.horizontal(|ui| {
+                        ui.label(RichText::new(format!("h[{}]", i)).size(9.5).color(COLOR_MUTED));
+                        ui.add(egui::ProgressBar::new(norm).desired_width(180.0));
+                    });
                 }
             } else {
-                ui.label(egui::RichText::new("Click a creature to inspect").weak().italics());
+                ui.label(RichText::new("Select a creature in the arena.\nIts recurrent state, ancestry, and traits will appear here.").size(11.0).color(Color32::from_rgb(173, 191, 186)));
             }
+        });
+}
+
+fn render_chronicle_log(ui: &mut egui::Ui, state: &UiState) {
+    egui::Frame::NONE
+        .fill(Color32::from_rgb(10, 21, 23))
+        .stroke(Stroke::new(1.0, Color32::from_rgb(37, 58, 59)))
+        .inner_margin(egui::Margin::same(8))
+        .show(ui, |ui| {
+            ui.set_width(300.0);
+            ui.set_height(100.0);
+            egui::ScrollArea::vertical().stick_to_bottom(true).show(ui, |ui| {
+                for (i, entry) in state.chronicle.iter().rev().take(6).enumerate() {
+                    let color = if i == 0 { Color32::from_rgb(234, 215, 184) } else { Color32::from_rgb(167, 184, 175) };
+                    ui.label(RichText::new(entry).size(10.5).color(color));
+                }
+            });
         });
 }
 
