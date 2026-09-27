@@ -181,3 +181,31 @@ fn test_particle_physics_simulation() {
     step_particles(&mut particles);
     assert_eq!(particles.len(), 0);
 }
+
+#[test]
+fn test_particle_mesh_quad_generation() {
+    use clank_app::rendering::{SparkParticle, ParticleSystemResource, generate_particle_mesh_data};
+    let mut res = ParticleSystemResource::default();
+    res.particles.push(SparkParticle {
+        x: 200.0,
+        y: 150.0,
+        vx: 1.0,
+        vy: -1.0,
+        life: 18.0,
+        max_life: 36.0,
+        color: Color::srgb(1.0, 0.46, 0.40),
+    });
+
+    let mut positions = Vec::new();
+    let mut colors = Vec::new();
+    generate_particle_mesh_data(&res, &mut positions, &mut colors);
+
+    // 1 particle = 2 triangles = 6 vertices
+    assert_eq!(positions.len(), 6);
+    assert_eq!(colors.len(), 6);
+
+    // Alpha must be 18 / 36 = 0.5
+    assert!((colors[0][3] - 0.5).abs() < 1e-4);
+    // Depth must be 5.0
+    assert_eq!(positions[0][2], 5.0);
+}

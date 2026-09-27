@@ -36,9 +36,35 @@ pub struct SparkParticle {
     pub color: Color,
 }
 
-#[derive(Resource, Default)]
+#[derive(Resource)]
+pub struct ParticleMeshResource {
+    pub mesh_handle: Handle<Mesh>,
+}
+
+#[derive(Resource)]
 pub struct ParticleSystemResource {
     pub particles: Vec<SparkParticle>,
+    pub prng_state: u64,
+}
+
+impl Default for ParticleSystemResource {
+    fn default() -> Self {
+        Self {
+            particles: Vec::with_capacity(1024),
+            prng_state: 0x9e3779b97f4a7c15,
+        }
+    }
+}
+
+impl ParticleSystemResource {
+    #[inline]
+    pub fn next_f32(&mut self, min: f32, max: f32) -> f32 {
+        self.prng_state ^= self.prng_state << 13;
+        self.prng_state ^= self.prng_state >> 7;
+        self.prng_state ^= self.prng_state << 17;
+        let frac = (self.prng_state & 0x00ffffff) as f32 / 16777216.0;
+        min + frac * (max - min)
+    }
 }
 
 #[inline]
@@ -419,30 +445,107 @@ pub fn update_agent_mesh_system(
     mesh.insert_attribute(Mesh::ATTRIBUTE_COLOR, colors);
 }
 
+pub fn generate_particle_mesh_data(
+    particles: &ParticleSystemResource,
+    positions: &mut Vec<[f32; 3]>,
+    colors: &mut Vec<[f32; 4]>,
+) {
+    positions.clear();
+    colors.clear();
+    let count = particles.particles.len();
+    positions.reserve(count * 6);
+    colors.reserve(count * 6);
+
+    for p in &particles.particles {
+        let alpha = (p.life / p.max_life).clamp(0.0, 1.0);
+        let c = p.color.to_srgba();
+        let rgba = [c.red, c.green, c.blue, alpha];
+
+        let x0 = p.x - 1.0;
+        let x1 = p.x + 1.0;
+        let y0 = p.y - 1.0;
+        let y1 = p.y + 1.0;
+        let z = 5.0;
+
+        // Triangle 1: (x0, y0), (x1, y0), (x1, y1)
+        positions.push([x0, y0, z]);
+        positions.push([x1, y0, z]);
+        positions.push([x1, y1, z]);
+        colors.push(rgba);
+        colors.push(rgba);
+        colors.push(rgba);
+
+        // Triangle 2: (x0, y0), (x1, y1), (x0, y1)
+        positions.push([x0, y0, z]);
+        positions.push([x1, y1, z]);
+        positions.push([x0, y1, z]);
+        colors.push(rgba);
+        colors.push(rgba);
+        colors.push(rgba);
+    }
+}
+
+pub fn setup_particle_rendering(
+    mut commands: Commands,
+    mut meshes: ResMut<Assets<Mesh>>,
+    mut materials: ResMut<Assets<ColorMaterial>>,
+) {
+    let mesh = Mesh::new(PrimitiveTopology::TriangleList, RenderAssetUsages::default());
+    let mesh_handle = meshes.add(mesh);
+    let mat_handle = materials.add(ColorMaterial::default());
+
+    commands.spawn((
+        Mesh2d(mesh_handle.clone()),
+        MeshMaterial2d(mat_handle),
+        Transform::default(),
+    ));
+    commands.insert_resource(ParticleMeshResource { mesh_handle });
+}
+
+pub fn update_particle_mesh_system(
+    particles: Option<Res<ParticleSystemResource>>,
+    res: Option<Res<ParticleMeshResource>>,
+    mut meshes: ResMut<Assets<Mesh>>,
+) {
+    let (Some(particles), Some(res)) = (particles, res) else { return };
+    let Some(mut mesh) = meshes.get_mut(&res.mesh_handle) else { return };
+
+    let mut positions = Vec::new();
+    let mut colors = Vec::new();
+    generate_particle_mesh_data(&particles, &mut positions, &mut colors);
+
+    mesh.insert_attribute(Mesh::ATTRIBUTE_POSITION, positions);
+    mesh.insert_attribute(Mesh::ATTRIBUTE_COLOR, colors);
+}
+
 pub fn update_particles_system(
-    sim: Option<Res<SimWorld>>,
+    sim: Option<ResMut<SimWorld>>,
     res: Option<ResMut<ParticleSystemResource>>,
 ) {
-    let (Some(sim), Some(mut res)) = (sim, res) else { return };
+    let (Some(mut sim), Some(mut res)) = (sim, res) else { return };
     let h = sim.world_height as f32;
 
-    for spark in &sim.world.spark_events {
-        let spark_pos = sim_to_bevy_coord(Vec2::new(spark.x, spark.y), h);
+    // Drain spark events so each event is consumed exactly once
+    let events: Vec<_> = sim.world.spark_events.drain(..).collect();
+    for spark in events {
+        let spark_pos = sim_to_bevy_coord(Vec2::new(spark.x as f32, spark.y as f32), h);
         let color = if spark.color_idx == 8 {
             Color::srgb(1.0, 0.46, 0.40)
         } else if spark.color_idx == 9 {
-            Color::srgb(1.0, 0.40, 0.35)
+            Color::srgb(0.61, 0.91, 0.84)
+        } else if spark.color_idx == 10 {
+            Color::srgb(0.87, 0.74, 0.47)
+        } else if spark.color_idx == 11 {
+            Color::srgb(0.88, 0.47, 0.48)
         } else {
             lineage_color(spark.color_idx)
         };
 
-        let count = spark.count.clamp(1, 10);
-        for i in 0..count {
-            let angle = (i as f32 / count as f32) * std::f32::consts::TAU + (spark.x * 0.17);
-            let speed = 1.0 + ((spark.y * 13.0 + i as f32 * 7.0).sin().abs()) * 1.4;
-            let vx = angle.cos() * speed;
-            let vy = angle.sin() * speed;
-            let life = 15.0 + ((spark.x * 5.0 + i as f32).cos().abs()) * 21.0;
+        let count = spark.count.clamp(1, 15);
+        for _ in 0..count {
+            let vx = res.next_f32(-2.4, 2.4);
+            let vy = res.next_f32(-2.4, 2.4);
+            let life = res.next_f32(15.0, 36.0);
 
             res.particles.push(SparkParticle {
                 x: spark_pos.x,
@@ -466,7 +569,6 @@ pub fn update_particles_system(
 
 pub fn render_sim_gizmos_system(
     sim: Option<Res<SimWorld>>,
-    particles: Option<Res<ParticleSystemResource>>,
     mut gizmos: Gizmos,
 ) {
     let Some(sim) = sim else { return };
@@ -532,19 +634,7 @@ pub fn render_sim_gizmos_system(
         }
     }
 
-    // 6. Combat / Bite Sparks with Velocity Decay & Fading Alpha
-    if let Some(ref particles) = particles {
-        for p in &particles.particles {
-            let alpha = (p.life / p.max_life).clamp(0.0, 1.0);
-            gizmos.rect_2d(
-                Vec2::new(p.x, p.y),
-                Vec2::splat(2.5),
-                p.color.with_alpha(alpha),
-            );
-        }
-    }
-
-    // 7. Eclipse Visual Overlay
+    // 6. Eclipse Visual Overlay
     if sim.world.eclipse > 0 {
         let alpha = ((sim.world.eclipse as f32 / 210.0) * 0.42).clamp(0.0, 0.5);
         let eclipse_color = Color::srgba(0.95, 0.4, 0.32, alpha);
@@ -652,13 +742,21 @@ pub struct ClankRenderPlugin;
 impl Plugin for ClankRenderPlugin {
     fn build(&self, app: &mut App) {
         app.init_resource::<ParticleSystemResource>()
-            .add_systems(Startup, (setup_soil_rendering, setup_agent_rendering))
+            .add_systems(
+                Startup,
+                (
+                    setup_soil_rendering,
+                    setup_agent_rendering,
+                    setup_particle_rendering,
+                ),
+            )
             .add_systems(
                 Update,
                 (
                     update_soil_texture_system,
                     update_agent_mesh_system,
                     update_particles_system,
+                    update_particle_mesh_system,
                     render_sim_gizmos_system,
                     agent_picking_system,
                 ),
