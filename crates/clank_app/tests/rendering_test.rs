@@ -104,3 +104,17 @@ fn test_generate_soil_rgba() {
     assert_eq!(a1, 255);
     assert!(r1 > r0);
 }
+
+#[test]
+fn test_dart_body_morphology() {
+    use clank_app::rendering::compute_dart_polygon;
+    let agent = clank_core::agent::AgentData::default();
+    let vertices = compute_dart_polygon(&agent);
+    assert_eq!(vertices.len(), 4);
+    // Nose must point forward (+X)
+    assert!(vertices[0].x > 0.0);
+    // Wing tips must have opposite Y values
+    assert!((vertices[1].y + vertices[3].y).abs() < 1e-4);
+    // Rear notch must be indented
+    assert!(vertices[2].x < 0.0);
+}

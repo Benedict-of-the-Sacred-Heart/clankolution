@@ -1,17 +1,8 @@
 use bevy::prelude::*;
+use clank_core::agent::AgentData;
 use clank_core::soil::SoilGrid;
 use crate::sim::SimWorld;
-
-pub const PALETTE: [Color; 8] = [
-    Color::srgb(0.369, 0.918, 0.831), // #5eead4
-    Color::srgb(0.376, 0.647, 0.980), // #60a5fa
-    Color::srgb(0.753, 0.518, 0.988), // #c084fc
-    Color::srgb(0.957, 0.447, 0.714), // #f472b6
-    Color::srgb(0.984, 0.573, 0.235), // #fb923c
-    Color::srgb(0.980, 0.800, 0.082), // #facc15
-    Color::srgb(0.290, 0.871, 0.502), // #4ade80
-    Color::srgb(0.176, 0.831, 0.749), // #2dd4bf
-];
+use crate::theme::PALETTE;
 
 #[inline]
 pub fn sim_to_bevy_coord(sim_pos: Vec2, world_height: f32) -> Vec2 {
@@ -25,7 +16,8 @@ pub fn bevy_to_sim_coord(bevy_pos: Vec2, world_height: f32) -> Vec2 {
 
 #[inline]
 pub fn lineage_color(root: u32) -> Color {
-    PALETTE[(root as usize) % PALETTE.len()]
+    let c = PALETTE[(root as usize) % PALETTE.len()];
+    Color::srgb_u8(c.r(), c.g(), c.b())
 }
 
 #[inline]
@@ -36,9 +28,18 @@ pub fn agent_body_color(root: u32, energy: f64) -> Color {
 }
 
 #[inline]
+pub fn compute_dart_polygon(a: &AgentData) -> [Vec2; 4] {
+    let r = (2.3 + a.tr[0] * 4.5) as f32;
+    let nose = Vec2::new(r * 1.5, 0.0);
+    let right_wing = Vec2::new(-r * 0.75, r * (0.5 + a.tr[3] as f32 * 0.45));
+    let rear_notch = Vec2::new(-r * (0.45 + a.tr[5] as f32), 0.0);
+    let left_wing = Vec2::new(-r * 0.75, -r * (0.5 + a.tr[3] as f32 * 0.45));
+    [nose, right_wing, rear_notch, left_wing]
+}
+
+#[inline]
 pub fn agent_triangle_vertices(pos: Vec2, angle: f32, bulk_trait: f32) -> (Vec2, Vec2, Vec2) {
     let r = 2.3 + bulk_trait * 4.5;
-    // Rotation by -angle because Bevy's +Y is upwards whereas web canvas +Y is downwards
     let rot = Mat2::from_angle(-angle);
     let tip = pos + rot * Vec2::new(r * 1.5, 0.0);
     let wing1 = pos + rot * Vec2::new(-r * 0.75, r * 0.75);
@@ -56,6 +57,11 @@ pub struct AgentRenderItem {
     pub is_selected: bool,
     pub attack: f32,
     pub birth: u32,
+    pub signal: f32,
+    pub sight: f32,
+    pub bulk: f32,
+    pub armor: f32,
+    pub carnivory: f32,
     pub trail: Vec<Vec2>,
 }
 
@@ -90,6 +96,11 @@ pub fn extract_agent_render_data(sim: &SimWorld) -> Vec<AgentRenderItem> {
                 is_selected,
                 attack: a.attack as f32,
                 birth: a.birth,
+                signal: a.signal as f32,
+                sight: a.tr[2] as f32,
+                bulk: a.tr[0] as f32,
+                armor: a.tr[3] as f32,
+                carnivory: a.tr[5] as f32,
                 trail,
             }
         })
@@ -136,20 +147,19 @@ pub fn render_sim_gizmos_system(sim: Option<Res<SimWorld>>, mut gizmos: Gizmos) 
     let w = sim.world_width as f32;
     let h = sim.world_height as f32;
 
-    // Field boundary
+    // Field arena background and outer border
     gizmos.rect_2d(
         Vec2::new(w * 0.5, h * 0.5),
         Vec2::new(w, h),
-        Color::srgb(0.12, 0.22, 0.25),
+        Color::srgb(0.043, 0.098, 0.106),
     );
 
     let items = extract_agent_render_data(&sim);
     for item in items {
-        // Trails
+        // 1. Trails (Faded multi-segment history lines in lineage palette)
         if item.trail.len() > 1 {
-            let trail_color = item.color.with_alpha(0.3);
+            let trail_color = item.color.with_alpha(0.25);
             for window in item.trail.windows(2) {
-                // Ignore wrapped coordinates across toroidal boundary
                 if (window[0].x - window[1].x).abs() < w * 0.5
                     && (window[0].y - window[1].y).abs() < h * 0.5
                 {
@@ -158,30 +168,71 @@ pub fn render_sim_gizmos_system(sim: Option<Res<SimWorld>>, mut gizmos: Gizmos) 
             }
         }
 
-        // Body triangle
-        let (v0, v1, v2) = agent_triangle_vertices(item.bevy_pos, item.angle, (item.radius - 2.3) / 4.5);
+        // 2. Exact Dart Polygon Body
+        let rot = Mat2::from_angle(-item.angle);
+        let r = item.radius;
+        let nose = item.bevy_pos + rot * Vec2::new(r * 1.5, 0.0);
+        let right_wing = item.bevy_pos + rot * Vec2::new(-r * 0.75, r * (0.5 + item.armor * 0.45));
+        let rear_notch = item.bevy_pos + rot * Vec2::new(-r * (0.45 + item.carnivory), 0.0);
+        let left_wing = item.bevy_pos + rot * Vec2::new(-r * 0.75, -r * (0.5 + item.armor * 0.45));
+
+        // Body outline (Red when attacking, else #153034)
         let border_color = if item.attack > 0.5 {
             Color::srgb(1.0, 0.33, 0.31)
         } else {
-            item.color
+            Color::srgb(0.082, 0.188, 0.204)
         };
-        gizmos.line_2d(v0, v1, border_color);
-        gizmos.line_2d(v1, v2, border_color);
-        gizmos.line_2d(v2, v0, border_color);
 
-        // Core dot
-        gizmos.circle_2d(item.bevy_pos, item.radius * 0.3, item.color);
+        gizmos.line_2d(nose, right_wing, border_color);
+        gizmos.line_2d(right_wing, rear_notch, border_color);
+        gizmos.line_2d(rear_notch, left_wing, border_color);
+        gizmos.line_2d(left_wing, nose, border_color);
 
-        // Birth halo
+        // Fill / bioluminescent core
+        gizmos.circle_2d(item.bevy_pos, r * 0.45, item.color);
+
+        // 3. Sensory Antennae (Whiskers if sight trait > 0.56)
+        if item.sight > 0.56 {
+            let antenna_color = item.color.with_alpha(0.6);
+            let ant1_start = item.bevy_pos + rot * Vec2::new(-r * 0.3, r * 0.6);
+            let ant1_end = item.bevy_pos + rot * Vec2::new(-r * (1.5 + item.sight), r * (1.1 + item.signal));
+            let ant2_start = item.bevy_pos + rot * Vec2::new(-r * 0.3, -r * 0.6);
+            let ant2_end = item.bevy_pos + rot * Vec2::new(-r * (1.5 + item.sight), -r * (1.1 + item.signal));
+            gizmos.line_2d(ant1_start, ant1_end, antenna_color);
+            gizmos.line_2d(ant2_start, ant2_end, antenna_color);
+        }
+
+        // 4. Birth Halo Ring
         if item.birth > 0 {
             let halo_color = item.color.with_alpha((item.birth as f32) / 120.0);
-            gizmos.circle_2d(item.bevy_pos, item.radius + 3.0, halo_color);
+            let halo_radius = r + 3.0 + ((95.0 - item.birth as f32).max(0.0)) * 0.12;
+            gizmos.circle_2d(item.bevy_pos, halo_radius, halo_color);
         }
 
-        // Selection reticle
+        // 5. Selection Reticle (Dashed circle #fff1d6)
         if item.is_selected {
-            gizmos.circle_2d(item.bevy_pos, item.radius + 7.0, Color::srgb(1.0, 0.95, 0.84));
+            gizmos.circle_2d(item.bevy_pos, r + 8.0, Color::srgb(1.0, 0.945, 0.839));
         }
+    }
+
+    // 6. Combat / Bite Sparks
+    for spark in &sim.world.spark_events {
+        let spark_pos = sim_to_bevy_coord(Vec2::new(spark.x, spark.y), h);
+        let spark_color = if spark.color_idx == 8 {
+            Color::srgb(1.0, 0.46, 0.40)
+        } else if spark.color_idx == 9 {
+            Color::srgb(1.0, 0.40, 0.35)
+        } else {
+            lineage_color(spark.color_idx)
+        };
+        gizmos.rect_2d(spark_pos, Vec2::splat(3.0), spark_color);
+    }
+
+    // 7. Eclipse Visual Overlay
+    if sim.world.eclipse > 0 {
+        let alpha = ((sim.world.eclipse as f32 / 210.0) * 0.42).clamp(0.0, 0.5);
+        let eclipse_color = Color::srgba(0.95, 0.4, 0.32, alpha);
+        gizmos.rect_2d(Vec2::new(w * 0.5, h * 0.5), Vec2::new(w, h), eclipse_color);
     }
 }
 
@@ -248,4 +299,3 @@ impl Plugin for ClankRenderPlugin {
         app.add_systems(Update, (render_sim_gizmos_system, agent_picking_system));
     }
 }
-
