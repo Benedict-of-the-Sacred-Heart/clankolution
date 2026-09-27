@@ -59,48 +59,35 @@ pub fn compute_arena_viewport(window_size: Vec2, scale_factor: f32) -> (Viewport
 pub fn setup_camera(mut commands: Commands) {
     commands.spawn((
         Camera2d,
-        Transform::from_xyz(475.0, 373.5, 0.0),
+        Transform::from_xyz(640.0, 400.0, 0.0),
         MainCamera,
     ));
 }
 
 pub fn camera_viewport_sync_system(
     window_query: Query<&Window>,
-    mut camera_query: Query<(&mut Camera, &mut Transform), With<MainCamera>>,
+    mut camera_query: Query<&mut Transform, With<MainCamera>>,
     mut sim: Option<ResMut<SimWorld>>,
 ) {
     let Ok(window) = window_query.single() else { return };
-    let (vp, arena_size) = compute_arena_viewport(
-        Vec2::new(window.width(), window.height()),
-        window.scale_factor(),
-    );
+    let arena_w = (window.width() - 330.0).max(320.0);
+    let arena_h = (window.height() - 53.0).max(250.0);
 
-    if let Ok((mut camera, mut transform)) = camera_query.single_mut() {
-        let needs_update = match &camera.viewport {
-            Some(existing) => {
-                existing.physical_position != vp.physical_position
-                    || existing.physical_size != vp.physical_size
-            }
-            None => true,
-        };
+    if let Ok(mut transform) = camera_query.single_mut() {
+        transform.translation.x = window.width() * 0.5;
+        transform.translation.y = window.height() * 0.5;
 
-        if needs_update {
-            camera.viewport = Some(vp);
-            transform.translation.x = arena_size.x * 0.5;
-            transform.translation.y = arena_size.y * 0.5;
-
-            if let Some(ref mut sim) = sim {
-                if (sim.world_width - arena_size.x as f64).abs() > 0.5
-                    || (sim.world_height - arena_size.y as f64).abs() > 0.5
-                {
-                    let w = arena_size.x as f64;
-                    let h = arena_size.y as f64;
-                    sim.world_width = w;
-                    sim.world_height = h;
-                    let cols = ((arena_size.x / 12.0).ceil() as usize).clamp(20, 200);
-                    let rows = ((arena_size.y / 12.0).ceil() as usize).clamp(20, 200);
-                    sim.world.resize(w, h, cols, rows);
-                }
+        if let Some(ref mut sim) = sim {
+            if (sim.world_width - arena_w as f64).abs() > 0.5
+                || (sim.world_height - arena_h as f64).abs() > 0.5
+            {
+                let w = arena_w as f64;
+                let h = arena_h as f64;
+                sim.world_width = w;
+                sim.world_height = h;
+                let cols = ((arena_w / 12.0).ceil() as usize).clamp(20, 200);
+                let rows = ((arena_h / 12.0).ceil() as usize).clamp(20, 200);
+                sim.world.resize(w, h, cols, rows);
             }
         }
     }

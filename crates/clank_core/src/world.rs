@@ -65,9 +65,15 @@ pub struct World {
 
 impl World {
     pub fn new(seed: u32) -> Self {
-        let mut w = Self {
+        Self::new_with_size(seed, 900.0, 600.0, 75, 50)
+    }
+
+    pub fn new_with_size(seed: u32, w: f64, h: f64, cols: usize, rows: usize) -> Self {
+        let mut soil = SoilGrid::new();
+        soil.resize(w, h, cols, rows);
+        let mut world = Self {
             prng: Prng::new(seed),
-            soil: SoilGrid::new(),
+            soil,
             agents: Vec::with_capacity(340),
             pos_x: Vec::with_capacity(340),
             pos_y: Vec::with_capacity(340),
@@ -83,8 +89,8 @@ impl World {
             growth: 100.0,
             hostility: 100.0,
             max_cap: 340,
-            w: 900.0,
-            h: 600.0,
+            w,
+            h,
             grid_nx: 9,
             grid_ny: 6,
             cell_w: 100.0,
@@ -95,13 +101,12 @@ impl World {
             agent_cell: Vec::new(),
             neighbor_cells: Vec::new(),
         };
-        w.rebuild_grid_layout(900.0, 600.0);
-        // Initial startup draws numbers during initial resize() -> setupGrid(false)
-        for _ in 0..w.soil.grid_size {
-            w.prng.rand(0.15, 0.5);
+        world.rebuild_grid_layout(w, h);
+        for _ in 0..world.soil.grid_size {
+            world.prng.rand(0.15, 0.5);
         }
-        w.reset();
-        w
+        world.reset();
+        world
     }
 
     pub fn set_max_capacity(&mut self, cap: u32) {
@@ -113,8 +118,20 @@ impl World {
     }
 
     pub fn resize(&mut self, w: f64, h: f64, cols: usize, rows: usize) {
+        let old_w = self.w;
+        let old_h = self.h;
         self.w = w;
         self.h = h;
+        if old_w > 0.0 && old_h > 0.0 && (old_w != w || old_h != h) {
+            for a in &mut self.agents {
+                a.x = (a.x / old_w) * w;
+                a.y = (a.y / old_h) * h;
+            }
+            for i in 0..self.pos_x.len() {
+                self.pos_x[i] = (self.pos_x[i] / old_w) * w;
+                self.pos_y[i] = (self.pos_y[i] / old_h) * h;
+            }
+        }
         self.soil.resize(w, h, cols, rows);
         self.rebuild_grid_layout(w, h);
         if !self.agents.is_empty() {

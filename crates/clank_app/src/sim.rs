@@ -15,28 +15,30 @@ pub struct SimWorld {
 
 impl Default for SimWorld {
     fn default() -> Self {
+        let world = World::new_with_size(42, 950.0, 747.0, 80, 63);
         Self {
-            world: World::new(42),
+            world,
             speed: 1,
             paused: false,
             unthrottled: false,
             selected_agent_id: None,
-            world_width: 900.0,
-            world_height: 600.0,
+            world_width: 950.0,
+            world_height: 747.0,
         }
     }
 }
 
 impl SimWorld {
     pub fn new(seed: u32) -> Self {
+        let world = World::new_with_size(seed, 950.0, 747.0, 80, 63);
         Self {
-            world: World::new(seed),
+            world,
             speed: 1,
             paused: false,
             unthrottled: false,
             selected_agent_id: None,
-            world_width: 900.0,
-            world_height: 600.0,
+            world_width: 950.0,
+            world_height: 747.0,
         }
     }
 

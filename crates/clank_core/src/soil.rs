@@ -56,7 +56,7 @@ impl SoilGrid {
         self.cell_h = h / (rows as f64);
         self.inv_cell_w = 1.0 / self.cell_w;
         self.inv_cell_h = 1.0 / self.cell_h;
-        self.food.resize(self.grid_size, 0.0);
+        self.food.resize(self.grid_size, 0.25);
         self.taint.resize(self.grid_size, 0.0);
         self.scent.resize(self.grid_size, 0.0);
         self.bloom.resize(self.grid_size, 0.0);
