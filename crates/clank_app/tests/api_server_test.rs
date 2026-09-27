@@ -76,3 +76,26 @@ fn test_http_api_endpoints() {
         }
     }
 }
+
+#[test]
+fn test_concurrent_http_requests() {
+    let port = 9337;
+    let (_server, _rx, shared) = create_test_api_server(port);
+    shared.write().unwrap().metrics.update(100.0, 10.0, 1, 10, 1.0);
+
+    // Stream 1 connects but does not send data (hanging connection)
+    let _slow_stream = TcpStream::connect(format!("127.0.0.1:{}", port)).expect("connect slow");
+
+    // Stream 2 connects and immediately queries /metrics
+    let start = std::time::Instant::now();
+    let mut stream2 = TcpStream::connect(format!("127.0.0.1:{}", port)).expect("connect stream 2");
+    stream2.set_read_timeout(Some(Duration::from_millis(500))).unwrap();
+    stream2.write_all(b"GET /metrics HTTP/1.1\r\nHost: localhost\r\n\r\n").expect("write");
+    let mut response = String::new();
+    let res = stream2.read_to_string(&mut response);
+    let elapsed = start.elapsed();
+
+    assert!(res.is_ok(), "Stream 2 timed out or failed: {:?}", res);
+    assert!(response.contains("HTTP/1.1 200 OK"));
+    assert!(elapsed < Duration::from_millis(500), "Concurrent request blocked for {:?}", elapsed);
+}
