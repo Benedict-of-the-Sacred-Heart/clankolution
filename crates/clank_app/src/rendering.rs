@@ -680,7 +680,7 @@ pub fn agent_picking_system(
     match active_tool {
         crate::ui::ActiveTool::Observe => {
             if mouse_buttons.just_pressed(MouseButton::Left) {
-                sim.selected_agent_id = find_agent_at_position(&sim, sim_pos, 8.0);
+                sim.selected_agent_id = find_agent_at_position(&sim, sim_pos, 25.0);
             }
         }
         crate::ui::ActiveTool::Nourish => {

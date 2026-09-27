@@ -10,6 +10,7 @@ pub struct ApiSettingsRequest {
     pub hostility: Option<f64>,
     pub max_cap: Option<usize>,
     pub scroll_offset: Option<f32>,
+    pub selected_agent: Option<u32>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -40,6 +41,8 @@ pub struct ApiStateResponse {
     pub mutation: f64,
     pub growth: f64,
     pub hostility: f64,
+    #[serde(default)]
+    pub selected_agent: Option<u32>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -574,6 +577,13 @@ pub fn api_dispatch_system(
                     if let Some(cap) = req.max_cap {
                         sim.world.max_cap = cap.clamp(50, 2000);
                     }
+                    if let Some(agent_id) = req.selected_agent {
+                        if agent_id == 0 {
+                            sim.selected_agent_id = sim.world.agents.iter().find(|a| a.dead == 0).map(|a| a.id);
+                        } else {
+                            sim.selected_agent_id = Some(agent_id);
+                        }
+                    }
                 }
                 if let Some(ref mut ui) = ui_res {
                     if let Some(speed) = req.speed {
@@ -588,7 +598,7 @@ pub fn api_dispatch_system(
                 let tool_lower = req.tool.to_lowercase();
                 if let Some(ref mut ui) = ui_res {
                     match tool_lower.as_str() {
-                        "observe" => ui.active_tool = ActiveTool::Observe,
+                        "observe" | "inspect" | "select" => ui.active_tool = ActiveTool::Observe,
                         "nourish" => ui.active_tool = ActiveTool::Nourish,
                         "blight" => ui.active_tool = ActiveTool::Blight,
                         "seed" | "seedlife" => ui.active_tool = ActiveTool::SeedLife,
@@ -601,6 +611,11 @@ pub fn api_dispatch_system(
                     let x = req.x.unwrap_or(sim.world_width / 2.0);
                     let y = req.y.unwrap_or(sim.world_height / 2.0);
                     match tool_lower.as_str() {
+                        "observe" | "inspect" | "select" => {
+                            if let (Some(x), Some(y)) = (req.x, req.y) {
+                                sim.selected_agent_id = crate::rendering::find_agent_at_position(&sim, Vec2::new(x as f32, y as f32), 25.0);
+                            }
+                        }
                         "nourish" => {
                             let soil = &mut sim.world.soil;
                             let col = ((x / soil.w * soil.cols as f64) as usize).clamp(0, soil.cols - 1);
@@ -698,6 +713,7 @@ pub fn api_state_sync_system(
         mutation: sim.world.mutation,
         growth: sim.world.growth,
         hostility: sim.world.hostility,
+        selected_agent: sim.selected_agent_id,
     };
     if let Ok(mut lock) = shared.0.write() {
         lock.state = Some(state);

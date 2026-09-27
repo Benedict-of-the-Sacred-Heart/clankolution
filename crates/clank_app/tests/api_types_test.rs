@@ -10,11 +10,13 @@ fn test_api_types_json_roundtrip() {
         hostility: Some(1.2),
         max_cap: Some(500),
         scroll_offset: Some(100.0),
+        selected_agent: Some(42),
     };
     let json = serde_json::to_string(&settings).expect("serialize settings");
     let deserialized: ApiSettingsRequest = serde_json::from_str(&json).expect("deserialize settings");
     assert_eq!(deserialized.speed, Some(4.0));
     assert_eq!(deserialized.mutation, Some(0.25));
+    assert_eq!(deserialized.selected_agent, Some(42));
 
     let tool = ApiToolRequest {
         tool: "nourish".to_string(),
@@ -41,6 +43,7 @@ fn test_api_types_json_roundtrip() {
         mutation: 0.15,
         growth: 1.0,
         hostility: 1.0,
+        selected_agent: Some(42),
     };
     let state_json = serde_json::to_string(&state).expect("serialize state");
     let deserialized_state: ApiStateResponse = serde_json::from_str(&state_json).expect("deserialize state");

@@ -478,18 +478,16 @@ fn render_persistence_section(ui: &mut egui::Ui, state: &mut UiState, sim: &mut 
         let btn_saves = egui::Button::new(RichText::new("WHAT SAVES?").size(10.0).monospace().color(Color32::from_rgb(166, 196, 191)))
             .fill(COLOR_BTN_BG).stroke(Stroke::new(1.0, COLOR_BTN_BORDER)).corner_radius(CornerRadius::same(3));
         if ui.add_sized([106.0, 28.0], btn_saves).clicked() {
-            state.status_message = Some("Zero-copy .clank saves all creatures, soil grids, genes, brains & PRNG state.".to_string());
+            state.status_message = Some(".clank saves an instant binary snapshot in microseconds via rkyv. .json saves a portable human-readable format.".to_string());
         }
         ui.end_row();
     });
 
     ui.add_space(4.0);
-    ui.label(RichText::new("Export a snapshot to continue generations later. Import it here on this or another machine.").size(10.5).monospace().color(COLOR_MUTED));
-
-    if let Some(ref msg) = state.status_message {
-        ui.add_space(2.0);
-        ui.label(RichText::new(msg).size(10.5).monospace().color(COLOR_GOLD));
-    }
+    let hint_text = state.status_message.as_deref().unwrap_or(
+        "Export a snapshot to continue generations later. Import it here on this or another machine."
+    );
+    ui.label(RichText::new(hint_text).size(10.5).monospace().color(COLOR_MUTED));
 }
 
 
@@ -617,32 +615,40 @@ fn render_specimen_box(ui: &mut egui::Ui, sim: &SimWorld) {
         .show(ui, |ui| {
             ui.set_width(300.0);
             if let Some(agent) = sim.get_selected_agent() {
-                ui.label(RichText::new(format!("Creature #{} (Gen {})", agent.id, agent.gen)).size(13.0).strong().color(Color32::from_rgb(240, 230, 217)));
-                ui.add_space(4.0);
-                ui.label(RichText::new(format!("Energy: {:.1}  |  Age: {} ticks  |  Kills: {}", agent.energy, agent.age, agent.kills)).size(10.5).color(Color32::from_rgb(173, 191, 186)));
-                ui.label(RichText::new(format!("Lineage Root: {}", agent.root)).size(10.5).color(COLOR_GOLD));
-                ui.add_space(4.0);
-
-                // Trait display
-                let trait_names = ["Bulk", "Speed", "Sight", "Armor", "Forage", "Carn"];
-                for (name, val) in trait_names.iter().zip(agent.tr.iter()) {
-                    ui.horizontal(|ui| {
-                        ui.label(RichText::new(*name).size(10.0).color(COLOR_MUTED));
-                        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                            ui.label(RichText::new(format!("{:.2}", val)).size(10.0).color(COLOR_CYAN));
-                        });
-                    });
-                }
-
-                ui.add_space(6.0);
-                ui.label(RichText::new("Recurrent Brain Activations (h[0..9]):").size(10.0).color(COLOR_GOLD));
-                for (i, val) in agent.h.iter().enumerate() {
-                    let norm = ((*val as f32 + 1.0) * 0.5).clamp(0.0, 1.0);
-                    ui.horizontal(|ui| {
-                        ui.label(RichText::new(format!("h[{}]", i)).size(9.5).color(COLOR_MUTED));
-                        ui.add(egui::ProgressBar::new(norm).desired_width(180.0));
-                    });
-                }
+                ui.horizontal(|ui| {
+                    ui.label(RichText::new(format!("SPECIMEN {}", agent.id)).size(13.5).strong().monospace().color(Color32::from_rgb(240, 230, 217)));
+                    ui.label(RichText::new(format!("  ·  lineage {}  ·  generation {}", agent.root, agent.gen)).size(11.0).monospace().color(Color32::from_rgb(173, 191, 186)));
+                });
+                ui.add_space(2.0);
+                ui.label(
+                    RichText::new(format!("Energy {:.1}  ·  age {}  ·  kills {}", agent.energy, agent.age, agent.kills))
+                        .size(11.0)
+                        .monospace()
+                        .color(Color32::from_rgb(173, 191, 186))
+                );
+                ui.add_space(2.0);
+                let labels = ["bulk", "speed", "sight", "armor", "foraging", "carnivory"];
+                let traits_str = labels
+                    .iter()
+                    .zip(agent.tr.iter())
+                    .map(|(name, val)| format!("{} {}%", name, (val * 100.0).round() as i32))
+                    .collect::<Vec<_>>()
+                    .join("  ·  ");
+                ui.label(RichText::new(traits_str).size(11.0).monospace().color(Color32::from_rgb(173, 191, 186)));
+                ui.add_space(2.0);
+                let h_str = agent
+                    .h
+                    .iter()
+                    .take(5)
+                    .map(|v| format!("{:.2}", v))
+                    .collect::<Vec<_>>()
+                    .join(" / ");
+                ui.label(
+                    RichText::new(format!("Recurrent state {}", h_str))
+                        .size(11.0)
+                        .monospace()
+                        .color(Color32::from_rgb(173, 191, 186))
+                );
             } else {
                 ui.label(RichText::new("Select a creature in the arena.\nIts recurrent state, ancestry, and traits will appear here.").size(11.0).color(Color32::from_rgb(173, 191, 186)));
             }
