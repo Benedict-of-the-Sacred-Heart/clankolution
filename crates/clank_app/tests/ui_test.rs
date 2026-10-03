@@ -30,14 +30,58 @@ fn test_ui_set_speed() {
     assert_eq!(state.speed, 4.0);
     assert_eq!(sim.speed, 4);
 
-    // Speed clamped to 1..10
+    // Speed clamped to 1..32 (matching HTML range)
     set_simulation_speed(&mut sim, &mut state, 25.0);
-    assert_eq!(state.speed, 10.0);
-    assert_eq!(sim.speed, 10);
+    assert_eq!(state.speed, 25.0);
+    assert_eq!(sim.speed, 25);
+
+    set_simulation_speed(&mut sim, &mut state, 40.0);
+    assert_eq!(state.speed, 32.0);
+    assert_eq!(sim.speed, 32);
 
     set_simulation_speed(&mut sim, &mut state, 0.2);
     assert_eq!(state.speed, 1.0);
     assert_eq!(sim.speed, 1);
+}
+
+#[test]
+fn test_persistence_filenames_and_status() {
+    use clank_app::ui::{
+        compute_export_clank_filename, compute_export_json_filename,
+        compute_export_clank_status, compute_export_json_status,
+        compute_import_clank_status, compute_import_json_status,
+        WHAT_SAVES_NOTE, DEFAULT_SAVE_HINT,
+    };
+
+    assert_eq!(compute_export_clank_filename(123), "clankolution-cycle-123.clank");
+    assert_eq!(compute_export_json_filename(456), "clankolution-cycle-456.json");
+
+    assert_eq!(
+        compute_export_clank_status(123, 2048),
+        "Cycle 123 saved to binary snapshot (.clank, 2.0 KB)."
+    );
+    assert_eq!(
+        compute_export_json_status(456),
+        "Cycle 456 exported. Keep the JSON file to restore this world."
+    );
+
+    assert_eq!(
+        compute_import_clank_status(123, 4096),
+        "Cycle 123 restored from .clank binary snapshot (4.0 KB)."
+    );
+    assert_eq!(
+        compute_import_json_status(456),
+        "Cycle 456 restored. The simulation continues here."
+    );
+
+    assert_eq!(
+        WHAT_SAVES_NOTE,
+        ".clank saves an instant binary snapshot in microseconds via rkyv. .json saves a portable human-readable format."
+    );
+    assert_eq!(
+        DEFAULT_SAVE_HINT,
+        "Export a snapshot to continue generations later. Import it here on this or another device."
+    );
 }
 
 #[test]

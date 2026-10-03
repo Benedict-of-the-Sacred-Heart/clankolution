@@ -77,12 +77,39 @@ impl UiState {
     }
 }
 
+pub const WHAT_SAVES_NOTE: &str = ".clank saves an instant binary snapshot in microseconds via rkyv. .json saves a portable human-readable format.";
+pub const DEFAULT_SAVE_HINT: &str = "Export a snapshot to continue generations later. Import it here on this or another device.";
+
+pub fn compute_export_clank_filename(tick: u32) -> String {
+    format!("clankolution-cycle-{}.clank", tick)
+}
+
+pub fn compute_export_json_filename(tick: u32) -> String {
+    format!("clankolution-cycle-{}.json", tick)
+}
+
+pub fn compute_export_clank_status(tick: u32, bytes: usize) -> String {
+    format!("Cycle {} saved to binary snapshot (.clank, {:.1} KB).", tick, bytes as f32 / 1024.0)
+}
+
+pub fn compute_export_json_status(tick: u32) -> String {
+    format!("Cycle {} exported. Keep the JSON file to restore this world.", tick)
+}
+
+pub fn compute_import_clank_status(tick: u32, bytes: usize) -> String {
+    format!("Cycle {} restored from .clank binary snapshot ({:.1} KB).", tick, bytes as f32 / 1024.0)
+}
+
+pub fn compute_import_json_status(tick: u32) -> String {
+    format!("Cycle {} restored. The simulation continues here.", tick)
+}
+
 pub fn toggle_pause(sim: &mut SimWorld) {
     sim.paused = !sim.paused;
 }
 
 pub fn set_simulation_speed(sim: &mut SimWorld, state: &mut UiState, speed: f32) {
-    let clamped = speed.clamp(1.0, 10.0);
+    let clamped = speed.clamp(1.0, 32.0);
     state.speed = clamped;
     sim.speed = clamped.round() as u32;
 }
@@ -195,11 +222,11 @@ pub fn clank_ui_system(
                         state.add_chronicle(format!("{:05}  The first hunger begins.", sim.world.tick));
                     }
 
-                    ui.add_space(6.0);
+                    ui.add_space(7.0);
 
                     // Speed slider pill container
                     ui.allocate_ui_with_layout(
-                        Vec2::new(140.0, 28.0),
+                        Vec2::new(145.0, 28.0),
                         egui::Layout::left_to_right(egui::Align::Center),
                         |ui| {
                             egui::Frame::NONE
@@ -211,8 +238,8 @@ pub fn clank_ui_system(
                                     ui.horizontal(|ui| {
                                         ui.label(RichText::new("SPEED").size(9.5).monospace().color(COLOR_MUTED));
                                         let mut speed_val = state.speed;
-                                        ui.spacing_mut().slider_width = 44.0;
-                                        if ui.add(egui::Slider::new(&mut speed_val, 1.0..=10.0).show_value(false)).changed() {
+                                        ui.spacing_mut().slider_width = 46.0;
+                                        if ui.add(egui::Slider::new(&mut speed_val, 1.0..=32.0).show_value(false)).changed() {
                                              set_simulation_speed(&mut sim, &mut state, speed_val);
                                         }
                                         ui.label(RichText::new(format!("{}×", sim.speed)).size(10.5).monospace().strong().color(COLOR_GOLD));
@@ -221,7 +248,7 @@ pub fn clank_ui_system(
                         },
                     );
 
-                    ui.add_space(6.0);
+                    ui.add_space(7.0);
 
                     let pause_label = if sim.paused { "RESUME" } else { "PAUSE" };
                     let btn_pause = egui::Button::new(RichText::new(pause_label).size(10.5).monospace().color(Color32::from_rgb(180, 203, 198)))
@@ -230,6 +257,16 @@ pub fn clank_ui_system(
                         .corner_radius(CornerRadius::same(3));
                     if ui.add_sized([70.0, 28.0], btn_pause).clicked() {
                         toggle_pause(&mut sim);
+                    }
+
+                    ui.add_space(7.0);
+
+                    let btn_engine = egui::Button::new(RichText::new("ENGINE: RUST").size(10.0).monospace().strong().color(Color32::from_rgb(56, 239, 125)))
+                        .fill(Color32::from_rgb(20, 53, 43))
+                        .stroke(Stroke::new(1.0, Color32::from_rgb(56, 239, 125)))
+                        .corner_radius(CornerRadius::same(3));
+                    if ui.add_sized([106.0, 28.0], btn_engine).clicked() {
+                        state.add_chronicle(format!("{:05}  Native Bevy+Rust engine running at {}x.", sim.world.tick, sim.speed));
                     }
                 });
             });
@@ -448,26 +485,27 @@ fn render_tool_matrix(ui: &mut egui::Ui, state: &mut UiState, sim: &mut SimWorld
 
 fn render_persistence_section(ui: &mut egui::Ui, state: &mut UiState, sim: &mut SimWorld) {
     egui::Grid::new("persist_grid").num_columns(3).spacing([6.0, 6.0]).show(ui, |ui| {
-        let btn_clank = egui::Button::new(RichText::new("EXPORT\n(.CLANK)").size(9.5).monospace().color(Color32::from_rgb(166, 196, 191)))
+        let btn_clank = egui::Button::new(RichText::new("EXPORT (.CLANK)").size(9.0).monospace().color(Color32::from_rgb(166, 196, 191)))
             .fill(COLOR_BTN_BG).stroke(Stroke::new(1.0, COLOR_BTN_BORDER)).corner_radius(CornerRadius::same(3));
-        if ui.add_sized([96.0, 38.0], btn_clank).clicked() {
-            match save_clank_file(sim, &state.file_path) {
+        if ui.add_sized([96.0, 30.0], btn_clank).clicked() {
+            let filename = compute_export_clank_filename(sim.world.tick);
+            match save_clank_file(sim, &filename) {
                 Ok(bytes) => {
-                    let msg = format!("Exported {} bytes to {}", bytes, state.file_path);
-                    state.status_message = Some(msg);
+                    state.status_message = Some(compute_export_clank_status(sim.world.tick, bytes));
+                    state.file_path = filename;
                 }
                 Err(e) => state.status_message = Some(format!("Export error: {}", e)),
             }
         }
 
-        let json_path = state.file_path.replace(".clank", ".json");
-        let btn_json = egui::Button::new(RichText::new("EXPORT\n(.JSON)").size(9.5).monospace().color(Color32::from_rgb(166, 196, 191)))
+        let btn_json = egui::Button::new(RichText::new("EXPORT (.JSON)").size(9.0).monospace().color(Color32::from_rgb(166, 196, 191)))
             .fill(COLOR_BTN_BG).stroke(Stroke::new(1.0, COLOR_BTN_BORDER)).corner_radius(CornerRadius::same(3));
-        if ui.add_sized([96.0, 38.0], btn_json).clicked() {
-            match export_json_file(sim, &json_path) {
-                Ok(bytes) => {
-                    let msg = format!("Exported JSON ({} bytes) to {}", bytes, json_path);
-                    state.status_message = Some(msg);
+        if ui.add_sized([96.0, 30.0], btn_json).clicked() {
+            let filename = compute_export_json_filename(sim.world.tick);
+            match export_json_file(sim, &filename) {
+                Ok(_bytes) => {
+                    state.status_message = Some(compute_export_json_status(sim.world.tick));
+                    state.file_path = filename;
                 }
                 Err(e) => state.status_message = Some(format!("JSON error: {}", e)),
             }
@@ -475,41 +513,47 @@ fn render_persistence_section(ui: &mut egui::Ui, state: &mut UiState, sim: &mut 
 
         let btn_import = egui::Button::new(RichText::new("IMPORT").size(10.0).monospace().color(Color32::from_rgb(166, 196, 191)))
             .fill(COLOR_BTN_BG).stroke(Stroke::new(1.0, COLOR_BTN_BORDER)).corner_radius(CornerRadius::same(3));
-        if ui.add_sized([96.0, 38.0], btn_import).clicked() {
-            let file_is_json = state.file_path.ends_with(".json");
-            let result = if file_is_json {
-                import_json_file(sim, &state.file_path)
-            } else {
-                load_clank_file(sim, &state.file_path)
-            };
-            match result {
-                Ok(()) => {
-                    sim.selected_agent_id = None;
-                    let msg = if file_is_json {
-                        "A world returns from its record."
-                    } else {
-                        "A world returns from its .clank record."
-                    };
-                    state.add_chronicle(format!("{:05}  {}", sim.world.tick, msg));
-                    state.status_message = Some(format!("Imported {} successfully", state.file_path));
+        if ui.add_sized([96.0, 30.0], btn_import).clicked() {
+            let picked = rfd::FileDialog::new()
+                .add_filter("World Snapshot (.clank, .json)", &["clank", "json"])
+                .pick_file();
+            if let Some(path) = picked {
+                let path_str = path.to_string_lossy().to_string();
+                let is_json = path_str.ends_with(".json");
+                let result = if is_json {
+                    import_json_file(sim, &path_str)
+                } else {
+                    load_clank_file(sim, &path_str)
+                };
+                match result {
+                    Ok(()) => {
+                        sim.selected_agent_id = None;
+                        let (event_msg, status_msg) = if is_json {
+                            ("A world returns from its record.", compute_import_json_status(sim.world.tick))
+                        } else {
+                            let byte_len = std::fs::metadata(&path).map(|m| m.len() as usize).unwrap_or(0);
+                            ("A world returns from its .clank record.", compute_import_clank_status(sim.world.tick, byte_len))
+                        };
+                        state.add_chronicle(format!("{:05}  {}", sim.world.tick, event_msg));
+                        state.status_message = Some(status_msg);
+                        state.file_path = path_str;
+                    }
+                    Err(e) => state.status_message = Some(format!("Could not load this world: {}", e)),
                 }
-                Err(e) => state.status_message = Some(format!("Import error: {}", e)),
             }
         }
         ui.end_row();
 
-        let btn_saves = egui::Button::new(RichText::new("WHAT SAVES?").size(10.0).monospace().color(Color32::from_rgb(166, 196, 191)))
+        let btn_saves = egui::Button::new(RichText::new("WHAT SAVES?").size(9.0).monospace().color(Color32::from_rgb(166, 196, 191)))
             .fill(COLOR_BTN_BG).stroke(Stroke::new(1.0, COLOR_BTN_BORDER)).corner_radius(CornerRadius::same(3));
-        if ui.add_sized([106.0, 28.0], btn_saves).clicked() {
-            state.status_message = Some(".clank saves an instant binary snapshot in microseconds via rkyv. .json saves a portable human-readable format.".to_string());
+        if ui.add_sized([96.0, 30.0], btn_saves).clicked() {
+            state.status_message = Some(WHAT_SAVES_NOTE.to_string());
         }
         ui.end_row();
     });
 
     ui.add_space(4.0);
-    let hint_text = state.status_message.as_deref().unwrap_or(
-        "Export a snapshot to continue generations later. Import it here on this or another machine."
-    );
+    let hint_text = state.status_message.as_deref().unwrap_or(DEFAULT_SAVE_HINT);
     ui.label(RichText::new(hint_text).size(10.5).monospace().color(COLOR_MUTED));
 }
 
