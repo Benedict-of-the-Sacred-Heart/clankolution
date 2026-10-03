@@ -91,6 +91,20 @@ pub fn trigger_spore_catastrophe(sim: &mut SimWorld) {
     sim.world.eclipse = 210;
 }
 
+pub fn compute_cycle_subtitle(tick: u32, eclipse: u32, active_count: usize) -> &'static str {
+    if tick == 0 {
+        "THE FIRST HUNGER"
+    } else if eclipse > 0 {
+        "THE ECLIPSE"
+    } else if active_count > 200 {
+        "THE SWARM"
+    } else if active_count < 25 {
+        "THE REMNANT"
+    } else {
+        "THE HUNGER"
+    }
+}
+
 pub fn clank_ui_system(
     mut contexts: EguiContexts,
     mut sim: ResMut<SimWorld>,
@@ -343,11 +357,8 @@ pub fn clank_ui_system(
             ui.add_space(14.0);
             ui.horizontal(|ui| {
                 ui.add_space(20.0);
-                let cycle_sub = if sim.world.eclipse > 0 {
-                    format!("THE HUNGER ECLIPSE ({})", sim.world.eclipse)
-                } else {
-                    "THE FIRST HUNGER".to_string()
-                };
+                let active_count = sim.world.agents.iter().filter(|a| a.dead == 0).count();
+                let cycle_sub = compute_cycle_subtitle(sim.world.tick, sim.world.eclipse, active_count);
                 let cycle_text = format!("CYCLE {:05} / {}", sim.world.tick, cycle_sub);
                 ui.label(RichText::new(cycle_text).size(11.0).monospace().color(Color32::from_rgb(160, 195, 188)));
             });

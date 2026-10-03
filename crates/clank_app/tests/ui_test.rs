@@ -1,5 +1,5 @@
 use clank_app::sim::SimWorld;
-use clank_app::ui::{UiState, trigger_spore_catastrophe, set_simulation_speed, toggle_pause};
+use clank_app::ui::{UiState, trigger_spore_catastrophe, set_simulation_speed, toggle_pause, compute_cycle_subtitle};
 
 #[test]
 fn test_ui_state_defaults() {
@@ -97,3 +97,16 @@ fn test_chronicle_event_formatting() {
     assert_eq!(state.chronicle[0], "00100  Generation 2 opens in lineage 5.");
 }
 
+#[test]
+fn test_compute_cycle_subtitle() {
+    // Tick 0 is genesis
+    assert_eq!(compute_cycle_subtitle(0, 0, 72), "THE FIRST HUNGER");
+    // Eclipse takes precedence
+    assert_eq!(compute_cycle_subtitle(100, 50, 250), "THE ECLIPSE");
+    // Swarm when population > 200
+    assert_eq!(compute_cycle_subtitle(100, 0, 340), "THE SWARM");
+    // Remnant when population < 25
+    assert_eq!(compute_cycle_subtitle(100, 0, 18), "THE REMNANT");
+    // Standard hunger
+    assert_eq!(compute_cycle_subtitle(100, 0, 120), "THE HUNGER");
+}
