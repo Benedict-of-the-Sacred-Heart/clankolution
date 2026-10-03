@@ -383,6 +383,15 @@ pub fn generate_dart_mesh_data(
         colors.push(body_rgba);
         colors.push(body_rgba);
     }
+
+    if positions.is_empty() {
+        positions.push([0.0, 0.0, -100.0]);
+        positions.push([0.0, 0.0, -100.0]);
+        positions.push([0.0, 0.0, -100.0]);
+        colors.push([0.0, 0.0, 0.0, 0.0]);
+        colors.push([0.0, 0.0, 0.0, 0.0]);
+        colors.push([0.0, 0.0, 0.0, 0.0]);
+    }
 }
 
 pub fn setup_agent_rendering(
@@ -390,7 +399,9 @@ pub fn setup_agent_rendering(
     mut meshes: ResMut<Assets<Mesh>>,
     mut materials: ResMut<Assets<ColorMaterial>>,
 ) {
-    let mesh = Mesh::new(PrimitiveTopology::TriangleList, RenderAssetUsages::default());
+    let mut mesh = Mesh::new(PrimitiveTopology::TriangleList, RenderAssetUsages::default());
+    mesh.insert_attribute(Mesh::ATTRIBUTE_POSITION, vec![[0.0, 0.0, -100.0]; 3]);
+    mesh.insert_attribute(Mesh::ATTRIBUTE_COLOR, vec![[0.0, 0.0, 0.0, 0.0]; 3]);
     let mesh_handle = meshes.add(mesh);
     let mat_handle = materials.add(ColorMaterial::default());
 
@@ -456,6 +467,15 @@ pub fn generate_particle_mesh_data(
         colors.push(rgba);
         colors.push(rgba);
     }
+
+    if positions.is_empty() {
+        positions.push([0.0, 0.0, -100.0]);
+        positions.push([0.0, 0.0, -100.0]);
+        positions.push([0.0, 0.0, -100.0]);
+        colors.push([0.0, 0.0, 0.0, 0.0]);
+        colors.push([0.0, 0.0, 0.0, 0.0]);
+        colors.push([0.0, 0.0, 0.0, 0.0]);
+    }
 }
 
 pub fn setup_particle_rendering(
@@ -463,7 +483,9 @@ pub fn setup_particle_rendering(
     mut meshes: ResMut<Assets<Mesh>>,
     mut materials: ResMut<Assets<ColorMaterial>>,
 ) {
-    let mesh = Mesh::new(PrimitiveTopology::TriangleList, RenderAssetUsages::default());
+    let mut mesh = Mesh::new(PrimitiveTopology::TriangleList, RenderAssetUsages::default());
+    mesh.insert_attribute(Mesh::ATTRIBUTE_POSITION, vec![[0.0, 0.0, -100.0]; 3]);
+    mesh.insert_attribute(Mesh::ATTRIBUTE_COLOR, vec![[0.0, 0.0, 0.0, 0.0]; 3]);
     let mesh_handle = meshes.add(mesh);
     let mat_handle = materials.add(ColorMaterial::default());
 
@@ -684,32 +706,18 @@ pub fn agent_picking_system(
             }
         }
         crate::ui::ActiveTool::Nourish => {
-            let soil = &mut sim.world.soil;
-            let col = ((sim_pos.x as f64 / soil.w * soil.cols as f64) as usize).clamp(0, soil.cols - 1);
-            let row = ((sim_pos.y as f64 / soil.h * soil.rows as f64) as usize).clamp(0, soil.rows - 1);
-            let idx = row * soil.cols + col;
-            soil.food[idx] = (soil.food[idx] + 0.6).min(10.0);
+            sim.world.nourish_at(sim_pos.x as f64, sim_pos.y as f64);
         }
         crate::ui::ActiveTool::Blight => {
-            let soil = &mut sim.world.soil;
-            let col = ((sim_pos.x as f64 / soil.w * soil.cols as f64) as usize).clamp(0, soil.cols - 1);
-            let row = ((sim_pos.y as f64 / soil.h * soil.rows as f64) as usize).clamp(0, soil.rows - 1);
-            let idx = row * soil.cols + col;
-            soil.taint[idx] = (soil.taint[idx] + 0.8).min(5.0);
-            soil.food[idx] = 0.0;
+            sim.world.blight_at(sim_pos.x as f64, sim_pos.y as f64);
         }
         crate::ui::ActiveTool::SeedLife => {
-            if mouse_buttons.just_pressed(MouseButton::Left) {
-                sim.world.create_agent(sim_pos.x as f64, sim_pos.y as f64, None, None);
+            if mouse_buttons.just_pressed(MouseButton::Left) || (sim.world.tick % 8 == 0) {
+                sim.world.seed_life_at(sim_pos.x as f64, sim_pos.y as f64);
             }
         }
         crate::ui::ActiveTool::Extinguish => {
-            if let Some(target_id) = find_agent_at_position(&sim, sim_pos, 25.0) {
-                if let Some(a) = sim.world.agents.iter_mut().find(|a| a.id == target_id) {
-                    a.dead = 1;
-                    a.energy = 0.0;
-                }
-            }
+            sim.world.extinguish_at(sim_pos.x as f64, sim_pos.y as f64, 23.0);
         }
         crate::ui::ActiveTool::Eclipse => {}
     }

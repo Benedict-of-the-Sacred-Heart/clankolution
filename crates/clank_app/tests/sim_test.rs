@@ -82,3 +82,76 @@ fn test_bevy_sim_plugin_step_system() {
         assert_eq!(sim.world.tick, 5);
     }
 }
+
+#[test]
+fn test_sim_world_extinguish_tool() {
+    let mut sim = SimWorld::new(42);
+    let target_agent = &sim.world.agents[0];
+    let tx = target_agent.x;
+    let ty = target_agent.y;
+    let initial_sparks = sim.world.spark_events.len();
+
+    sim.world.extinguish_at(tx, ty, 25.0);
+
+    // Target agent must now be dead
+    let dead_count = sim.world.agents.iter().filter(|a| a.dead != 0).count();
+    assert!(dead_count >= 1);
+    // Sparks must have been generated
+    assert!(sim.world.spark_events.len() > initial_sparks);
+}
+
+#[test]
+fn test_sim_world_nourish_tool() {
+    let mut sim = SimWorld::new(42);
+    let initial_sparks = sim.world.spark_events.len();
+    sim.world.nourish_at(450.0, 300.0);
+
+    // Food deposit should have occurred at (450, 300)
+    let soil = &sim.world.soil;
+    let col = ((450.0 / soil.w * soil.cols as f64) as usize).clamp(0, soil.cols - 1);
+    let row = ((300.0 / soil.h * soil.rows as f64) as usize).clamp(0, soil.rows - 1);
+    let idx = row * soil.cols + col;
+    assert!(soil.food[idx] > 0.0);
+
+    // Sparks should include color_idx 10 (gold)
+    assert!(sim.world.spark_events.len() > initial_sparks);
+    let last_spark = sim.world.spark_events.last().unwrap();
+    assert_eq!(last_spark.color_idx, 10);
+    assert_eq!(last_spark.count, 2);
+}
+
+#[test]
+fn test_sim_world_blight_tool() {
+    let mut sim = SimWorld::new(42);
+    let initial_sparks = sim.world.spark_events.len();
+    sim.world.blight_at(450.0, 300.0);
+
+    let soil = &sim.world.soil;
+    let col = ((450.0 / soil.w * soil.cols as f64) as usize).clamp(0, soil.cols - 1);
+    let row = ((300.0 / soil.h * soil.rows as f64) as usize).clamp(0, soil.rows - 1);
+    let idx = row * soil.cols + col;
+    assert!(soil.taint[idx] > 0.0);
+
+    // Sparks should include color_idx 8 (red)
+    assert!(sim.world.spark_events.len() > initial_sparks);
+    let last_spark = sim.world.spark_events.last().unwrap();
+    assert_eq!(last_spark.color_idx, 8);
+    assert_eq!(last_spark.count, 2);
+}
+
+#[test]
+fn test_sim_world_seed_life_tool() {
+    let mut sim = SimWorld::new(42);
+    let initial_living = sim.world.agents.iter().filter(|a| a.dead == 0).count();
+    let initial_sparks = sim.world.spark_events.len();
+    sim.world.seed_life_at(450.0, 300.0);
+
+    let new_living = sim.world.agents.iter().filter(|a| a.dead == 0).count();
+    assert_eq!(new_living, initial_living + 2);
+
+    // Sparks should include color_idx 9 (cyan)
+    assert!(sim.world.spark_events.len() > initial_sparks);
+    let last_spark = sim.world.spark_events.last().unwrap();
+    assert_eq!(last_spark.color_idx, 9);
+    assert_eq!(last_spark.count, 5);
+}

@@ -566,13 +566,25 @@ pub fn api_dispatch_system(
                         sim.paused = paused;
                     }
                     if let Some(mut_rate) = req.mutation {
-                        sim.world.mutation = mut_rate.clamp(0.0, 1.0);
+                        sim.world.mutation = if mut_rate <= 1.0 {
+                            (mut_rate * 100.0).clamp(0.0, 50.0)
+                        } else {
+                            mut_rate.clamp(0.0, 50.0)
+                        };
                     }
                     if let Some(growth) = req.growth {
-                        sim.world.growth = growth.clamp(0.0, 5.0);
+                        sim.world.growth = if growth <= 2.0 {
+                            (growth * 100.0).clamp(0.0, 200.0)
+                        } else {
+                            growth.clamp(0.0, 200.0)
+                        };
                     }
                     if let Some(hostility) = req.hostility {
-                        sim.world.hostility = hostility.clamp(0.0, 5.0);
+                        sim.world.hostility = if hostility <= 2.0 {
+                            (hostility * 100.0).clamp(0.0, 200.0)
+                        } else {
+                            hostility.clamp(0.0, 200.0)
+                        };
                     }
                     if let Some(cap) = req.max_cap {
                         sim.world.max_cap = cap.clamp(50, 2000);
@@ -617,30 +629,16 @@ pub fn api_dispatch_system(
                             }
                         }
                         "nourish" => {
-                            let soil = &mut sim.world.soil;
-                            let col = ((x / soil.w * soil.cols as f64) as usize).clamp(0, soil.cols - 1);
-                            let row = ((y / soil.h * soil.rows as f64) as usize).clamp(0, soil.rows - 1);
-                            let idx = row * soil.cols + col;
-                            soil.food[idx] = (soil.food[idx] + 0.6).min(10.0);
+                            sim.world.nourish_at(x, y);
                         }
                         "blight" => {
-                            let soil = &mut sim.world.soil;
-                            let col = ((x / soil.w * soil.cols as f64) as usize).clamp(0, soil.cols - 1);
-                            let row = ((y / soil.h * soil.rows as f64) as usize).clamp(0, soil.rows - 1);
-                            let idx = row * soil.cols + col;
-                            soil.taint[idx] = (soil.taint[idx] + 0.8).min(5.0);
-                            soil.food[idx] = 0.0;
+                            sim.world.blight_at(x, y);
                         }
                         "seed" | "seedlife" => {
-                            sim.world.create_agent(x, y, None, None);
+                            sim.world.seed_life_at(x, y);
                         }
                         "extinguish" | "kill" => {
-                            let radius = 40.0;
-                            sim.world.agents.retain(|a| {
-                                let dx = a.x - x;
-                                let dy = a.y - y;
-                                (dx * dx + dy * dy) > radius * radius
-                            });
+                            sim.world.extinguish_at(x, y, 23.0);
                         }
                         "eclipse" => {
                             trigger_spore_catastrophe(sim);
@@ -710,9 +708,9 @@ pub fn api_state_sync_system(
         roots: sim.world.roots,
         eclipse: sim.world.eclipse,
         active_tool: ui_tool,
-        mutation: sim.world.mutation,
-        growth: sim.world.growth,
-        hostility: sim.world.hostility,
+        mutation: sim.world.mutation / 100.0,
+        growth: sim.world.growth / 100.0,
+        hostility: sim.world.hostility / 100.0,
         selected_agent: sim.selected_agent_id,
     };
     if let Ok(mut lock) = shared.0.write() {

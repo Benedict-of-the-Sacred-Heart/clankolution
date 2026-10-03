@@ -110,3 +110,14 @@ fn test_compute_cycle_subtitle() {
     // Standard hunger
     assert_eq!(compute_cycle_subtitle(100, 0, 120), "THE HUNGER");
 }
+
+#[test]
+fn test_compute_tool_hint() {
+    use clank_app::ui::{ActiveTool, compute_tool_hint};
+    assert_eq!(compute_tool_hint(ActiveTool::Observe), "Click a creature to inspect its lineage. Choose a tool, then paint on the world.");
+    assert_eq!(compute_tool_hint(ActiveTool::Nourish), "Drag on the world to grow food.");
+    assert_eq!(compute_tool_hint(ActiveTool::Blight), "Drag on the world to spread blight.");
+    assert_eq!(compute_tool_hint(ActiveTool::SeedLife), "Drag on the world to seed life.");
+    assert_eq!(compute_tool_hint(ActiveTool::Extinguish), "Drag on the world to extinguish creatures.");
+    assert_eq!(compute_tool_hint(ActiveTool::Eclipse), "Click a creature to inspect its lineage. Choose a tool, then paint on the world.");
+}

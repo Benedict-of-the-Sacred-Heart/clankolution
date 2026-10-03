@@ -295,6 +295,82 @@ impl World {
         }
     }
 
+    pub fn nourish_at(&mut self, x: f64, y: f64) {
+        self.soil.deposit(0, x, y, 0.28, 3);
+        self.spark_prng(2);
+        if self.spark_events.len() < 512 {
+            self.spark_events.push(SparkEvent {
+                x: x as f32,
+                y: y as f32,
+                color_idx: 10,
+                count: 2,
+            });
+        }
+    }
+
+    pub fn blight_at(&mut self, x: f64, y: f64) {
+        self.soil.deposit(1, x, y, 0.38, 3);
+        self.soil.deposit(0, x, y, -0.14, 2);
+        self.spark_prng(2);
+        if self.spark_events.len() < 512 {
+            self.spark_events.push(SparkEvent {
+                x: x as f32,
+                y: y as f32,
+                color_idx: 8,
+                count: 2,
+            });
+        }
+    }
+
+    pub fn seed_life_at(&mut self, x: f64, y: f64) {
+        let living_count = self.agents.iter().filter(|a| a.dead == 0).count();
+        if living_count < self.max_cap {
+            for _ in 0..2 {
+                let jx = self.prng.rand(-11.0, 11.0);
+                let jy = self.prng.rand(-11.0, 11.0);
+                self.create_agent(x + jx, y + jy, None, None);
+            }
+            self.spark_prng(5);
+            if self.spark_events.len() < 512 {
+                self.spark_events.push(SparkEvent {
+                    x: x as f32,
+                    y: y as f32,
+                    color_idx: 9,
+                    count: 5,
+                });
+            }
+        }
+    }
+
+    pub fn extinguish_at(&mut self, x: f64, y: f64, radius: f64) {
+        let r2 = radius * radius;
+        for i in 0..self.agents.len() {
+            if self.agents[i].dead != 0 {
+                continue;
+            }
+            let dx = self.agents[i].x - x;
+            let dy = self.agents[i].y - y;
+            if dx * dx + dy * dy < r2 {
+                let ax = self.agents[i].x;
+                let ay = self.agents[i].y;
+                let tr0 = self.agents[i].tr[0];
+                self.soil.deposit(0, ax, ay, 0.45 + tr0 * 0.45, 1);
+                self.soil.deposit(1, ax, ay, 0.1, 1);
+                self.spark_prng(5);
+                if self.spark_events.len() < 512 {
+                    self.spark_events.push(SparkEvent {
+                        x: ax as f32,
+                        y: ay as f32,
+                        color_idx: (self.agents[i].root % 8) as u32,
+                        count: 5,
+                    });
+                }
+                self.agents[i].dead = 1;
+                self.agents[i].energy = 0.0;
+            }
+        }
+    }
+
     #[inline(always)]
     pub fn spark_prng(&mut self, n: u32) {
         for _ in 0..n {

@@ -105,6 +105,17 @@ pub fn compute_cycle_subtitle(tick: u32, eclipse: u32, active_count: usize) -> &
     }
 }
 
+pub fn compute_tool_hint(active_tool: ActiveTool) -> &'static str {
+    match active_tool {
+        ActiveTool::Observe => "Click a creature to inspect its lineage. Choose a tool, then paint on the world.",
+        ActiveTool::Nourish => "Drag on the world to grow food.",
+        ActiveTool::Blight => "Drag on the world to spread blight.",
+        ActiveTool::SeedLife => "Drag on the world to seed life.",
+        ActiveTool::Extinguish => "Drag on the world to extinguish creatures.",
+        ActiveTool::Eclipse => "Click a creature to inspect its lineage. Choose a tool, then paint on the world.",
+    }
+}
+
 pub fn clank_ui_system(
     mut contexts: EguiContexts,
     mut sim: ResMut<SimWorld>,
@@ -367,7 +378,8 @@ pub fn clank_ui_system(
                 ui.add_space(14.0);
                 ui.horizontal(|ui| {
                     ui.add_space(20.0);
-                    ui.label(RichText::new("Click a creature to inspect its lineage. Choose a tool, then paint on the world.").size(11.0).monospace().color(Color32::from_rgb(160, 195, 188)));
+                    let hint_text = compute_tool_hint(state.active_tool);
+                    ui.label(RichText::new(hint_text).size(11.0).monospace().color(Color32::from_rgb(160, 195, 188)));
                 });
             });
         });
@@ -507,10 +519,10 @@ fn render_pressure_sliders(ui: &mut egui::Ui, sim: &mut SimWorld) {
     ui.horizontal(|ui| {
         ui.label(RichText::new("Mutation").size(11.0).color(Color32::from_rgb(196, 208, 202)));
         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-            ui.label(RichText::new(format!("{:.2}", mutation)).size(11.0).color(COLOR_CYAN));
+            ui.label(RichText::new(format!("{:.2}", mutation / 100.0)).size(11.0).color(COLOR_CYAN));
         });
     });
-    if ui.add(egui::Slider::new(&mut mutation, 0.0..=0.5).show_value(false)).changed() {
+    if ui.add(egui::Slider::new(&mut mutation, 0.0..=50.0).show_value(false)).changed() {
         sim.world.mutation = mutation as f64;
     }
 
@@ -518,10 +530,10 @@ fn render_pressure_sliders(ui: &mut egui::Ui, sim: &mut SimWorld) {
     ui.horizontal(|ui| {
         ui.label(RichText::new("Food renewal").size(11.0).color(Color32::from_rgb(196, 208, 202)));
         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-            ui.label(RichText::new(format!("{:.2}×", growth)).size(11.0).color(COLOR_CYAN));
+            ui.label(RichText::new(format!("{:.2}×", growth / 100.0)).size(11.0).color(COLOR_CYAN));
         });
     });
-    if ui.add(egui::Slider::new(&mut growth, 0.0..=2.0).show_value(false)).changed() {
+    if ui.add(egui::Slider::new(&mut growth, 0.0..=200.0).show_value(false)).changed() {
         sim.world.growth = growth as f64;
     }
 
@@ -529,10 +541,10 @@ fn render_pressure_sliders(ui: &mut egui::Ui, sim: &mut SimWorld) {
     ui.horizontal(|ui| {
         ui.label(RichText::new("Hostility of contact").size(11.0).color(Color32::from_rgb(196, 208, 202)));
         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-            ui.label(RichText::new(format!("{:.2}×", hostility)).size(11.0).color(COLOR_CYAN));
+            ui.label(RichText::new(format!("{:.2}×", hostility / 100.0)).size(11.0).color(COLOR_CYAN));
         });
     });
-    if ui.add(egui::Slider::new(&mut hostility, 0.0..=2.0).show_value(false)).changed() {
+    if ui.add(egui::Slider::new(&mut hostility, 0.0..=200.0).show_value(false)).changed() {
         sim.world.hostility = hostility as f64;
     }
 
