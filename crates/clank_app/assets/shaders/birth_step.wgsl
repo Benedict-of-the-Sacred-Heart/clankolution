@@ -116,6 +116,13 @@ fn wrap_coords(p: vec2f) -> vec2f {
     );
 }
 
+fn mutate_gene_byte(val: i32, id: u32, stream: u32, tick: u32, mut_rate: f32) -> u32 {
+    let tri = pcg_triangular(id, stream, tick);
+    let delta = i32(round(tri * 100.0 * mut_rate));
+    let new_val = clamp(val + delta, -127, 127);
+    return u32(new_val & 0xFF);
+}
+
 @compute @workgroup_size(32)
 fn birth_main(@builtin(workgroup_id) wg_id: vec3u, @builtin(local_invocation_id) local_id: vec3u) {
     let total_births = min(atomicLoad(&queue_buffer.telemetry.birth_count), 65536u);
@@ -152,17 +159,31 @@ fn birth_main(@builtin(workgroup_id) wg_id: vec3u, @builtin(local_invocation_id)
         let p_cross = pcg_float(child_idx, w, params.tick);
         var chosen = select(word_b, word_a, p_cross < 0.48);
 
+        // Unpack 4 bytes, mutate each, and repack
+        let b0 = (i32(chosen << 24u) >> 24);
+        let b1 = (i32(chosen << 16u) >> 24);
+        let b2 = (i32(chosen << 8u) >> 24);
+        let b3 = (i32(chosen) >> 24);
+
+        let m0 = mutate_gene_byte(b0, child_idx, w * 4u + 0u, params.tick, params.mut_rate);
+        let m1 = mutate_gene_byte(b1, child_idx, w * 4u + 1u, params.tick, params.mut_rate);
+        let m2 = mutate_gene_byte(b2, child_idx, w * 4u + 2u, params.tick, params.mut_rate);
+        let m3 = mutate_gene_byte(b3, child_idx, w * 4u + 3u, params.tick, params.mut_rate);
+
+        var mutated_word = m0 | (m1 << 8u) | (m2 << 16u) | (m3 << 24u);
+
         // Mutate dummy clamped bytes in baseline
         if (!ENABLE_EXPANDED_CORTEX) {
             if (w < 70u && (w % 7u) == 6u) {
-                chosen = chosen & 0x0000FFFFu;
+                mutated_word = mutated_word & 0x0000FFFFu;
             }
             if (w >= 70u && ((w - 70u) % 3u) == 2u) {
-                chosen = chosen & 0x00FFFFFFu;
+                mutated_word = mutated_word & 0x00FFFFFFu;
             }
         }
-        agent_genomes[child_idx].packed_genes[w] = chosen;
+        agent_genomes[child_idx].packed_genes[w] = mutated_word;
     }
+
 
     if (local_id.x == 0u) {
         let parent_pos = agent_states[parent_a].pos_vel.xy;
