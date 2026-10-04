@@ -140,19 +140,110 @@
     - **Zoom Loudness Modulation**: Sound volume scales with camera zoom level (0.08 ambient murmur fully zoomed out, 1.0 punchy bite fully zoomed in).
     - **Stochastic Hash Density Filter**: In dense swarms, events are stochastically sampled via 1-cycle stateless PCG hash `pcg3d(vec3u(killer, victim, tick)) % density == 0u`, preventing audio mixer blowout.
 
-16. **Aggregate Frame Telemetry, Non-Blocking Pipelining & Hardened Spatial Queries**:
-    - **Non-Blocking Pipelined Double-Buffered DMA Staging Ring**: Replaces synchronous `device.poll(PollType::Wait)` stalls with a 2-frame ping-pong staging ring (`staging[frame % 2]`). Frame $N$ issues `copy_buffer_to_buffer` and `map_async`, while reading Frame $N-1$'s already-mapped staging buffer with **0 CPU wait cycles** at full 60/120 FPS.
-    - **Canonical Atomic Energy Ground Truth**: `agent_atomics[i].energy_milli` is the single atomic source of truth across all threads. The agent applies internal metabolic delta via `atomicAdd`, eliminating race condition overwrites from concurrent combat and mating.
-    - **Starvation Attribution Order**: Telemetry starvation counter `atomicAdd(&queue_buffer.telemetry.starvations, 1u)` is incremented *only* when `claim_death.exchanged` succeeds, preventing double-counting if a creature is attacked and starves on the same tick.
-    - **Degenerate LBVH Guard ($N \le 1$)**: When population is $0$, mouse picking returns `0xFFFFFFFFu` immediately. When population is $1$, picking directly evaluates distance to agent 0 without traversing uninitialized tree nodes, preventing GPU hangs and invalid memory reads.
-    - **Boundary Clamping Guards**: Soil cell and Morton cell index calculations explicitly clamp coordinates (`min(cx, 74u)`, `min(cy, 49u)`, `min(gx, 8u)`, `min(gy, 5u)`), preventing out-of-bounds buffer writes near arena boundaries.
-    - **Multi-Tick Instantaneous Census Gating**: In 32x speed mode, cumulative counters (`kills`, `starvations`, `food_grazed_milli`, `birth_count`, `audio_voice_count`) accumulate across all 32 sub-ticks. Instantaneous living census (`population` and `lineage_counts[16]`) is updated strictly on the final sub-tick (`sub_tick == params.sub_ticks_per_frame - 1u`).
-    - **Dynamic Radius Shrinking (Early Tree Pruning)**:
-      - Begins traversal with cursor radius $R_{\text{pick}} = \text{clamp}(16.0 \times (\text{camera\_size}.x / 900.0), 4.0, 24.0)$.
-      - The instant a leaf node with a direct body hit is encountered ($d \le R_{\text{body}} \approx 2.0 + 3.0 \times \text{tr}_0$), the active search radius is clamped to $d$.
-      - Any subtrees or sibling nodes whose AABB distance to the cursor is $> d$ are **immediately pruned**, resolving clicks in ~5–8 node tests (< 40 nanoseconds on GPU).
-    - **Two-Tier Euclidean Disambiguation**: Direct body hits (Priority 0) always beat proximity halos (Priority 1); exact 32-bit floating-point Euclidean distance resolves ties without millipixel distortion.
-    - **Specimen Picking Identity Guard**: The CPU tracks the tuple `(slot_idx, agent_id)`. If Agent $K$ dies during sub-ticks 2..32 (or a subsequent tick) and slot $K$ is recycled, `agent_states[slot_idx].id != picked_id`. The UI immediately detects the death, prevents displaying the replacement creature, and displays final stats.
+16. **Hardening Specifications: Detailed Vulnerability Analyses & Hardening Fixes**:
+
+    #### 1. Degenerate LBVH Traversal Guard for $N \le 1$ Agents (`spatial_query.wgsl`)
+    - **The Vulnerability**:
+      In `lbvh_build.wgsl`, when population is 0 or 1, the builder early-exits (`if (active_count < 2u) return;`), which is mathematically required because a 1-leaf tree has $N - 1 = 0$ internal nodes.
+      However, in `spatial_query.wgsl`, mouse picking unconditionally pushed Node 0 to the traversal stack (`stack[0] = 0u; stack_ptr = 1u;`).
+      If a user clicked when $N = 1$ (e.g. at initial seeding or after a near-extinction event) or $N = 0$, thread 0 would read uninitialized or stale data from `lbvh_nodes[0]`, risking GPU infinite loops, hang conditions, or invalid pointer dereferences.
+    - **The Hardening Fix**:
+      Add an explicit degenerate count gate in `spatial_query.wgsl`:
+      ```wgsl
+      if (params.agent_count == 0u) {
+          queue_buffer.telemetry.selected_agent_idx = 0xFFFFFFFFu;
+          queue_buffer.telemetry.selected_agent_id = 0u;
+          return;
+      }
+      if (params.agent_count == 1u) {
+          // Direct single-agent evaluation without tree traversal:
+          let agent_pos = agent_states[0].pos_vel.xy;
+          let d = toroidal_dist(tool_pos, agent_pos);
+          let visual_r = 2.0 + 3.0 * agent_states[0].traits[0];
+          if (d <= search_r) {
+              queue_buffer.telemetry.selected_agent_idx = 0u;
+              queue_buffer.telemetry.selected_agent_id = agent_states[0].id;
+          } else {
+              queue_buffer.telemetry.selected_agent_idx = 0xFFFFFFFFu;
+              queue_buffer.telemetry.selected_agent_id = 0u;
+          }
+          return;
+      }
+      // Proceed with O(log N) tree traversal starting at root node 0...
+      ```
+
+    #### 2. Soil Buffer & Morton Cell Boundary Clamping Guard (`agent_step.wgsl` & `morton_grid.wgsl`)
+    - **The Vulnerability**:
+      In `agent_step.wgsl`:
+      `let cell_idx = u32(pos.y / 12.0) * 75u + u32(pos.x / 12.0);`
+      If an agent is positioned at the right or bottom boundary (`pos.x == 900.0` or `pos.y == 600.0`, which occurs after wrapping or near the boundary seam), `u32(pos.x / 12.0)` evaluates to `75u` and `u32(pos.y / 12.0)` evaluates to `50u`.
+      This calculates `cell_idx = 50 * 75 + 75 = 3825`. But `soil_buffer` has size 3,750 (indices `0..3749`).
+      Writing or reading `soil_buffer[3825]` produces an out-of-bounds storage buffer overrun. The reference implementation in `soil.rs:78-86` explicitly guards this with `min(col, cols - 1)` and `min(row, rows - 1)`.
+    - **The Hardening Fix**:
+      Clamp cell coordinates to array bounds before index calculation:
+      ```wgsl
+      let cx = min(u32(max(0.0, pos.x) / 12.0), 74u);
+      let cy = min(u32(max(0.0, pos.y) / 12.0), 49u);
+      let cell_idx = cy * 75u + cx;
+      ```
+      Apply the identical guard in `morton_grid.wgsl`:
+      ```wgsl
+      let gx = min(u32(max(0.0, pos.x) / 100.0), 8u);
+      let gy = min(u32(max(0.0, pos.y) / 100.0), 5u);
+      let cell_id = gy * 9u + gx; // Guaranteed 0..53 (safely bounds cell_offsets[54])
+      ```
+
+    #### 3. Canonical Atomic Energy Model & Starvation Attribution Order (`agent_step.wgsl`)
+    - **The Vulnerabilities**:
+      1. *Dual Energy Overwrite Race*: When an agent thread calculates its internal net delta (grazing - metabolism - thrust) in local float `a_energy` and writes to `agent_states[agent_idx].angle_energy[1]`, it could overwrite external combat damage and mating deductions inflicted concurrently by other threads via `atomicSub(&agent_atomics[victim_idx].energy_milli, damage_milli)`.
+      2. *Starvation Double-Counting*: In naïve code, `atomicAdd(&queue_buffer.telemetry.starvations, 1u)` was called before `atomicCompareExchangeWeak(&agent_atomics[agent_idx].dead_claimed, 0u, 1u)`. If a predator dealt the killing blow on the same tick, both kills and starvations were incremented for the same victim.
+    - **The Hardening Fix**:
+      - Make `agent_atomics[agent_idx].energy_milli` the single continuous source of truth for energy.
+      - The agent thread calculates its internal net delta and applies it atomically:
+        ```wgsl
+        let internal_delta_milli = i32((graze_energy - basal_cost - thrust_cost) * 1000.0);
+        atomicAdd(&agent_atomics[agent_idx].energy_milli, internal_delta_milli);
+        ```
+      - Gate the starvation counter behind successful CAS claim:
+        ```wgsl
+        if (atomicLoad(&agent_atomics[agent_idx].energy_milli) <= 0) {
+            let claim_death = atomicCompareExchangeWeak(&agent_atomics[agent_idx].dead_claimed, 0u, 1u);
+            if (claim_death.exchanged) {
+                atomicAdd(&queue_buffer.telemetry.starvations, 1u); // ONLY incremented if this thread won the death claim!
+                agent_states[agent_idx].meta_flags |= (1u << 13u); // dead = 1 (bit 13)
+                let free_slot = atomicAdd(&queue_buffer.telemetry.freelist_top, 1u);
+                freelist[free_slot] = agent_idx;
+            }
+        }
+        ```
+
+    #### 4. Non-Blocking Pipelined Double-Buffered DMA Staging Ring (Task 6)
+    - **The Bottleneck**:
+      In Bevy / wgpu, calling synchronous `device.poll(PollType::Wait)` for GPU buffer readbacks stalls the CPU main thread waiting for the command queue to drain, cutting frame rates by 30–50%.
+    - **The Hardening Fix**:
+      Implement a 2-frame ping-pong staging ring (`staging_telemetry[frame % 2]`, `staging_audio[frame % 2]`):
+      - Frame $N$: Dispatches `encoder.copy_buffer_to_buffer` and issues `map_async` on `staging[N % 2]`.
+      - Simultaneously: Reads back `staging[(N - 1) % 2]` (mapped during the prior frame) with **0 wait cycles**.
+      - Provides completely non-blocking execution at full 60/120 FPS with 1-frame pipelined telemetry latency.
+
+    #### 5. Supplemental Hardening & Robustness Guarantees
+    - **Degenerate LBVH Underflow Guard (`lbvh_build.wgsl`)**:
+      In `lbvh_build.wgsl`, if `params.agent_count == 0u`, the condition `id.x < params.agent_count - 1u` underflows `0u - 1u` to `u32::MAX` ($4,294,967,295$), launching rogue out-of-bounds writes. Guarded via:
+      `let active_count = params.agent_count; if (active_count < 2u || id.x >= active_count - 1u) return;`
+    - **Two-Phase LBVH Construction Separation**:
+      Explicit compute pass barrier between topology generation (`lbvh_build.wgsl`) and bottom-up bounding box fitting (`lbvh_aabb.wgsl`), eliminating workgroup scheduling race conditions.
+    - **LBVH Identical Key Tie-Breaking**:
+      If multiple agents occupy identical coordinates or have identical Morton keys, Karras LCP comparison evaluates:
+      `return 32 + i32(countLeadingZeros(id_i ^ id_j));`
+      guaranteeing strictly unique split positions and preventing tree-building infinite loops.
+    - **Dynamic Radius Shrinking (Early Tree Pruning in `spatial_query.wgsl`)**:
+      Begins traversal with cursor radius $R_{\text{pick}} = \text{clamp}(16.0 \times (\text{camera\_size}.x / 900.0), 4.0, 24.0)$. The instant a leaf node with a direct body hit is encountered ($d \le R_{\text{body}} \approx 2.0 + 3.0 \times \text{tr}_0$), the active search radius is clamped to $d$. Any subtrees or sibling nodes whose AABB distance to the cursor is $> d$ are **immediately pruned**, resolving clicks in ~5–8 node tests (< 40 nanoseconds on GPU).
+    - **Two-Tier Euclidean Disambiguation**:
+      Direct body hits (Priority 0) always beat proximity halos (Priority 1); exact 32-bit floating-point Euclidean distance resolves ties without millipixel distortion.
+    - **Specimen Picking Identity Guard `(slot_idx, agent_id)`**:
+      The CPU tracks the tuple `(slot_idx, agent_id)`. If Agent $K$ dies during sub-ticks 2..32 (or a subsequent tick) and slot $K$ is recycled, `agent_states[slot_idx].id != picked_id`. The UI immediately detects the death, prevents displaying the replacement creature, and displays final stats.
+    - **Multi-Tick Instantaneous Census Gating**:
+      In 32x speed mode, cumulative counters (`kills`, `starvations`, `food_grazed_milli`, `birth_count`, `audio_voice_count`) accumulate across all 32 sub-ticks. Instantaneous living census (`population` and `lineage_counts[16]`) is updated strictly on the final sub-tick (`sub_tick == params.sub_ticks_per_frame - 1u`).
 
 17. **Multi-Layer GPU Compression Architecture & Mathematical Equivalence Proof**:
     - **Layer 1: Hardware-Level Silicon Compression (Automatic & Transparent)**:
