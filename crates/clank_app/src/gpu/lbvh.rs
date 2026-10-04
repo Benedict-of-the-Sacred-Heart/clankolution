@@ -356,9 +356,61 @@ impl LbvhTree {
         self.nodes.is_empty()
     }
 
+    /// Viewport frustum culling: traverses the LBVH discarding entire subtrees
+    /// that do not intersect the camera view rectangle [view_min, view_max].
+    pub fn cull_frustum(
+        &self,
+        view_min: [f32; 2],
+        view_max: [f32; 2],
+        agents: &[GpuAgentState],
+    ) -> Vec<u32> {
+        let mut visible = Vec::new();
+        if agents.is_empty() || self.nodes.is_empty() {
+            return visible;
+        }
+
+        let mut stack = Vec::with_capacity(64);
+        stack.push(0u32);
+
+        while let Some(node_idx) = stack.pop() {
+            let node = &self.nodes[node_idx as usize];
+
+            // AABB vs Viewport disjoint test
+            if node.aabb_max[0] < view_min[0]
+                || node.aabb_min[0] > view_max[0]
+                || node.aabb_max[1] < view_min[1]
+                || node.aabb_min[1] > view_max[1]
+            {
+                continue; // Discard off-screen subtree!
+            }
+
+            if node.leaf_idx != 0xFFFFFFFF {
+                let agent_idx = node.leaf_idx as usize;
+                let a = &agents[agent_idx];
+                if a.pos_vel[0] >= view_min[0]
+                    && a.pos_vel[0] <= view_max[0]
+                    && a.pos_vel[1] >= view_min[1]
+                    && a.pos_vel[1] <= view_max[1]
+                {
+                    visible.push(agent_idx as u32);
+                }
+            } else {
+                if node.right_child != 0xFFFFFFFF {
+                    stack.push(node.right_child);
+                }
+                if node.left_child != 0xFFFFFFFF {
+                    stack.push(node.left_child);
+                }
+            }
+        }
+
+        visible
+    }
+
     /// Extracts aggregated cluster discs from intermediate tree depths (e.g. depth 5–6)
     /// for hierarchical radar minimap LOD rendering.
     pub fn extract_minimap_clusters(&self, target_depth: usize) -> Vec<MinimapCluster> {
+
         let mut clusters = Vec::new();
         if self.nodes.is_empty() {
             return clusters;

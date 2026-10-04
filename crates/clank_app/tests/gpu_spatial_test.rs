@@ -291,4 +291,40 @@ fn test_lbvh_minimap_lod_clusters() {
     assert_eq!(total_counted, 16);
 }
 
+#[test]
+fn test_lbvh_camera_frustum_culling() {
+    let mut agents = Vec::new();
+    // Agent 0 inside viewport [100..300, 100..300]
+    agents.push(GpuAgentState {
+        pos_vel: [200.0, 200.0, 0.0, 0.0],
+        angle_energy: [0.0; 4],
+        traits: [0.0; 8],
+        hidden: [0.0; 10],
+        id: 10,
+        meta_flags: 0,
+        age_gen: 0,
+        morton_code: compute_morton_32([200.0, 200.0]),
+        packed_color: 0,
+        visual_cache: 1,
+    });
+    // Agent 1 outside viewport [700..800, 500..600]
+    agents.push(GpuAgentState {
+        pos_vel: [750.0, 550.0, 0.0, 0.0],
+        angle_energy: [0.0; 4],
+        traits: [0.0; 8],
+        hidden: [0.0; 10],
+        id: 20,
+        meta_flags: 0,
+        age_gen: 0,
+        morton_code: compute_morton_32([750.0, 550.0]),
+        packed_color: 0,
+        visual_cache: 1,
+    });
+
+    let tree = LbvhTree::build(&agents);
+    let visible = tree.cull_frustum([100.0, 100.0], [300.0, 300.0], &agents);
+    assert_eq!(visible, vec![0]);
+}
+
+
 
