@@ -3,3 +3,5 @@ pub mod freelist;
 pub mod soil_pipeline;
 pub mod spatial_index;
 pub mod lbvh;
+pub mod agent_pipeline;
+pub mod birth_pipeline;
