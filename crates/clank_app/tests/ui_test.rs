@@ -165,3 +165,28 @@ fn test_compute_tool_hint() {
     assert_eq!(compute_tool_hint(ActiveTool::Extinguish), "Drag on the world to extinguish creatures.");
     assert_eq!(compute_tool_hint(ActiveTool::Eclipse), "Click a creature to inspect its lineage. Choose a tool, then paint on the world.");
 }
+
+#[test]
+fn test_render_radar_minimap_clusters() {
+    use clank_app::gpu::lbvh::MinimapCluster;
+    use clank_app::ui::compute_minimap_cluster_disc;
+
+    let cluster = MinimapCluster {
+        center: [450.0, 300.0],
+        count: 10,
+        dominant_lineage: 3,
+        radius: 45.0,
+    };
+
+    let map_w = 300.0;
+    let map_h = 200.0;
+    let (pos, r, lineage) = compute_minimap_cluster_disc(&cluster, map_w, map_h);
+
+    // Center is (450/900 * 300, 300/600 * 200) = (150.0, 100.0)
+    assert!((pos[0] - 150.0).abs() < 1e-4);
+    assert!((pos[1] - 100.0).abs() < 1e-4);
+    // Radius is 45.0 * (300 / 900) = 15.0
+    assert!((r - 15.0).abs() < 1e-4);
+    assert_eq!(lineage, 3);
+}
+

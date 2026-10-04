@@ -407,6 +407,14 @@ pub fn clank_ui_system(
                         ui.add_space(14.0);
                         ui.separator();
 
+                        // RADAR MINIMAP (LBVH CLUSTERING)
+                        ui.label(RichText::new("RADAR MINIMAP").size(10.5).monospace().strong().color(COLOR_GOLD));
+                        ui.add_space(4.0);
+                        render_radar_minimap(ui, &sim);
+
+                        ui.add_space(14.0);
+                        ui.separator();
+
                         // EXPERIMENTAL MUTATIONS (GPU SIM MODS)
                         ui.label(RichText::new("EXPERIMENTAL MUTATIONS").size(10.5).monospace().strong().color(COLOR_GOLD));
                         ui.add_space(4.0);
@@ -414,6 +422,7 @@ pub fn clank_ui_system(
 
                         ui.add_space(14.0);
                         ui.separator();
+
 
                         // CHRONICLE Section
                         ui.label(RichText::new("CHRONICLE").size(10.5).monospace().strong().color(COLOR_GOLD));
@@ -798,7 +807,65 @@ fn render_chronicle_log(ui: &mut egui::Ui, state: &UiState) {
     );
 }
 
+/// Maps a hierarchical LBVH MinimapCluster into 2D canvas coordinates for the radar minimap.
+pub fn compute_minimap_cluster_disc(
+    cluster: &crate::gpu::lbvh::MinimapCluster,
+    map_width: f32,
+    map_height: f32,
+) -> ([f32; 2], f32, u32) {
+    let cx = (cluster.center[0] / 900.0).clamp(0.0, 1.0) * map_width;
+    let cy = (cluster.center[1] / 600.0).clamp(0.0, 1.0) * map_height;
+    let scale = map_width / 900.0;
+    let r = (cluster.radius * scale).max(2.0);
+    ([cx, cy], r, cluster.dominant_lineage)
+}
+
+fn render_radar_minimap(ui: &mut egui::Ui, sim: &SimWorld) {
+    let (response, painter) = ui.allocate_painter(Vec2::new(300.0, 100.0), Sense::hover());
+    let rect = response.rect;
+
+    // Background and border
+    painter.rect_filled(rect, CornerRadius::same(0), Color32::from_rgb(10, 21, 23));
+    painter.rect_stroke(rect, CornerRadius::same(0), Stroke::new(1.0, Color32::from_rgb(37, 58, 59)), egui::StrokeKind::Outside);
+
+    // Crosshairs
+    let mid_x = rect.left() + rect.width() * 0.5;
+    let mid_y = rect.top() + rect.height() * 0.5;
+    painter.line_segment([Pos2::new(mid_x, rect.top()), Pos2::new(mid_x, rect.bottom())], Stroke::new(0.5, Color32::from_rgba_unmultiplied(0, 220, 255, 30)));
+    painter.line_segment([Pos2::new(rect.left(), mid_y), Pos2::new(rect.right(), mid_y)], Stroke::new(0.5, Color32::from_rgba_unmultiplied(0, 220, 255, 30)));
+
+    // Extract clusters from living agents via LBVH
+    let living_states: Vec<crate::gpu::types::GpuAgentState> = sim.world.agents.iter()
+        .filter(|a| a.dead == 0)
+        .map(|a| crate::gpu::types::GpuAgentState {
+            pos_vel: [a.x as f32, a.y as f32, 0.0, 0.0],
+            angle_energy: [0.0; 4],
+            traits: [a.tr[0] as f32, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0],
+            hidden: [0.0; 10],
+            id: a.id,
+            meta_flags: a.root & 0x0F,
+            age_gen: 0,
+            morton_code: crate::gpu::spatial_index::compute_morton_32([a.x as f32, a.y as f32]),
+            packed_color: 0,
+            visual_cache: 1,
+        })
+        .collect();
+
+    if !living_states.is_empty() {
+        let tree = crate::gpu::lbvh::LbvhTree::build(&living_states);
+        let clusters = tree.extract_minimap_clusters(4);
+        for cluster in clusters {
+            let (disc_pos, radius, lineage) = compute_minimap_cluster_disc(&cluster, rect.width(), rect.height());
+            let screen_pos = Pos2::new(rect.left() + disc_pos[0], rect.top() + disc_pos[1]);
+            let pal_color = crate::theme::PALETTE[(lineage as usize) % crate::theme::PALETTE.len()];
+            let col = Color32::from_rgba_unmultiplied(pal_color.r(), pal_color.g(), pal_color.b(), 180);
+            painter.circle_filled(screen_pos, radius.min(12.0), col);
+        }
+    }
+}
+
 pub struct ClankUiPlugin;
+
 
 impl Plugin for ClankUiPlugin {
     fn build(&self, app: &mut App) {
