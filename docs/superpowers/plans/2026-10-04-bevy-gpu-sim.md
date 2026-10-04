@@ -14,14 +14,16 @@
 
 ## Explicit GPU Optimizations Covered in this Plan
 
-1. **Decoupled Soil Simulation State & Single Universal `rgba16float` Texture (Zero-Copy)**:
+1. **Decoupled Soil Simulation State & Dual-Target GPU Textures (Zero-Copy)**:
    - **True Simulation State in L2 Cache**: Soil chemistry (food, taint, scent) is maintained in a dedicated 60 KB atomic storage buffer (`GpuSoilCell` for all $75 \times 50 = 3,750$ cells, $3,750 \times 16\text{ bytes} = 60\text{ KB}$). Fits 100% inside GPU L1/L2 cache.
    - **Coalesced Atomic Creature Writes**: Creatures in `agent_step.wgsl` atomically subtract grazed food (`atomicSub(&food_milli)`) and add scent/carcass taint directly to this 60 KB buffer.
-   - **Single Texture Rasterization (No Ping-Pong Copy)**: `soil_step.wgsl` runs once per tick, reads the updated atomic cells, applies environmental bloom renewal and decay, writes back to the buffer, and rasterizes the colormap directly into a **single 2D `rgba16float` texture**.
-   - **Universal Cross-Platform Linear Filtering**: Binds as `rgba16float` with universal hardware bilinear sampling (`textureSampleLevel`) across macOS (Metal), Windows (Vulkan/DX12), and Linux (Vulkan). **Completely eliminates texture ping-pong pointer swapping and eliminates $B \to A$ GPU memory copying!**
+   - **Dual-Target Texture Generation (No Ping-Pong Copy)**: `soil_step.wgsl` runs at the start of each sub-tick, reads updated atomic cells, applies environmental bloom renewal and decay, writes back to `soil_buffer`, and outputs **two decoupled textures**:
+     1. `soil_data: texture_storage_2d<rgba16float, write>` (75x50, 30 KB): Raw physics snapshot (`vec4f(f, t, s, 1.0)`) sampled by `agent_step.wgsl` with universal hardware bilinear filtering (`textureSampleLevel`) and hardware toroidal seam wrapping (`AddressMode::Repeat`), eliminating 7,000,000 atomic memory reads and read-after-write race conditions.
+     2. `soil_display: texture_storage_2d<rgba16float, write>` (75x50, 30 KB): Rendered colormap with vignette, drawn directly by Bevy's `SoilSprite` without CPU upload or memory copies.
+   - **Universal Cross-Platform Linear Filtering**: Binds `soil_display` with universal hardware bilinear sampling across macOS (Metal), Windows (Vulkan/DX12), and Linux (Vulkan). **Completely eliminates texture ping-pong pointer swapping and eliminates $B \to A$ GPU memory copying!**
 
 2. **Sensory Raycasting & Universal `unpack4x8snorm` Neural Net Vectorization**:
-   - **Antennae Feelers**: Hardware bilinear texture fetches at 4 probe locations (`here`, `forward`, `left`, `right`) with hardware coordinate wrapping.
+   - **Antennae Feelers**: Hardware bilinear texture fetches from `soil_data` (`texture_2d<f32>`) at 4 probe locations (`here`, `forward`, `left`, `right`) with hardware coordinate wrapping (`AddressMode::Repeat`) in 0 ALU cycles. Feeler probes sample `probe.r` (food), `probe.g` (taint), and `probe.b` (scent) simultaneously from Texture L1 cache, providing continuous steering gradients across cell boundaries with zero atomic pipeline contention.
    - **2-Tier Hybrid Spatial Raycasting**:
      - Tier 1: $O(1)$ direct lookup in the Morton Uniform Grid ($3 \times 3$ cells, $d \le 100\text{px}$) for $99.8\%$ of creature checks with zero warp divergence.
      - Tier 2: Ring-expansion onto-scan fallback ($5 \times 5$ and $7 \times 7$ cells) guaranteeing **$100\%$ mathematical equivalence** to the original global scan for distant/isolated creatures.
@@ -322,8 +324,60 @@
       Direct body hits (Priority 0) always beat proximity halos (Priority 1); exact 32-bit floating-point Euclidean distance resolves ties without millipixel distortion.
     - **Specimen Picking Identity Guard `(slot_idx, agent_id)`**:
       The CPU tracks the tuple `(slot_idx, agent_id)`. If Agent $K$ dies during sub-ticks 2..32 (or a subsequent tick) and slot $K$ is recycled, `agent_states[slot_idx].id != picked_id`. The UI immediately detects the death, prevents displaying the replacement creature, and displays final stats.
-    - **Multi-Tick Instantaneous Census Gating**:
-      In 32x speed mode, cumulative counters (`kills`, `starvations`, `food_grazed_milli`, `birth_count`, `audio_voice_count`) accumulate across all 32 sub-ticks. Instantaneous living census (`population` and `lineage_counts[16]`) is updated strictly on the final sub-tick (`sub_tick == params.sub_ticks_per_frame - 1u`).
+    - **Multi-Tick Telemetry & Audio Lifecycle Synchronization (`preamble_clear.wgsl`)**:
+      In 32x speed mode, sub-tick resets (`mate_claim`, `mate_energy_milli`, `dead_claimed`, `birth_count = 0u`, `cell_offsets`) run every sub-tick. Frame-level cumulative counters (`audio_voice_count = 0u`, `kills = 0u`, `starvations = 0u`, `food_grazed_milli = 0u`, `apex_record_milli = 0u`) are reset strictly at frame start (`params.sub_tick == 0u`), preventing audio queue overwrites and telemetry loss. Instantaneous living census (`population` and `lineage_counts[16]`) is reset and recounted strictly on the final sub-tick (`sub_tick == params.sub_ticks_per_frame - 1u`).
+
+    #### 12. Dual-Target Decoupled Soil Architecture & Feeler TMU Bilinear Acceleration (Tasks 3 & 5)
+    - **The Vulnerabilities**:
+      1. *Read-After-Write Race Condition*: If 1,000,000 agents read directly from `soil_buffer: array<SoilCell, 3750>` while other agents concurrently execute `atomicSub` to graze, sensory perception depends on non-deterministic warp scheduling jitter.
+      2. *Atomic Memory Serialization*: 7,000,000 feeler reads per tick directed at 3,750 cells creates up to 35,000 concurrent atomic memory collisions in dense swarms, collapsing GPU memory pipeline throughput.
+      3. *Colormap Sensory Corruption*: `soil_step.wgsl` renders `evaluate_soil_color(f, t, s)` (display RGB with dark dirt `[10, 23, 26]`, vignette, etc.). If agents sampled this display texture, creatures would sense the edge vignette as a severe famine and flee the arena borders!
+    - **The Hardening Fix**:
+      Decouple into two specialized 75x50 textures (60 KB total VRAM):
+      1. `soil_data: texture_storage_2d<rgba16float, write>` (30 KB): Output by `soil_step.wgsl` storing raw simulation scalars `vec4f(food, taint, scent, 1.0)`. Sampled by `agent_step.wgsl` via `textureSampleLevel(soil_data, soil_sampler, uv, 0.0)`. Bypasses atomic units, utilizes TMU Texture L1 cache broadcasting, provides continuous bilinear gradients across cell boundaries, and wraps toroidal coordinates across seams in silicon (`AddressMode::Repeat`) at 0 ALU cycles.
+      2. `soil_display: texture_storage_2d<rgba16float, write>` (30 KB): Output by `soil_step.wgsl` storing `evaluate_soil_color(f, t, s, id.xy)`. Displayed directly by Bevy's `SoilSprite` without CPU upload or custom fragment shaders.
+      3. `soil_buffer: array<SoilCell, 3750>`: Serves exclusively as the persistent atomic write target for discrete grazing (`atomicSub`) and carcass/scent deposits in `agent_step.wgsl`.
+
+    #### 13. Workgroup-Uniform Birth Bounds & Freelist Slot Theft Guard (`birth_step.wgsl`) (Task 5)
+    - **The Vulnerability**:
+      `birth_step.wgsl` processes queued births with 32 threads per newborn workgroup. When Bevy dispatches workgroups in fixed batches (or rounded up), excess workgroups ($wg\_id.x \ge \text{birth\_count}$) read uninitialized memory from `queue_buffer.births[wg_id.x]`. Thread 0 in excess workgroups would execute `atomicCompareExchangeWeak` on `freelist_top`, **popping real, valid slots from the freelist for non-existent births**—rapidly exhausting the freelist and spawning corrupted zombie agents.
+    - **The Hardening Fix**:
+      Place a workgroup-uniform bounds guard at the entry of `birth_main`:
+      ```wgsl
+      let total_births = min(atomicLoad(&queue_buffer.telemetry.birth_count), 65536u);
+      if (wg_id.x >= total_births) {
+          return; // Safely abort excess workgroup without popping freelist or reading uninitialized queue slots
+      }
+      ```
+      Because `wg_id.x` is identical across all 32 threads in the workgroup, either all 32 threads return, or all 32 proceed to `workgroupBarrier()`, guaranteeing **zero intra-workgroup divergence and zero GPU barrier deadlocks**.
+
+    #### 14. Top-of-Shader Tombstone Execution Guard (`agent_step.wgsl`) (Task 5)
+    - **The Vulnerability**:
+      Because freelist slots are recycled non-contiguously across $0..N_{\max}-1$, inactive corpses remain in `agent_states`. If a thread executing for a dead slot does not exit immediately, it evaluates neural forward passes, moves, grazes on soil food, deposits taint, attacks live agents, and corrupts census telemetry.
+    - **The Hardening Fix**:
+      Add an explicit dead-check at the very top of `agent_step.wgsl`:
+      ```wgsl
+      let agent_idx = id.x;
+      if (agent_idx >= params.max_agents) { return; }
+      let meta = agent_states[agent_idx].meta_flags;
+      if ((meta & (1u << 13u)) != 0u) {
+          return; // Tombstone corpse: skip neural net, movement, grazing, predation, and mating!
+      }
+      ```
+      Deactivates inactive SIMD lanes via hardware execution masks with zero memory writes.
+
+    #### 15. Cursor Coordinate Toroidal Wrapping & Non-Negative Distance Proof (`spatial_query.wgsl`) (Task 4)
+    - **The Vulnerability**:
+      If a user clicks slightly outside the canvas or near window seams ($x = -2.0$ or $x = 902.0$), naive 1D toroidal distance evaluates $dx = |-2.0 - 899.0| = 901.0 \implies 900.0 - 901.0 = -1.0$. A negative distance in the comparison tree distorts picking priority and prunes valid candidates.
+    - **The Hardening Fix**:
+      Pre-wrap `tool_pos` at entry of `spatial_query_main`:
+      ```wgsl
+      let tool_pos = vec2f(
+          params.tool_pos[0] - 900.0 * floor(params.tool_pos[0] / 900.0),
+          params.tool_pos[1] - 600.0 * floor(params.tool_pos[1] / 600.0)
+      );
+      ```
+      Guarantees $dx \in [0.0, 900.0)$ and $900.0 - dx \in (0.0, 900.0]$, ensuring all distance metrics are strictly non-negative and monotonic.
 
 17. **Multi-Layer GPU Compression Architecture & Mathematical Equivalence Proof**:
     - **Layer 1: Hardware-Level Silicon Compression (Automatic & Transparent)**:
@@ -364,26 +418,28 @@
 - [ ] **Task 3: GPU Soil Simulation & Direct Texture Generation**
   - Implement WGSL compute shader for soil chemistry: spatial bloom renewal, food clamp $[0.0, 2.5]$, taint decay ($0.994$), and scent decay ($0.954$).
   - Add coordinate clamping guards (`cx = min(u32(pos.x / 12.0), 74u)`, `cy = min(u32(pos.y / 12.0), 49u)`) preventing buffer overruns.
-  - Implement direct GPU colormap generation (food, taint, scent, vignette) into 2D texture, **completely eliminating CPU `generate_soil_rgba` upload**.
-  - Bind soil as single 2D `rgba16float` texture with universal hardware bilinear filtering across Metal, Vulkan, and DX12.
+  - Implement direct GPU dual-texture generation: `soil_data` (raw physics `rgba16float` for bilinear agent sensing) and `soil_display` (colormap `rgba16float` for direct Bevy SoilSprite rendering), **completely eliminating CPU `generate_soil_rgba` upload**.
+  - Bind `soil_display` as 2D `rgba16float` texture with universal hardware bilinear filtering across Metal, Vulkan, and DX12.
 
 - [ ] **Task 4: Hybrid Morton Grid, Multi-System LBVH & Spatial Queries**
   - Implement 32-bit Morton code generator with dead agent partitioning (`0xFFFFFFFFu` sentinel in `morton_encode`) and boundary clamping (`gx = min(u32(pos.x / 100.0), 8u)`, `gy = min(u32(pos.y / 100.0), 5u)`).
   - Implement 8-byte indirection parallel Radix Sort on `(morton_key, agent_slot_idx)`, keeping heavy agent structs stationary.
   - Implement Karras 2012 two-phase LBVH construction: Phase 1 topology (`lbvh_build.wgsl`) with `agent_id` tie-breaking, `node_flags[id.x] = 0u` atomic reset, and $N \le 1$ degenerate population guard; Phase 2 bottom-up AABB fitting (`lbvh_aabb.wgsl`) across an explicit compute pass barrier.
   - Implement Tier 1 ($3 \times 3$ local Moore neighborhood) + Tier 2 ring expansion for lonely creatures.
-  - Implement **Unified Interactive Spatial Query Pass (`spatial_query.wgsl`)** with branchless 1D toroidal AABB distance (preventing boundary pruning blind spots), degenerate $N \le 1$ safety guard, dynamic radius shrinking (early tree pruning) for uncapped 32-bit mouse picking, and parallel AoE tool bounding box intersections.
+  - Implement **Unified Interactive Spatial Query Pass (`spatial_query.wgsl`)** with branchless 1D toroidal AABB distance (preventing boundary pruning blind spots), cursor input toroidal wrapping, degenerate $N \le 1$ safety guard, dynamic radius shrinking (early tree pruning) for uncapped 32-bit mouse picking, and parallel AoE tool bounding box intersections.
 
 - [ ] **Task 5: Packed 88-Word Vectorized RNN, Combat Resolution, PRNG & Decoupled Birth Pipeline**
-  - Implement `preamble_clear.wgsl` to reset `mate_claim`, `mate_energy_milli`, `dead_claimed`, `birth_count`, `audio_voice_count`, `selected_agent_idx`, `selected_agent_id`, `cell_offsets`, and `GpuTelemetry` counters with global execution barrier.
-  - Implement 1-thread-per-agent WGSL compute shader (`agent_step.wgsl`) binding `agent_states` (128B) and `agent_genomes` (352B) within strict $\le 8$ storage buffer ceiling.
+  - Implement `preamble_clear.wgsl` to reset `mate_claim`, `mate_energy_milli`, `dead_claimed`, `birth_count` (sub-tick queue depth), `cell_offsets` every sub-tick, and frame-level counters (`audio_voice_count`, `kills`, `starvations`, `food_grazed_milli`, `apex_record_milli`) on `sub_tick == 0u` with global execution barrier.
+  - Implement 1-thread-per-agent WGSL compute shader (`agent_step.wgsl`) binding 8 storage buffers in Group 0 and `(params, soil_data, soil_sampler)` in Group 1 within strict $\le 8$ storage buffer ceiling.
+  - Enforce **Top-of-Shader Tombstone Dead-Check Guard**: inactive corpse slots exit immediately via hardware SIMD lane masking.
   - Enforce **Strict Single-Writer Invariant**: thread $i$ writes ONLY to `agent_states[i]`. Victim detects death via `dead_claimed`, marks own dead flag, zeroes `visual_cache`, and aborts live state commits.
   - Enforce `agent_atomics[i].energy_milli` as canonical atomic ground truth, preventing concurrent damage/grazing overwrites.
   - Gate starvation counter increment behind successful death claim CAS (`dead_claimed: 0u -> 1u`), eliminating double-counted deaths.
+  - Hardware bilinear antennae feeler sampling (`textureSampleLevel`) from `soil_data` with silicon toroidal coordinate wrapping (`AddressMode::Repeat`), eliminating 7,000,000 atomic memory reads and race conditions.
   - Branchless `unpack4x8snorm` vectorization across 88 `u32` words (7 vec4s hidden, 3 vec4s output).
   - Integrate **Experimental Simulation Mods**: Barnes-Hut Macro-Flocking, Expanded Cortex (extra senses and sprint actuator), and Natural Sexual Selection Tournament.
   - Apply steering, thrust, hardware toroidal coordinate wrap, and pack `visual_cache` at step end.
-  - Implement coalesced atomic soil deposits, atomic millijoule combat resolution with `dead_claimed` CAS, toroidal seam frustum-culled stochastic audio voice emission (256-voice buffer), canonical mating symmetry breaking with seamless asexual fallback, and decoupled SIMD genome mutation pass (`birth_step.wgsl`) with newborn `visual_cache` birth flash initialization.
+  - Implement coalesced atomic soil deposits and grazing to `soil_buffer`, atomic millijoule combat resolution with `dead_claimed` CAS, toroidal seam frustum-culled stochastic audio voice emission (256-voice buffer), canonical mating symmetry breaking with seamless asexual fallback, and decoupled SIMD genome mutation pass (`birth_step.wgsl`) with newborn workgroup bounds guard (`wg_id.x >= min(birth_count, 65536u)`) and `visual_cache` birth flash initialization.
 
 - [ ] **Task 6: Frustum Culling, Minimap LOD, Dual-Engine UI, Audio & Verification**
   - Implement **GPU Camera Viewport Frustum Culling** via LBVH streaming 128-byte `GpuAgentState` ($4.0\times$ less bandwidth than 512B structs) into an Indirect Draw Buffer.
@@ -676,9 +732,9 @@ fn claim_death_and_free(victim_idx: u32, is_self: bool) -> bool {
 
 **Interfaces:**
 - Consumes: `SoilGrid` dimensions ($75 \times 50$), `growth_val`, `GpuSoilCell` storage buffer (60 KB)
-- Produces: Direct GPU `rgba16float` texture generation with universal cross-platform linear filtering, completely eliminating CPU `generate_soil_rgba` upload and eliminating texture ping-pong memory copies
+- Produces: Direct GPU dual-texture generation: `soil_data` (raw physics `rgba16float` for agent bilinear feeler sensing) and `soil_display` (colormap `rgba16float` for direct Bevy `SoilSprite` screen presentation), completely eliminating CPU `generate_soil_rgba` upload and eliminating texture ping-pong memory copies
 
-- [ ] **Step 1: Write failing test for soil atomic buffer bindings, renewal math, and single rgba16float texture rasterization**
+- [ ] **Step 1: Write failing test for soil atomic buffer bindings, renewal math, and dual rgba16float texture rasterization**
 ```rust
 // crates/clank_app/tests/gpu_soil_test.rs
 #[test]
@@ -687,12 +743,12 @@ fn test_soil_atomic_buffer_and_texture_bounds() {
     // 1. GpuSoilCell fixed-point conversions (millifood, millitaint, milliscent)
     // 2. Renewal formula: f += renewal * bloom * (1 - f / 1.7) clamped to [0.0, 2.5]
     // 3. Taint decay: t * 0.994 - 0.0001, scent decay: s * 0.954
-    // 4. Output texture matches 75x50 rgba16float format
+    // 4. Output textures: soil_data (raw floats) and soil_display (colormap) match 75x50 rgba16float format
     // 5. Boundary coordinate clamping: min(pos.x / 12.0, 74) and min(pos.y / 12.0, 49) prevents OOB write at seam (900.0, 600.0)
 }
 ```
 - [ ] **Step 2: Run test to verify it fails**
-- [ ] **Step 3: Implement WGSL soil compute kernel operating on 60 KB atomic buffer and rasterizing to single rgba16float texture**
+- [ ] **Step 3: Implement WGSL soil compute kernel operating on 60 KB atomic buffer and rasterizing dual rgba16float textures**
 ```wgsl
 // crates/clank_app/assets/shaders/soil_step.wgsl
 struct SoilCell {
@@ -702,9 +758,10 @@ struct SoilCell {
     pad: u32,
 }
 @group(0) @binding(0) var<storage, read_write> soil_buffer: array<SoilCell, 3750>;
-@group(0) @binding(1) var soil_texture: texture_storage_2d<rgba16float, write>;
-@group(0) @binding(2) var<storage, read> bloom_table: array<f32, 3750>;
-@group(0) @binding(3) var<uniform> params: SoilParams;
+@group(0) @binding(1) var soil_data: texture_storage_2d<rgba16float, write>;      // Raw physics [food, taint, scent, 1.0]
+@group(0) @binding(2) var soil_display: texture_storage_2d<rgba16float, write>;   // Colormap display with vignette
+@group(0) @binding(3) var<storage, read> bloom_table: array<f32, 3750>;
+@group(0) @binding(4) var<uniform> params: SoilParams;
 
 @compute @workgroup_size(8, 8)
 fn soil_main(@builtin(global_invocation_id) id: vec3u) {
@@ -721,14 +778,17 @@ fn soil_main(@builtin(global_invocation_id) id: vec3u) {
     if (t > 0.0) { t = max(0.0, t * 0.994 - 0.0001); }
     if (s > 0.0) { s = s * 0.954; }
 
-    // Write back updated simulation state:
+    // 1. Write back persistent atomic state for agent grazing:
     atomicStore(&soil_buffer[k].food_milli, i32(f * 1000.0));
     atomicStore(&soil_buffer[k].taint_milli, i32(t * 1000.0));
     atomicStore(&soil_buffer[k].scent_milli, i32(s * 1000.0));
 
-    // Colormap grading into single rgba16float texture:
+    // 2. Output Raw Physics Snapshot for agent bilinear sensing:
+    textureStore(soil_data, id.xy, vec4f(f, t, s, 1.0));
+
+    // 3. Output Graded Colormap for Bevy screen presentation:
     let col = evaluate_soil_color(f, t, s, id.xy);
-    textureStore(soil_texture, id.xy, col);
+    textureStore(soil_display, id.xy, col);
 }
 ```
 - [ ] **Step 4: Run test to verify it passes**
@@ -865,9 +925,22 @@ fn distance_to_aabb(pos: vec2f, aabb_min: vec2f, aabb_max: vec2f) -> f32 {
     return sqrt(dx * dx + dy * dy);
 }
 
+// Inline toroidal Euclidean distance helper (guaranteed non-negative via wrapped coordinates):
+fn toroidal_dist(p1: vec2f, p2: vec2f) -> f32 {
+    let dx = abs(p1.x - p2.x);
+    let x_dist = min(dx, 900.0 - dx);
+    let dy = abs(p1.y - p2.y);
+    let y_dist = min(dy, 600.0 - dy);
+    return sqrt(x_dist * x_dist + y_dist * y_dist);
+}
+
 @compute @workgroup_size(64)
 fn spatial_query_main(@builtin(global_invocation_id) id: vec3u) {
-    let tool_pos = vec2f(params.tool_pos[0], params.tool_pos[1]);
+    // Pre-wrap cursor coordinates to [0.0, 900.0) x [0.0, 600.0) preventing negative distance distortion:
+    let tool_pos = vec2f(
+        params.tool_pos[0] - 900.0 * floor(params.tool_pos[0] / 900.0),
+        params.tool_pos[1] - 600.0 * floor(params.tool_pos[1] / 600.0)
+    );
 
     if (params.tool_type == 0u /* inspect/pick */) {
         if (id.x != 0u) { return; } // Thread 0 evaluates single-cursor picking
@@ -1017,18 +1090,20 @@ fn preamble_main(@builtin(global_invocation_id) id: vec3u) {
         atomicStore(&agent_atomics[id.x].dead_claimed, 0u);
     }
     if (id.x == 0u) {
+        // Active queue depth reset (runs every sub-tick for birth processing):
         atomicStore(&queue_buffer.telemetry.birth_count, 0u);
-        atomicStore(&queue_buffer.telemetry.audio_voice_count, 0u);
-        if (params.tool_type == 0u && params.sub_tick == 0u) {
-            queue_buffer.telemetry.selected_agent_idx = 0xFFFFFFFFu;
-            queue_buffer.telemetry.selected_agent_id = 0u;
-        }
-        // Clear cumulative counters on tick 0 or frame start if requested:
-        if (params.tick == 0u) {
+
+        // Frame-level cumulative counter reset (strictly at frame start on sub-tick 0):
+        if (params.sub_tick == 0u) {
+            atomicStore(&queue_buffer.telemetry.audio_voice_count, 0u);
             atomicStore(&queue_buffer.telemetry.kills, 0u);
             atomicStore(&queue_buffer.telemetry.starvations, 0u);
             atomicStore(&queue_buffer.telemetry.apex_record_milli, 0u);
             atomicStore(&queue_buffer.telemetry.food_grazed_milli, 0u);
+            if (params.tool_type == 0u) {
+                queue_buffer.telemetry.selected_agent_idx = 0xFFFFFFFFu;
+                queue_buffer.telemetry.selected_agent_id = 0u;
+            }
         }
     }
     // Instantaneous census is cleared on the final sub-tick before living agents recount:
@@ -1063,6 +1138,8 @@ override ENABLE_SEXUAL_SELECTION: bool = false;
 @group(0) @binding(6) var<storage, read_write> freelist: array<u32>;
 @group(0) @binding(7) var<storage, read_write> queue_buffer: ConsolidatedQueue;      // 1,028.1 KB (telemetry + births + audio)
 @group(1) @binding(0) var<uniform> params: GpuSimParams;                             // 64B uniform (separate binding space)
+@group(1) @binding(1) var soil_data: texture_2d<f32>;                                   // Raw physics snapshot [food, taint, scent]
+@group(1) @binding(2) var soil_sampler: sampler;                                        // Linear filter + Repeat wrap in silicon
 
 // Hardware toroidal coordinate wrapping (1 cycle via floor):
 fn wrap_coords(p: vec2f) -> vec2f {
@@ -1071,6 +1148,41 @@ fn wrap_coords(p: vec2f) -> vec2f {
         p.y - 600.0 * floor(p.y / 600.0)
     );
 }
+
+// Hardware bilinear probe helper: 0 ALU cycles for wrapping, 0 ALU cycles for interpolation
+fn sample_soil_probe(p: vec2f) -> vec4f {
+    let uv = p / vec2f(900.0, 600.0);
+    return textureSampleLevel(soil_data, soil_sampler, uv, 0.0);
+}
+
+@compute @workgroup_size(64)
+fn agent_main(@builtin(global_invocation_id) id: vec3u) {
+    let agent_idx = id.x;
+    if (agent_idx >= params.max_agents) { return; }
+
+    // Top-of-Shader Tombstone Dead-Check Guard: Inactive corpses must NEVER execute physics or census!
+    let meta = agent_states[agent_idx].meta_flags;
+    let is_dead = (meta & (1u << 13u)) != 0u;
+    if (is_dead) { return; }
+
+    let pos = agent_states[agent_idx].pos_vel.xy;
+
+    // Hardware Bilinear Antennae Feelers (Zero Race Conditions, Zero Atomic Contention):
+    let probe_here    = sample_soil_probe(pos);
+    let probe_forward = sample_soil_probe(pos + fwd_reach);
+    let probe_left    = sample_soil_probe(pos + fwd_reach * 0.7 + left_offset);
+    let probe_right   = sample_soil_probe(pos + fwd_reach * 0.7 - left_offset);
+
+    let here_food    = probe_here.r;
+    let forward_food = probe_forward.r;
+    let left_food    = probe_left.r;
+    let right_food   = probe_right.r;
+    let here_taint   = probe_here.g;
+    let scent_diff   = probe_forward.b - probe_here.b;
+
+    // Sensory inputs (identical mathematical formula to reference engine):
+    ins_hidden[0] = vec4f(here_food, clamp(forward_food - left_food, -1.0, 1.0), clamp(forward_food - right_food, -1.0, 1.0), clamp(forward_food - here_food, -1.0, 1.0));
+    ins_hidden[1] = vec4f(clamp(here_taint, 0.0, 1.0), clamp(scent_diff, -1.0, 1.0), sensory_bearing, sensory_dist);
 
 // Branchless unpack4x8snorm neural forward pass:
 // Clean read-only genome access (agent_genomes) separates 352B neural weights from volatile state:
@@ -1269,6 +1381,12 @@ var<workgroup> shared_child_slot: u32;
 
 @compute @workgroup_size(32)
 fn birth_main(@builtin(workgroup_id) wg_id: vec3u, @builtin(local_invocation_id) local_id: vec3u) {
+    // Workgroup-Uniform Bounds Guard: Safely bounds births to actual queued count and buffer capacity
+    let total_births = min(atomicLoad(&queue_buffer.telemetry.birth_count), 65536u);
+    if (wg_id.x >= total_births) {
+        return; // Safely abort excess workgroup without popping freelist or reading uninitialized queue slots
+    }
+
     let event = queue_buffer.births[wg_id.x];
     let parent_a = event.parent_a;
     let parent_b = event.parent_b;
