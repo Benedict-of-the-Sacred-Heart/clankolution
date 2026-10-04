@@ -77,3 +77,33 @@ fn get_cell_id(pos: vec2f) -> u32 {
     let gy = min(u32(max(0.0, pos.y) / 100.0), 5u);
     return gy * 9u + gx;
 }
+
+@compute @workgroup_size(64)
+fn populate_cell_offsets(@builtin(global_invocation_id) id: vec3u) {
+    let n = params.agent_count;
+    if (id.x >= n) { return; }
+
+    let slot = spatial_keys[id.x].y;
+    let meta = agent_states[slot].meta_flags;
+    if ((meta & (1u << 13u)) != 0u) { return; }
+
+    let pos = agent_states[slot].pos_vel.xy;
+    let cell_id = get_cell_id(pos);
+
+    if (id.x == 0u) {
+        cell_offsets[cell_id].x = id.x;
+    } else {
+        let prev_slot = spatial_keys[id.x - 1u].y;
+        let prev_pos = agent_states[prev_slot].pos_vel.xy;
+        let prev_cell = get_cell_id(prev_pos);
+        if (prev_cell != cell_id) {
+            cell_offsets[cell_id].x = id.x;
+            cell_offsets[prev_cell].y = id.x;
+        }
+    }
+
+    if (id.x == n - 1u) {
+        cell_offsets[cell_id].y = n;
+    }
+}
+

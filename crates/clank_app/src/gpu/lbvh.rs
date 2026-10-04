@@ -62,12 +62,25 @@ impl LbvhTree {
     /// Builds a Karras LBVH hierarchy from a slice of agents.
     /// Handles degenerate populations (N = 0 or N = 1) safely without underflow.
     pub fn build(agents: &[GpuAgentState]) -> Self {
-        let n = agents.len();
+        let mut keys: Vec<[u32; 2]> = agents
+            .iter()
+            .enumerate()
+            .map(|(i, a)| [a.morton_code, i as u32])
+            .collect();
+        keys.sort_unstable_by(|a, b| a[0].cmp(&b[0]).then_with(|| a[1].cmp(&b[1])));
+
+        Self::build_from_keys(&keys, agents)
+    }
+
+    /// Builds a Karras LBVH hierarchy from sorted keys (morton_key, slot_idx) and agents slice.
+    pub fn build_from_keys(keys: &[[u32; 2]], agents: &[GpuAgentState]) -> Self {
+        let n = keys.len();
         if n == 0 {
             return Self { nodes: Vec::new() };
         }
         if n == 1 {
-            let a = &agents[0];
+            let agent_idx = keys[0][1] as usize;
+            let a = &agents[agent_idx];
             let r = 2.0 + 3.0 * a.traits[0];
             let root_node = GpuLbvhNode {
                 aabb_min: [a.pos_vel[0] - r, a.pos_vel[1] - r],
@@ -78,20 +91,12 @@ impl LbvhTree {
                 left_child: 0xFFFFFFFF,
                 right_child: 0xFFFFFFFF,
                 parent: 0xFFFFFFFF,
-                leaf_idx: 0,
+                leaf_idx: agent_idx as u32,
             };
             return Self {
                 nodes: vec![root_node],
             };
         }
-
-        // Construct sorted keys (morton_key, agent_id)
-        let mut keys: Vec<[u32; 2]> = agents
-            .iter()
-            .enumerate()
-            .map(|(i, a)| [a.morton_code, i as u32])
-            .collect();
-        keys.sort_unstable_by(|a, b| a[0].cmp(&b[0]).then_with(|| a[1].cmp(&b[1])));
 
         let num_internal = n - 1;
         let total_nodes = num_internal + n;
@@ -131,14 +136,14 @@ impl LbvhTree {
 
         // Phase 1: Build Radix tree hierarchy (internal nodes 0..n-2)
         for i in 0..num_internal as i32 {
-            let delta_next = common_prefix_length(i, i + 1, &keys);
-            let delta_prev = common_prefix_length(i, i - 1, &keys);
+            let delta_next = common_prefix_length(i, i + 1, keys);
+            let delta_prev = common_prefix_length(i, i - 1, keys);
             let d = if delta_next > delta_prev { 1 } else { -1 };
-            let delta_min = common_prefix_length(i, i - d, &keys);
+            let delta_min = common_prefix_length(i, i - d, keys);
 
             // Find upper bound l_max
             let mut l_max = 2;
-            while common_prefix_length(i, i + l_max * d, &keys) > delta_min {
+            while common_prefix_length(i, i + l_max * d, keys) > delta_min {
                 l_max *= 2;
             }
 
@@ -146,7 +151,7 @@ impl LbvhTree {
             let mut l = 0;
             let mut step = l_max / 2;
             while step > 0 {
-                if common_prefix_length(i, i + (l + step) * d, &keys) > delta_min {
+                if common_prefix_length(i, i + (l + step) * d, keys) > delta_min {
                     l += step;
                 }
                 step /= 2;
@@ -155,13 +160,13 @@ impl LbvhTree {
             let j = i + l * d;
             let first = i.min(j);
             let last = i.max(j);
-            let delta_node = common_prefix_length(first, last, &keys);
+            let delta_node = common_prefix_length(first, last, keys);
 
             // Binary search split point
             let mut s = 0;
             let mut step_s = (last - first + 1) / 2;
             while step_s > 0 {
-                if common_prefix_length(first, first + s + step_s, &keys) > delta_node {
+                if common_prefix_length(first, first + s + step_s, keys) > delta_node {
                     s += step_s;
                 }
                 step_s /= 2;

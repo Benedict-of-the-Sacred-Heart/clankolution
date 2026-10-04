@@ -124,11 +124,17 @@ fn spatial_query_main(@builtin(global_invocation_id) id: vec3u) {
         var search_r = clamp(16.0 * (params.camera_size[0] / 900.0), 4.0, 24.0);
 
         if (params.agent_count == 1u) {
-            let agent_pos = agent_states[0].pos_vel.xy;
-            let d = toroidal_dist(tool_pos, agent_pos);
-            if (d <= search_r) {
-                queue_buffer.telemetry.selected_agent_idx = 0u;
-                queue_buffer.telemetry.selected_agent_id = agent_states[0].id;
+            let slot = lbvh_nodes[0].leaf_idx;
+            if (slot < params.max_agents) {
+                let agent_pos = agent_states[slot].pos_vel.xy;
+                let d = toroidal_dist(tool_pos, agent_pos);
+                if (d <= search_r) {
+                    queue_buffer.telemetry.selected_agent_idx = slot;
+                    queue_buffer.telemetry.selected_agent_id = agent_states[slot].id;
+                } else {
+                    queue_buffer.telemetry.selected_agent_idx = 0xFFFFFFFFu;
+                    queue_buffer.telemetry.selected_agent_id = 0u;
+                }
             } else {
                 queue_buffer.telemetry.selected_agent_idx = 0xFFFFFFFFu;
                 queue_buffer.telemetry.selected_agent_id = 0u;
@@ -190,5 +196,30 @@ fn spatial_query_main(@builtin(global_invocation_id) id: vec3u) {
 
         queue_buffer.telemetry.selected_agent_idx = best_idx;
         queue_buffer.telemetry.selected_agent_id = best_id;
+    } else {
+        // AoE Tool Brushes: tool_type >= 1 (1 = nourish, 2 = blight, 3 = extinguish, 4 = seed)
+        let agent_idx = id.x;
+        if (agent_idx >= params.max_agents) { return; }
+        let meta = agent_states[agent_idx].meta_flags;
+        if ((meta & (1u << 13u)) != 0u) { return; }
+
+        let pos = agent_states[agent_idx].pos_vel.xy;
+        let d = toroidal_dist(tool_pos, pos);
+        let aoe_radius = 60.0;
+        if (d <= aoe_radius) {
+            if (params.tool_type == 1u) {
+                // Nourish: grant energy
+                agent_states[agent_idx].angle_energy[1] = min(agent_states[agent_idx].angle_energy[1] + 25.0, 150.0);
+            } else if (params.tool_type == 2u) {
+                // Blight: deduct energy
+                agent_states[agent_idx].angle_energy[1] = max(agent_states[agent_idx].angle_energy[1] - 30.0, 0.0);
+            } else if (params.tool_type == 3u) {
+                // Extinguish: kill agent
+                agent_states[agent_idx].meta_flags |= (1u << 13u);
+                agent_states[agent_idx].angle_energy[1] = 0.0;
+                agent_states[agent_idx].visual_cache = 0u;
+            }
+        }
     }
 }
+

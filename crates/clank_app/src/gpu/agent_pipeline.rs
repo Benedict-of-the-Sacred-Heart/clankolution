@@ -102,3 +102,62 @@ impl GpuCombatResolution {
         false
     }
 }
+
+/// Top-of-shader dead-check guard with single-writer dead_claimed synchronization.
+/// Returns true if the agent is dead and should exit compute immediately.
+pub fn check_dead_guard(
+    state: &mut super::types::GpuAgentState,
+    atomic: &super::types::GpuAgentAtomic,
+) -> bool {
+    let is_dead = (state.meta_flags & (1 << 13)) != 0;
+    let dead_claimed = atomic.dead_claimed != 0;
+    if is_dead || dead_claimed {
+        if !is_dead {
+            state.meta_flags |= 1 << 13;
+            state.angle_energy[1] = 0.0;
+            state.visual_cache = 0;
+        }
+        return true;
+    }
+    false
+}
+
+/// Evaluates sensory bearing [-1.0, 1.0] and normalized proximity [0.0, 1.0] for the closest neighbor.
+pub fn calculate_neighbor_sensory(
+    agent_pos: [f32; 2],
+    agent_angle: f32,
+    neighbor_pos: [f32; 2],
+    sight_radius: f32,
+) -> (f32, f32) {
+    let mut dx = neighbor_pos[0] - agent_pos[0];
+    if dx > 450.0 {
+        dx -= 900.0;
+    } else if dx < -450.0 {
+        dx += 900.0;
+    }
+
+    let mut dy = neighbor_pos[1] - agent_pos[1];
+    if dy > 300.0 {
+        dy -= 600.0;
+    } else if dy < -300.0 {
+        dy += 600.0;
+    }
+
+    let dist = (dx * dx + dy * dy).sqrt();
+    let angle_to_neighbor = dy.atan2(dx);
+    let mut bearing = angle_to_neighbor - agent_angle;
+
+    // Normalize bearing to [-PI, PI]
+    while bearing > std::f32::consts::PI {
+        bearing -= 2.0 * std::f32::consts::PI;
+    }
+    while bearing < -std::f32::consts::PI {
+        bearing += 2.0 * std::f32::consts::PI;
+    }
+
+    let bearing_norm = (bearing / std::f32::consts::PI).clamp(-1.0, 1.0);
+    let dist_norm = (1.0 - dist / sight_radius.max(1.0)).clamp(0.0, 1.0);
+
+    (bearing_norm, dist_norm)
+}
+

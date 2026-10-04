@@ -141,18 +141,48 @@ fn pcg_float(id: u32, stream: u32, tick: u32) -> f32 {
     return f32(pcg_hash(id, stream, tick)) / 4294967295.0;
 }
 
+fn toroidal_aabb_dist_1d(p: f32, b_min: f32, b_max: f32, w: f32) -> f32 {
+    if (p >= b_min && p <= b_max) { return 0.0; }
+    let direct = select(p - b_max, b_min - p, p < b_min);
+    let wrapped = select(w - p + b_min, w - b_max + p, p < b_min);
+    return min(direct, wrapped);
+}
+
+fn distance_to_aabb(pos: vec2f, aabb_min: vec2f, aabb_max: vec2f) -> f32 {
+    let dx = toroidal_aabb_dist_1d(pos.x, aabb_min.x, aabb_max.x, 900.0);
+    let dy = toroidal_aabb_dist_1d(pos.y, aabb_min.y, aabb_max.y, 600.0);
+    return sqrt(dx * dx + dy * dy);
+}
+
+fn toroidal_dist(p1: vec2f, p2: vec2f) -> f32 {
+    let dx = abs(p1.x - p2.x);
+    let x_dist = min(dx, 900.0 - dx);
+    let dy = abs(p1.y - p2.y);
+    let y_dist = min(dy, 600.0 - dy);
+    return sqrt(x_dist * x_dist + y_dist * y_dist);
+}
+
 @compute @workgroup_size(64)
 fn agent_main(@builtin(global_invocation_id) id: vec3u) {
     let agent_idx = id.x;
     if (agent_idx >= params.max_agents) { return; }
 
-    // Top-of-Shader Tombstone Dead-Check Guard:
+    // Top-of-Shader Tombstone Dead-Check Guard with dead_claimed CAS synchronization:
     let meta = agent_states[agent_idx].meta_flags;
     let is_dead = (meta & (1u << 13u)) != 0u;
-    if (is_dead) { return; }
+    let dead_claimed = atomicLoad(&agent_atomics[agent_idx].dead_claimed) != 0u;
+    if (is_dead || dead_claimed) {
+        if (!is_dead) {
+            agent_states[agent_idx].meta_flags |= (1u << 13u);
+            agent_states[agent_idx].angle_energy[1] = 0.0;
+            agent_states[agent_idx].visual_cache = 0u;
+        }
+        return;
+    }
 
     let pos = agent_states[agent_idx].pos_vel.xy;
     let vel = agent_states[agent_idx].pos_vel.zw;
+
     var angle = agent_states[agent_idx].angle_energy[0];
     var a_energy = agent_states[agent_idx].angle_energy[1];
     var a_feed = agent_states[agent_idx].angle_energy[2];
@@ -189,11 +219,84 @@ fn agent_main(@builtin(global_invocation_id) id: vec3u) {
     let here_taint   = probe_here.g;
     let scent_diff   = probe_forward.b - probe_here.b;
 
+    // LBVH Nearest Neighbor Search
+    var best_dist = 999999.0;
+    var best_neighbor = 0xFFFFFFFFu;
+    var sensory_bearing = 0.0;
+    var sensory_dist = 0.0;
+
+    let sight_radius = 120.0 + 80.0 * tr2;
+
+    if (params.agent_count > 1u) {
+        var stack: array<u32, 32>;
+        var stack_ptr = 0u;
+        stack[0] = 0u; // Root
+        stack_ptr = 1u;
+        var search_r = sight_radius;
+
+        while (stack_ptr > 0u) {
+            stack_ptr -= 1u;
+            let node_idx = stack[stack_ptr];
+            let node = lbvh_nodes[node_idx];
+
+            let box_d = distance_to_aabb(pos, node.aabb_min, node.aabb_max);
+            if (box_d > search_r) { continue; }
+
+            if (node.leaf_idx != 0xFFFFFFFFu) {
+                let other_idx = node.leaf_idx;
+                if (other_idx != agent_idx) {
+                    let other_meta = agent_states[other_idx].meta_flags;
+                    if ((other_meta & (1u << 13u)) == 0u) {
+                        let other_pos = agent_states[other_idx].pos_vel.xy;
+                        let d = toroidal_dist(pos, other_pos);
+                        if (d < best_dist && d <= search_r) {
+                            best_dist = d;
+                            best_neighbor = other_idx;
+                            search_r = d; // Dynamic radius shrinking
+                        }
+                    }
+                }
+            } else {
+                if (stack_ptr < 30u) {
+                    if (node.right_child != 0xFFFFFFFFu) {
+                        stack[stack_ptr] = node.right_child;
+                        stack_ptr += 1u;
+                    }
+                    if (node.left_child != 0xFFFFFFFFu) {
+                        stack[stack_ptr] = node.left_child;
+                        stack_ptr += 1u;
+                    }
+                }
+            }
+        }
+
+        if (best_neighbor != 0xFFFFFFFFu) {
+            let neighbor_pos = agent_states[best_neighbor].pos_vel.xy;
+            var dx = neighbor_pos.x - pos.x;
+            if (dx > 450.0) { dx -= 900.0; }
+            else if (dx < -450.0) { dx += 900.0; }
+
+            var dy = neighbor_pos.y - pos.y;
+            if (dy > 300.0) { dy -= 600.0; }
+            else if (dy < -300.0) { dy += 600.0; }
+
+            let angle_to_neighbor = atan2(dy, dx);
+            var bearing = angle_to_neighbor - angle;
+            let pi = 3.14159265;
+            if (bearing > pi) { bearing -= 2.0 * pi; }
+            else if (bearing < -pi) { bearing += 2.0 * pi; }
+
+            sensory_bearing = clamp(bearing / pi, -1.0, 1.0);
+            sensory_dist = clamp(1.0 - best_dist / sight_radius, 0.0, 1.0);
+        }
+    }
+
     // Vectorized RNN Forward Pass
     var ins_hidden: array<vec4f, 7>;
     ins_hidden[0] = vec4f(here_food, clamp(forward_food - left_food, -1.0, 1.0), clamp(forward_food - right_food, -1.0, 1.0), clamp(forward_food - here_food, -1.0, 1.0));
-    ins_hidden[1] = vec4f(clamp(here_taint, 0.0, 1.0), clamp(scent_diff, -1.0, 1.0), 0.0, 0.0);
+    ins_hidden[1] = vec4f(clamp(here_taint, 0.0, 1.0), clamp(scent_diff, -1.0, 1.0), sensory_bearing, sensory_dist);
     ins_hidden[2] = vec4f(vel.x * 0.2, vel.y * 0.2, clamp(a_energy * 0.01, 0.0, 1.0), sin(f32(params.tick) * 0.05));
+
     ins_hidden[3] = agent_states[agent_idx].hidden[0];
     ins_hidden[4] = agent_states[agent_idx].hidden[1];
     ins_hidden[5] = vec4f(agent_states[agent_idx].hidden_tail.x, agent_states[agent_idx].hidden_tail.y, 0.0, 0.0);
@@ -246,11 +349,68 @@ fn agent_main(@builtin(global_invocation_id) id: vec3u) {
     atomicSub(&soil_buffer[cell_idx].food_milli, eaten_milli);
     atomicAdd(&queue_buffer.telemetry.food_grazed_milli, u32(max(0, eaten_milli)));
 
+    // Combat Resolution & Decisive Killer Attribution
+    let contact_dist = 14.0 + 10.0 * tr0;
+    if (best_neighbor != 0xFFFFFFFFu && best_dist < contact_dist && a_attack > 0.25 && a_cooldown == 0u) {
+        let victim_idx = best_neighbor;
+        let victim_tr3 = agent_states[victim_idx].traits[0][3];
+        let damage = (0.5 + a_attack * 2.2) * params.hostility * (0.8 + tr0) * (1.0 - 0.65 * victim_tr3);
+        let damage_milli = i32(damage * 1000.0);
+        let old_energy_milli = atomicSub(&agent_atomics[victim_idx].energy_milli, damage_milli);
+
+        a_cooldown = 3u;
+        a_energy += damage * (0.1 + 0.55 * tr5);
+
+        // Decisive killer attribution:
+        if (old_energy_milli > 0 && old_energy_milli <= damage_milli) {
+            let cur_meta = agent_states[agent_idx].meta_flags;
+            let kills = (cur_meta >> 14u) + 1u;
+            agent_states[agent_idx].meta_flags = (cur_meta & 0x00003FFFu) | (kills << 14u);
+            atomicAdd(&queue_buffer.telemetry.kills, 1u);
+            a_energy += min(9.0, 8.0 * tr5);
+
+            // Frustum-culled stochastic audio emission:
+            let dx = abs(pos.x - params.camera_pos.x);
+            let dist_x = min(dx, 900.0 - dx);
+            let dy = abs(pos.y - params.camera_pos.y);
+            let dist_y = min(dy, 600.0 - dy);
+            let in_view = (dist_x <= params.camera_size.x * 0.5 && dist_y <= params.camera_size.y * 0.5);
+            if (in_view) {
+                let zoom_factor = clamp(1.0 - (params.camera_size.x - 150.0) / (900.0 - 150.0), 0.0, 1.0);
+                let kill_volume = mix(0.08, 1.0, zoom_factor);
+                let density_filter = select(1u, 4u, params.agent_count > 10000u);
+                if (pcg_hash(agent_idx, victim_idx, params.tick) % density_filter == 0u) {
+                    let voice_slot = atomicAdd(&queue_buffer.telemetry.audio_voice_count, 1u);
+                    if (voice_slot < 256u) {
+                        queue_buffer.audio[voice_slot] = AudioVoice(pos, 1u /* EVENT_KILL */, kill_volume);
+                    }
+                }
+            }
+
+            // Atomic CAS death ownership
+            let claim_death = atomicCompareExchangeWeak(&agent_atomics[victim_idx].dead_claimed, 0u, 1u);
+            if (claim_death.exchanged) {
+                let free_slot = atomicAdd(&queue_buffer.telemetry.freelist_top, 1u);
+                freelist[free_slot] = victim_idx;
+            }
+        }
+    }
+
+    // Sexual Selection Mating Proposal (Symmetry Breaking: partner ID > my ID)
+    if (best_neighbor != 0xFFFFFFFFu && best_dist < contact_dist && a_energy > 80.0 && a_cooldown == 0u && a_birth == 0u) {
+        let partner_idx = best_neighbor;
+        if (agent_states[partner_idx].id > agent_states[agent_idx].id) {
+            atomicMax(&agent_atomics[partner_idx].mate_claim, agent_idx + 1u);
+            atomicStore(&agent_atomics[partner_idx].mate_energy_milli, u32(a_energy * 1000.0));
+        }
+    }
+
     // Basal and thrust metabolic cost
     let basal_cost = 0.02 + 0.015 * tr0 + 0.01 * tr3;
     let thrust_cost = thrust * 0.04 * (1.0 + 0.5 * tr0);
     let internal_delta_milli = i32((eaten_float - basal_cost - thrust_cost) * 1000.0);
     atomicAdd(&agent_atomics[agent_idx].energy_milli, internal_delta_milli);
+
 
     // Strict Single-Writer Death Check
     let already_claimed = atomicLoad(&agent_atomics[agent_idx].dead_claimed);

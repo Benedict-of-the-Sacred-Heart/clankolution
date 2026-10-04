@@ -78,3 +78,54 @@ fn test_unpack4x8snorm_forward_pass_parity() {
     let lethal3 = GpuCombatResolution::apply_damage(&mut victim_atomic, 200);
     assert!(!lethal3); // already claimed!
 }
+
+#[test]
+fn test_zombie_agent_guard_with_dead_claimed() {
+    use clank_app::gpu::agent_pipeline::check_dead_guard;
+    use clank_app::gpu::types::GpuAgentState;
+
+    let mut state = GpuAgentState {
+        pos_vel: [100.0, 100.0, 0.0, 0.0],
+        angle_energy: [0.0, 50.0, 0.0, 0.0],
+        traits: [0.0; 8],
+        hidden: [0.0; 10],
+        id: 1,
+        meta_flags: 0, // looks alive in meta_flags
+        age_gen: 0,
+        morton_code: 0,
+        packed_color: 0,
+        visual_cache: 0xFFFFFFFF,
+    };
+    let atomic = GpuAgentAtomic {
+        energy_milli: 0,
+        mate_claim: 0,
+        mate_energy_milli: 0,
+        dead_claimed: 1, // but was claimed as dead!
+    };
+
+    let should_exit = check_dead_guard(&mut state, &atomic);
+    assert!(should_exit);
+    // Guard must have updated meta_flags with dead bit (bit 13) and cleared visual_cache
+    assert_ne!(state.meta_flags & (1 << 13), 0);
+    assert_eq!(state.visual_cache, 0);
+    assert_eq!(state.angle_energy[1], 0.0);
+}
+
+#[test]
+fn test_agent_combat_and_neighbor_sensory_bearing() {
+    use clank_app::gpu::agent_pipeline::calculate_neighbor_sensory;
+
+    // Agent at [100.0, 100.0] facing East (angle = 0.0)
+    // Neighbor at [100.0, 110.0] (directly South / down, dy = 10.0, dx = 0.0 -> bearing = +pi/2)
+    let agent_pos = [100.0f32, 100.0f32];
+    let agent_angle = 0.0f32;
+    let neighbor_pos = [100.0f32, 110.0f32];
+    let sight_radius = 120.0f32;
+
+    let (bearing_norm, dist_norm) = calculate_neighbor_sensory(agent_pos, agent_angle, neighbor_pos, sight_radius);
+    // bearing is +pi/2 normalized by pi -> ~0.5
+    assert!((bearing_norm - 0.5).abs() < 1e-2);
+    // dist is 10.0 / 120.0 -> dist_norm = 1.0 - 10.0/120.0 ~ 0.9167
+    assert!((dist_norm - (1.0 - 10.0 / 120.0)).abs() < 1e-2);
+}
+

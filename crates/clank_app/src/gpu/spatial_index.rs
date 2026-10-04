@@ -76,4 +76,44 @@ impl CellOffsetsTable {
     pub fn set(&mut self, i: usize, start: u32, end: u32) {
         self.offsets[i] = [start, end];
     }
+
+    /// Populates cell offsets table from sorted spatial keys `(morton_key, agent_slot_idx)`.
+    pub fn populate_from_keys(&mut self, keys: &[[u32; 2]], agents: &[crate::gpu::types::GpuAgentState]) {
+        self.clear();
+        if keys.is_empty() {
+            return;
+        }
+
+        let mut current_cell: Option<usize> = None;
+        let mut start_idx = 0u32;
+
+        for (i, &[_morton, slot_idx]) in keys.iter().enumerate() {
+            let slot = slot_idx as usize;
+            if slot >= agents.len() {
+                continue;
+            }
+            let a = &agents[slot];
+            if (a.meta_flags & (1 << 13)) != 0 {
+                continue;
+            }
+            let cell = get_cell_id([a.pos_vel[0], a.pos_vel[1]]);
+            match current_cell {
+                Some(c) if c == cell => {}
+                Some(c) => {
+                    self.set(c, start_idx, i as u32);
+                    current_cell = Some(cell);
+                    start_idx = i as u32;
+                }
+                None => {
+                    current_cell = Some(cell);
+                    start_idx = i as u32;
+                }
+            }
+        }
+
+        if let Some(c) = current_cell {
+            self.set(c, start_idx, keys.len() as u32);
+        }
+    }
 }
+
