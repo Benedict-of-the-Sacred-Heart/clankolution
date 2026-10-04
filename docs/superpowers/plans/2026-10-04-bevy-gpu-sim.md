@@ -55,17 +55,19 @@
 
 6. **Birth / Compaction Freedoms & CAS Freelist Protection**:
    - **Tombstone Freelist & CAS Underflow Guard**: Fixed static `MAX_AGENTS` storage buffer. Dead creatures are marked with tombstone flags (`dead = 1`) and their slot indices are recycled onto an atomic stack (`atomicAdd` on deallocation). Allocation uses an atomic Compare-and-Swap (CAS) pop loop: checks `freelist_top > 0u` before popping, safely preventing unsigned 32-bit underflow (`4,294,967,295`) when population reaches carrying capacity. **Zero memory shifting or array compaction across frames.**
-   - **Dedicated Preamble Clearing Pass (`preamble_clear.wgsl`)**: Dispatched immediately before `agent_step.wgsl` to eliminate cross-workgroup race conditions. Resets `mate_claim = 0u`, `dead_claimed = 0u`, `sim_counters.birth_count = 0u`, and `cell_offsets = 0xFFFFFFFFu`. Guarantees a global GPU execution and memory barrier across all workgroups before simulation stepping begins.
+   - **Dedicated Preamble Clearing Pass (`preamble_clear.wgsl`)**: Dispatched immediately before `agent_step.wgsl` to eliminate cross-workgroup race conditions. Resets `mate_claim = 0u`, `dead_claimed = 0u`, `telemetry.birth_count = 0u`, `telemetry.audio_voice_count = 0u`, `telemetry.selected_candidate = 0xFFFFFFFFu`, and `cell_offsets = 0xFFFFFFFFu`. Guarantees a global GPU execution and memory barrier across all workgroups before simulation stepping begins.
    - **Atomic CAS Double-Free Protection**: To prevent starvation and predation from double-freeing the same slot in the same tick, death ownership is acquired via CAS on `dead_claimed: atomic<u32>` ($0 \to 1$). Exactly one thread succeeds, sets `dead = 1`, and recycles the slot to `freelist`.
-   - **Parallel Mating Handshake**: Mutual consent is verified via `atomicCompareExchangeWeak` on `mate_claim` in a dedicated L2 cache line. Deterministic symmetry breaking ($\min(A.\text{id}, B.\text{id})$) guarantees exactly one child is born per consenting pair, eliminating duplicate births and double-spending.
+   - **Canonical Mating Symmetry Breaking (Optimization A)**: When two creatures are mutually interested, only the creature with `partner_id > agent_id` initiates the claim on `agent_atomics[partner_idx].mate_claim`. This **cuts atomic CAS memory bus traffic in half (50% reduction)** and completely eliminates mutual deadlocks, duplicate twin births, and double-spending without needing multi-round handshakes.
+   - **Seamless Asexual Fallback (Optimization B)**: In strict parity with the HTML reference (`clankolution.html#L1439-L1444`), if a sexual mate is absent, out of range, or rejected, the creature smoothly falls back to asexual virgin reproduction (`child(a, null)` / `partner_idx = 0xFFFFFFFFu`). This guarantees the reproductive cycle is never lost to lock contention.
 
 7. **Predation & Combat Resolution (Atomic Fixed-Point & Decisive Attribution)**:
    - **L2-Cached Atomic Damage Buffer**: `energy_milli: atomic<i32>` resides in an isolated 512KB buffer fitting entirely into GPU L2 cache, eliminating false-sharing contention with agent genome memory.
    - **Exact Formula Parity**: Damage evaluated via `(0.5 + attack * 2.2) * hostility * (0.8 + tr0) * (1.0 - 0.65 * victim_tr3)`.
    - **Decisive Killer Attribution**: Threads perform `atomicSub(&victim.energy_milli, dmg_milli)`. The exact thread crossing the zero threshold (`old > 0 && old <= dmg`) is attributed the kill, receives the siphon energy and kill bounty (`min(9.0, 8.0 * tr5)`), sets victim tombstone (`dead = 1`), and recycles the slot to the freelist via the `dead_claimed` CAS gate.
 
-8. **Consolidated Atomic Counters Buffer (`SimCounters`)**:
-   - Consolidates `freelist_top`, `birth_count`, and `kills_total` into a single 16-byte atomic struct buffer, keeping shader storage buffer bindings to 7 (well under the cross-platform limit of 8).
+8. **Unified 128-Byte `GpuTelemetry` & Engine Counters (Strict $\le 8$ Storage Buffer Limit)**:
+   - Merges engine counters (`freelist_top`, `birth_count`, `audio_voice_count`, `selected_candidate`) directly into Cache Line 0 of `GpuTelemetry`.
+   - **Strict $\le 8$ Storage Buffer Compliance**: Eliminates `GpuSimCounters` as a standalone buffer, keeping storage buffer bindings in `agent_step.wgsl` at **exactly 8** (`agents`, `agent_atomics`, `soil_buffer`, `spatial_keys`, `lbvh_nodes`, `freelist`, `queue_buffer`, and `telemetry`), ensuring 100% strict cross-platform compatibility across Metal, Vulkan, DX12, and WebGPU.
 
 9. **Stateless Counter-Based PRNG & Triangular Distribution**:
    - **PCG 3D Hash in Hardware Registers**: Evaluates $\text{rand} = \text{pcg3d}(\text{vec3u}(\text{id}, \text{stream}, \text{tick}))$ in 2 nanoseconds directly in ALU registers. Requires $0$ bytes of persistent PRNG state, $0$ atomic locks, and guarantees bit-for-bit reproducibility across all GPU architectures.
@@ -80,6 +82,12 @@
     - **Mod 2: Expanded Cortex Mod (`[EXPANDED CORTEX: OFF/ON]`)**:
       - Default OFF (100% HTML parity): Dummy weights in the 88-word layout are multiplied by $0.0$, reproducing the 326-weight brain with zero deviation.
       - When ON: Activates the 2 unused sensory inputs per hidden neuron (Input 24: local food tangent/gradient vector, Input 25: LBVH macro-swarm cluster centroid bearing) and 1 extra actuator (Actuator 6: sprint burst / armor hardening). Mutations during `birth_step.wgsl` evolve these weights actively, allowing complex pack dynamics and navigation to emerge!
+    - **Mod 3: Natural Sexual Selection Tournament Mod (`[SEXUAL SELECTION: OFF/ON]`)**:
+      - Default OFF (100% HTML parity): Uses baseline probabilistic mating with canonical symmetry breaking.
+      - When ON: Replaces first-come-first-served CAS collisions with an emergent biological tournament. Suitors submit atomic bids to their desired mate's proposal mailbox:
+        `let bid = (u32(a_energy * 100.0) << 16) | (agent_idx & 0xFFFFu);`
+        `atomicMax(&agent_atomics[partner_idx].mate_claim, bid);`
+        In `birth_step.wgsl`, the desired mate automatically pairs with the highest-energy/fittest suitor, driving rapid Darwinian sexual selection without additional buffer overhead!
 
 12. **Seamless Dual-Engine State Hot-Swapping**:
     - Bi-directional bridge between Bevy ECS `SimWorld` and the GPU storage buffers (`GpuAgent`, `GpuAgentAtomic`, `GpuSoilCell`).
@@ -98,17 +106,32 @@
 
 15. **Frustum-Culled Stochastic Audio (256 Voices = 4 KB)**:
     - **Single Page-Aligned Voice Buffer**: Audio events (bites, kills, births) are emitted to a fixed 256-voice atomic append buffer (`AudioVoice`: 16 bytes: `pos: [f32; 2]`, `event_type: u32`, `volume: f32`). 256 voices $\times$ 16 bytes = 4,096 bytes (4 KB, exactly 1 hardware memory page).
-    - **Consolidated 20 KB Queue Buffer**: Combined with the 1,024-entry birth queue ($16\text{ KB}$), the unified queue storage buffer is exactly $20\text{ KB}$ ($20,480\text{ bytes}$, divisible by 4, cache-line aligned). Keeps `agent_step.wgsl` at 7 storage buffers (below WebGPU/wgpu limit of 8).
-    - **Viewport Frustum Culling**: Events occurring outside the camera AABB $[x_{\min}, y_{\min}] \times [x_{\max}, y_{\max}]$ are culled on the GPU without atomic overhead.
+    - **Consolidated 20 KB Queue Buffer**: Combined with the 1,024-entry birth queue ($16\text{ KB}$), the unified queue storage buffer is exactly $20\text{ KB}$ ($20,480\text{ bytes}$, divisible by 4, cache-line aligned).
+    - **Toroidal Seam Viewport Frustum Culling**: Events occurring outside the camera viewport are culled directly on the GPU using toroidal shortest distances:
+      ```wgsl
+      let dx = abs(pos.x - params.camera_pos.x);
+      let dist_x = min(dx, 900.0 - dx);
+      let dy = abs(pos.y - params.camera_pos.y);
+      let dist_y = min(dy, 600.0 - dy);
+      let in_view = (dist_x <= params.camera_size.x * 0.5 && dist_y <= params.camera_size.y * 0.5);
+      ```
+      Takes only 4 ALU cycles and eliminates edge audio pop-out when panning across the 900x600 toroidal seam.
     - **Zoom Loudness Modulation**: Sound volume scales with camera zoom level (0.08 ambient murmur fully zoomed out, 1.0 punchy bite fully zoomed in).
     - **Stochastic Hash Density Filter**: In dense swarms or mass extinction cascades, events are stochastically sampled via 1-cycle stateless PCG hash `pcg3d(vec3u(killer, victim, tick)) % density == 0u`, preventing audio mixer blowout and maintaining clean acoustic presence.
 
-16. **Aggregate Frame Telemetry (128-Byte `GpuTelemetry`) & 32x Speed Visual Consistency Picking**:
+16. **Aggregate Frame Telemetry (128-Byte `GpuTelemetry`) & Two-Tier `atomicMin` Distance-Weighted Picking**:
     - **128-Byte Dual-Cache-Line Struct**: Replaces unbounded event ring buffers with a compact 128-byte aggregate telemetry block (2 $\times$ 64-byte hardware cache lines):
-      - Cache Line 0 (Engine & Apex Stats): `population: atomic<u32>`, `kills: atomic<u32>`, `starvations: atomic<u32>`, `apex_record_milli: atomic<u32>` (updated via lock-free `atomicMax`), `food_grazed_milli: atomic<u32>`, `sub_ticks_elapsed: u32`, `apex_agent_id: u32`, `pad0: u32`.
+      - Cache Line 0 (Engine Counters, Apex Records & Picking): `population: atomic<u32>`, `kills: atomic<u32>`, `starvations: atomic<u32>`, `apex_record_milli: atomic<u32>` (updated via lock-free `atomicMax`), `food_grazed_milli: atomic<u32>`, `sub_ticks_elapsed: u32`, `apex_agent_id: u32`, `freelist_top: atomic<u32>`, `birth_count: atomic<u32>`, `audio_voice_count: atomic<u32>`, `selected_candidate: atomic<u32>`, `pad0: u32`, `_reserved0: [u32; 4]`.
       - Cache Line 1 (Lineage Extinction Monitoring): 16 $\times$ `atomic<u32>` living head counts for lineages 0..15. CPU detects lineage extinction in $O(1)$ by scanning for zero counts without reading back individual agent records.
     - **$250,000\times$ Bandwidth Reduction**: 128 bytes read back per frame via DMA staging buffer ($\approx 8\text{ nanoseconds}$ transfer time), completely eliminating VRAM bus bottlenecks during mass extinctions.
-    - **32x Speed Visual Consistency Picking**: When running at 32x multi-tick speed (32 sub-ticks per frame), ray picking is evaluated strictly on **Sub-Tick 1** with a 16px hitbox. The picked agent index is locked and tracked through Sub-Ticks 2..32, guaranteeing that what the user clicked on in the rendered frame is the creature selected on the specimen card without erratic frame-jumping.
+    - **Multi-Tick Instantaneous Census Gating**: In 32x speed mode, cumulative counters (`kills`, `starvations`, `food_grazed_milli`, `birth_count`, `audio_voice_count`) accumulate across all 32 sub-ticks. Instantaneous living census (`population` and `lineage_counts[16]`) is updated strictly on the final sub-tick (`sub_tick == params.sub_ticks_per_frame - 1u`), so the CPU always reads the true current living population snapshot rather than $32\times$ inflated counts.
+    - **Two-Tier Euclidean `atomicMin` Distance Disambiguation**:
+      - Priority 0: Direct body hit ($d \le R_{\text{body}}$, where $R_{\text{body}} = 2.0 + 3.0 \times \text{tr}_0$, approx $3.5\text{px} - 5\text{px}$).
+      - Priority 1: Proximity halo ($R_{\text{body}} < d \le R_{\text{pick}}$).
+      - Zoom-adaptive radius: $R_{\text{pick}} = \text{clamp}(16.0 \times (\text{camera\_size}.x / 900.0), 4.0, 24.0)$.
+      - Packed candidate: `let packed = (priority << 30) | (dist_milli << 14) | (agent_idx & 0x3FFFu);`
+      - Evaluated strictly on Sub-Tick 1 of the multi-tick batch via `atomicMin(&telemetry.selected_candidate, packed)`. Direct body clicks always beat proximity halos, and sub-pixel Euclidean distance resolves ties between closely clustered creatures.
+    - **Specimen Picking Identity Guard**: The CPU tracks the tuple `(slot_idx, agent_id)`. If Agent $K$ dies during sub-ticks 2..32 (or a subsequent tick) and slot $K$ is recycled, `agents[slot_idx].meta[0] != picked_id`. The UI immediately detects the death, prevents displaying the newly spawned replacement creature, and displays the deceased creature's final stats.
 
 ---
 
@@ -117,11 +140,11 @@
 - [ ] **Task 1: Branch Setup & GPU Compute Architecture Scaffolding**
   - Create branch `feature/bevy-gpu` from `feature/bevy-port`.
   - Add `bytemuck = { version = "1.21", features = ["derive"] }` to `crates/clank_app/Cargo.toml`.
-  - Add `gpu` module in `crates/clank_app/src/gpu/` with buffer types: `GpuAgent` (512B, 88 words, exact $2^9$ power-of-two), `GpuAgentAtomic` (16B, with `dead_claimed`), `GpuSimParams` (64B), `GpuLbvhNode` (48B), `GpuSoilCell` (16B), `GpuSimCounters` (16B), `AudioVoice` (16B), `GpuTelemetry` (128B), and pipeline skeletons.
+  - Add `gpu` module in `crates/clank_app/src/gpu/` with buffer types: `GpuAgent` (512B, 88 words, exact $2^9$ power-of-two), `GpuAgentAtomic` (16B, with `dead_claimed`), `GpuSimParams` (80B, with `expanded_cortex` and `sexual_selection`), `GpuLbvhNode` (48B), `GpuSoilCell` (16B), `AudioVoice` (16B), `GpuTelemetry` (128B, unified counters + telemetry + picking), and pipeline skeletons.
   - Implement unit tests for GPU struct memory layouts and 16-byte WGSL alignment.
 
 - [ ] **Task 2: Tombstone Freelist & Zero-Copy Agent Storage Buffer**
-  - Implement lock-free atomic stack allocator (`freelist: array<u32>`, `atomic<u32> freelist_top`).
+  - Implement lock-free atomic stack allocator (`freelist: array<u32>`, `atomic<u32> telemetry.freelist_top`).
   - Implement allocation with CAS underflow guard (`cur_top > 0u`).
   - Implement CAS death ownership (`dead_claimed: 0u -> 1u`) to eliminate double-freeing from concurrent starvation and predation.
   - Test parallel push/pop and slot recycling in automated unit test suite.
@@ -140,21 +163,21 @@
   - Implement **AoE Tool Bounding Box Query** (`extinguish_at`, `blight_at`, `nourish_at`) using LBVH intersection.
 
 - [ ] **Task 5: Packed 88-Word Vectorized RNN, Combat Resolution, PRNG & Decoupled Birth Pipeline**
-  - Implement `preamble_clear.wgsl` to reset `mate_claim`, `dead_claimed`, `birth_count`, `audio_voice_count`, `cell_offsets`, and `GpuTelemetry` counters with global execution barrier.
+  - Implement `preamble_clear.wgsl` to reset `mate_claim`, `dead_claimed`, `birth_count`, `audio_voice_count`, `selected_candidate`, `cell_offsets`, and `GpuTelemetry` counters with global execution barrier.
   - Implement 1-thread-per-agent WGSL compute shader with branchless `unpack4x8snorm` vectorization across 88 `u32` words (7 vec4s hidden, 3 vec4s output).
-  - Integrate **Experimental Simulation Mods**: Barnes-Hut Macro-Flocking and Expanded Cortex (extra senses and sprint actuator).
+  - Integrate **Experimental Simulation Mods**: Barnes-Hut Macro-Flocking, Expanded Cortex (extra senses and sprint actuator), and Natural Sexual Selection Tournament.
   - Apply steering, thrust, and hardware toroidal coordinate wrap.
-  - Implement coalesced atomic soil deposits, atomic millijoule combat resolution with `dead_claimed` CAS, frustum-culled stochastic audio voice emission (256-voice buffer), atomic telemetry updates (`atomicMax` on `apex_record_milli`), and decoupled SIMD genome mutation pass (`birth_step.wgsl`).
+  - Implement coalesced atomic soil deposits, atomic millijoule combat resolution with `dead_claimed` CAS, toroidal seam frustum-culled stochastic audio voice emission (256-voice buffer), Two-Tier `atomicMin` distance-weighted picking, canonical mating symmetry breaking with seamless asexual fallback, atomic telemetry updates (`atomicMax` on `apex_record_milli`), and decoupled SIMD genome mutation pass (`birth_step.wgsl`).
 
-- [ ] **Task 6: Frustum Culling, Minimap LOD, Dual-Engine UI & Verification**
+- [ ] **Task 6: Frustum Culling, Minimap LOD, Dual-Engine UI, Audio & Verification**
   - Implement **GPU Camera Viewport Frustum Culling** via LBVH writing into an Indirect Draw Buffer.
   - Implement **Minimap LOD Cluster Rendering** sampling intermediate LBVH depth nodes for density circles.
   - Implement **spatially coherent instanced dart rasterization** using Morton-ordered agent index streams for tile-cache efficiency.
   - Implement **Granular Bevy Audio playback** reading 256-voice audio queue with zoom loudness modulation.
   - Implement **DMA Readback of 128-Byte `GpuTelemetry`** for UI stats, The Record, and $O(1)$ zero-searching extinction notifications.
-  - Implement **32x Speed Visual Consistency Picking** locking selection on Sub-Tick 1 across 32-tick batches.
+  - Implement **32x Speed Visual Consistency Picking** locking selection on Sub-Tick 1 across 32-tick batches with **Specimen Picking Identity Guard** `(slot_idx, agent_id)`.
   - Add top bar engine toggle: `ENGINE: RUST` $\leftrightarrow$ `ENGINE: GPU` with live bi-directional state bridge.
-  - Add simulation mod toggles: `[BARNES-HUT: OFF/ON]` and `[EXPANDED CORTEX: OFF/ON]`.
+  - Add simulation mod toggles: `[BARNES-HUT: OFF/ON]`, `[EXPANDED CORTEX: OFF/ON]`, and `[SEXUAL SELECTION: OFF/ON]`.
   - Wire telemetry from GPU storage buffers into UI stats, The Record, and Specimen card.
   - Run all 51+ workspace tests.
   - Capture live GPU screenshot via API (`POST /screenshot`), visually verify with `view_file`, and commit to `feature/bevy-gpu`.
@@ -174,14 +197,14 @@
 
 **Interfaces:**
 - Consumes: `clank_core::agent::AgentData`, `clank_core::agent::GENES` (326)
-- Produces: `GpuAgent`, `GpuAgentAtomic`, `GpuSimParams`, `GpuLbvhNode`, `GpuSoilCell`, `GpuSimCounters`, `BirthEvent`, `AudioVoice`, `GpuTelemetry` with exact 16-byte WGSL alignment
+- Produces: `GpuAgent`, `GpuAgentAtomic`, `GpuSimParams`, `GpuLbvhNode`, `GpuSoilCell`, `BirthEvent`, `AudioVoice`, `GpuTelemetry` with exact 16-byte WGSL alignment
 
 - [ ] **Step 1: Write failing test for GPU struct memory layouts**
 ```rust
 // crates/clank_app/tests/gpu_types_test.rs
 use clank_app::gpu::types::{
     GpuAgent, GpuSimParams, GpuLbvhNode, GpuAgentAtomic, BirthEvent,
-    GpuSimCounters, GpuSoilCell, AudioVoice, GpuTelemetry,
+    GpuSoilCell, AudioVoice, GpuTelemetry,
 };
 
 #[test]
@@ -189,7 +212,7 @@ fn test_gpu_struct_alignments() {
     assert_eq!(std::mem::size_of::<GpuAgent>() % 16, 0);
     assert_eq!(std::mem::size_of::<GpuAgent>(), 512);
     assert_eq!(std::mem::size_of::<GpuSimParams>() % 16, 0);
-    assert_eq!(std::mem::size_of::<GpuSimParams>(), 64);
+    assert_eq!(std::mem::size_of::<GpuSimParams>(), 80);
     assert_eq!(std::mem::size_of::<GpuLbvhNode>() % 16, 0);
     assert_eq!(std::mem::size_of::<GpuLbvhNode>(), 48);
     assert_eq!(std::mem::size_of::<GpuAgentAtomic>() % 16, 0);
@@ -198,8 +221,6 @@ fn test_gpu_struct_alignments() {
     assert_eq!(std::mem::size_of::<BirthEvent>(), 16);
     assert_eq!(std::mem::size_of::<AudioVoice>() % 16, 0);
     assert_eq!(std::mem::size_of::<AudioVoice>(), 16);
-    assert_eq!(std::mem::size_of::<GpuSimCounters>() % 16, 0);
-    assert_eq!(std::mem::size_of::<GpuSimCounters>(), 16);
     assert_eq!(std::mem::size_of::<GpuSoilCell>() % 16, 0);
     assert_eq!(std::mem::size_of::<GpuSoilCell>(), 16);
     assert_eq!(std::mem::size_of::<GpuTelemetry>() % 16, 0);
@@ -226,7 +247,7 @@ pub struct GpuAgent {
 #[derive(Clone, Copy, Debug, bytemuck::Pod, bytemuck::Zeroable)]
 pub struct GpuAgentAtomic {
     pub energy_milli: i32,      // 4 bytes: atomic fixed-point millijoules
-    pub mate_claim: u32,        // 4 bytes: atomic CAS mating handshake
+    pub mate_claim: u32,        // 4 bytes: atomic CAS mating handshake OR atomicMax sexual tournament bid
     pub dead_claimed: u32,      // 4 bytes: atomic CAS death ownership (prevents double-free)
     pub pad: u32,               // 4 bytes: 16-byte WGSL alignment
 } // Total: 16 bytes
@@ -234,26 +255,29 @@ pub struct GpuAgentAtomic {
 #[repr(C, align(16))]
 #[derive(Clone, Copy, Debug, bytemuck::Pod, bytemuck::Zeroable)]
 pub struct GpuSimParams {
-    pub tick: u32,              // 4 bytes
-    pub agent_count: u32,       // 4 bytes
-    pub max_agents: u32,        // 4 bytes
-    pub hostility: f32,         // 4 bytes (Total 16)
-    pub mut_rate: f32,          // 4 bytes
-    pub speed: f32,             // 4 bytes
-    pub renewal: f32,           // 4 bytes
-    pub barnes_hut_enabled: u32,// 4 bytes (Total 32)
-    pub expanded_cortex: u32,   // 4 bytes: Expanded Cortex mod toggle (0=OFF, 1=ON)
-    pub tool_type: u32,         // 4 bytes
-    pub tool_pos: [f32; 2],     // 8 bytes (Total 48)
-    pub camera_pos: [f32; 2],   // 8 bytes
-    pub camera_size: [f32; 2],  // 8 bytes (Total 64)
-} // Total: 64 bytes
+    pub tick: u32,               // 4 bytes
+    pub agent_count: u32,        // 4 bytes
+    pub max_agents: u32,         // 4 bytes
+    pub hostility: f32,          // 4 bytes (Total 16)
+    pub mut_rate: f32,           // 4 bytes
+    pub speed: f32,              // 4 bytes
+    pub renewal: f32,            // 4 bytes
+    pub barnes_hut_enabled: u32, // 4 bytes (Total 32)
+    pub expanded_cortex: u32,    // 4 bytes: Expanded Cortex mod toggle (0=OFF, 1=ON)
+    pub sexual_selection: u32,   // 4 bytes: Natural Sexual Selection Tournament mod toggle (0=OFF, 1=ON)
+    pub tool_type: u32,          // 4 bytes
+    pub pad0: u32,               // 4 bytes (Total 48)
+    pub tool_pos: [f32; 2],      // 8 bytes
+    pub camera_pos: [f32; 2],    // 8 bytes (Total 64)
+    pub camera_size: [f32; 2],   // 8 bytes
+    pub _pad: [f32; 2],          // 8 bytes (Total 80)
+} // Total: 80 bytes (80 % 16 == 0)
 
 #[repr(C, align(16))]
 #[derive(Clone, Copy, Debug, bytemuck::Pod, bytemuck::Zeroable)]
 pub struct BirthEvent {
     pub parent_a: u32,          // 4 bytes
-    pub parent_b: u32,          // 4 bytes
+    pub parent_b: u32,          // 4 bytes: 0xFFFFFFFFu if asexual virgin birth
     pub child_slot: u32,        // 4 bytes
     pub pad: u32,               // 4 bytes: 16-byte WGSL alignment
 }
@@ -268,26 +292,21 @@ pub struct AudioVoice {
 
 #[repr(C, align(16))]
 #[derive(Clone, Copy, Debug, bytemuck::Pod, bytemuck::Zeroable)]
-pub struct GpuSimCounters {
-    pub freelist_top: u32,      // 4 bytes
-    pub birth_count: u32,       // 4 bytes
-    pub kills_total: u32,       // 4 bytes
-    pub audio_voice_count: u32, // 4 bytes: atomic counter for audio voice append
-} // Total: 16 bytes
-
-#[repr(C, align(16))]
-#[derive(Clone, Copy, Debug, bytemuck::Pod, bytemuck::Zeroable)]
 pub struct GpuTelemetry {
-    // Cache Line 0 (64 bytes): Global Simulation & Apex Records
-    pub population: u32,        // 4 bytes: active living agents
+    // Cache Line 0 (64 bytes): Engine Counters, Apex Records & Picking
+    pub population: u32,        // 4 bytes: active living agents (updated on final sub-tick)
     pub kills: u32,             // 4 bytes: total predatory kills this frame
     pub starvations: u32,       // 4 bytes: total starvation deaths this frame
     pub apex_record_milli: u32, // 4 bytes: highest energy recorded (atomicMax)
     pub food_grazed_milli: u32, // 4 bytes: total food consumed in millijoules
     pub sub_ticks_elapsed: u32, // 4 bytes: number of sub-ticks processed
     pub apex_agent_id: u32,     // 4 bytes: ID of apex creature
+    pub freelist_top: u32,      // 4 bytes: atomic stack top for tombstone freelist (merged from SimCounters)
+    pub birth_count: u32,       // 4 bytes: births queued this frame (merged from SimCounters)
+    pub audio_voice_count: u32, // 4 bytes: audio events queued this frame (merged from SimCounters)
+    pub selected_candidate: u32,// 4 bytes: atomicMin result ((priority<<30) | (dist_milli<<14) | agent_idx)
     pub pad0: u32,              // 4 bytes
-    pub _reserved0: [u32; 8],   // 32 bytes (Total Cache Line 0: 64B)
+    pub _reserved0: [u32; 4],   // 16 bytes: reserved (Total Cache Line 0: 64B)
 
     // Cache Line 1 (64 bytes): 16-Lineage Real-Time Extinction Monitoring
     pub lineage_counts: [u32; 16], // 16 * 4B = 64 bytes (head counts for roots 0..15)
@@ -369,10 +388,10 @@ fn test_freelist_dead_claimed_cas_prevents_double_free() {
 ```wgsl
 // WGSL CAS pop allocation: guards against underflow when carrying capacity is reached
 fn allocate_child_slot() -> u32 {
-    var cur_top = atomicLoad(&sim_counters.freelist_top);
+    var cur_top = atomicLoad(&telemetry.freelist_top);
     var child_slot = 0xFFFFFFFFu;
     while (cur_top > 0u) {
-        let cas = atomicCompareExchangeWeak(&sim_counters.freelist_top, cur_top, cur_top - 1u);
+        let cas = atomicCompareExchangeWeak(&telemetry.freelist_top, cur_top, cur_top - 1u);
         if (cas.exchanged) {
             child_slot = freelist[cur_top - 1u];
             break;
@@ -387,7 +406,7 @@ fn claim_death_and_free(victim_idx: u32) -> bool {
     let cas = atomicCompareExchangeWeak(&agent_atomics[victim_idx].dead_claimed, 0u, 1u);
     if (cas.exchanged) {
         agents[victim_idx].meta[7] = 1u; // dead = 1
-        let free_slot = atomicAdd(&sim_counters.freelist_top, 1u);
+        let free_slot = atomicAdd(&telemetry.freelist_top, 1u);
         freelist[free_slot] = victim_idx;
         return true;
     }
@@ -589,16 +608,25 @@ fn preamble_main(@builtin(global_invocation_id) id: vec3u) {
         atomicStore(&agent_atomics[id.x].dead_claimed, 0u);
     }
     if (id.x == 0u) {
-        atomicStore(&sim_counters.birth_count, 0u);
-        atomicStore(&sim_counters.audio_voice_count, 0u);
-        atomicStore(&telemetry.population, 0u);
-        atomicStore(&telemetry.kills, 0u);
-        atomicStore(&telemetry.starvations, 0u);
-        atomicStore(&telemetry.apex_record_milli, 0u);
-        atomicStore(&telemetry.food_grazed_milli, 0u);
+        atomicStore(&telemetry.birth_count, 0u);
+        atomicStore(&telemetry.audio_voice_count, 0u);
+        atomicStore(&telemetry.selected_candidate, 0xFFFFFFFFu);
+        // Clear cumulative counters on tick 0 or frame start if requested:
+        if (params.tick == 0u) {
+            atomicStore(&telemetry.kills, 0u);
+            atomicStore(&telemetry.starvations, 0u);
+            atomicStore(&telemetry.apex_record_milli, 0u);
+            atomicStore(&telemetry.food_grazed_milli, 0u);
+        }
     }
-    if (id.x < 16u) {
-        atomicStore(&telemetry.lineage_counts[id.x], 0u);
+    // Instantaneous census is cleared on the final sub-tick before living agents recount:
+    if (params.sub_tick == params.sub_ticks_per_frame - 1u) {
+        if (id.x == 0u) {
+            atomicStore(&telemetry.population, 0u);
+        }
+        if (id.x < 16u) {
+            atomicStore(&telemetry.lineage_counts[id.x], 0u);
+        }
     }
     if (id.x < 54u) {
         cell_offsets[id.x] = vec2u(0xFFFFFFFFu, 0xFFFFFFFFu);
@@ -648,10 +676,31 @@ for (var j = 0u; j < 6u; j += 1u) {
     out[j] = tanh(s * 0.66);
 }
 
-// Telemetry population, lineage head count, and apex record tracking (living agents):
-atomicAdd(&telemetry.population, 1u);
-atomicAdd(&telemetry.lineage_counts[a_root % 16u], 1u);
+// Telemetry instantaneous population census (evaluated strictly on the final sub-tick of frame):
+if (params.sub_tick == params.sub_ticks_per_frame - 1u) {
+    atomicAdd(&telemetry.population, 1u);
+    atomicAdd(&telemetry.lineage_counts[a_root % 16u], 1u);
+}
+// Apex energy record tracking across all sub-ticks:
 atomicMax(&telemetry.apex_record_milli, u32(max(0.0, a_energy) * 1000.0));
+
+// Two-Tier Euclidean atomicMin Distance Disambiguation (evaluated on Sub-Tick 1):
+if (params.sub_tick == 0u && params.tool_type == 0u /* inspect/pick */) {
+    let dx = abs(pos.x - params.tool_pos.x);
+    let d_toroid_x = min(dx, 900.0 - dx);
+    let dy = abs(pos.y - params.tool_pos.y);
+    let d_toroid_y = min(dy, 600.0 - dy);
+    let pick_dist = sqrt(d_toroid_x * d_toroid_x + d_toroid_y * d_toroid_y);
+
+    let visual_r = 2.0 + 3.0 * tr0;
+    let max_r = clamp(16.0 * (params.camera_size.x / 900.0), 4.0, 24.0);
+    if (pick_dist <= max_r) {
+        let priority = select(1u, 0u, pick_dist <= visual_r);
+        let dist_milli = u32(pick_dist * 1000.0);
+        let packed_candidate = (priority << 30) | (dist_milli << 14) | (agent_idx & 0x3FFFu);
+        atomicMin(&telemetry.selected_candidate, packed_candidate);
+    }
+}
 
 // Atomic soil grazing (coalesced L2 cache lines):
 let cell_idx = u32(pos.y / 12.0) * 75u + u32(pos.x / 12.0);
@@ -672,20 +721,21 @@ if (best_dist < contact_dist && a_attack > 0.25 && a_cooldown == 0u) {
     // Decisive killer attribution:
     if (old_energy_milli > 0 && old_energy_milli <= damage_milli) {
         agents[agent_idx].meta[6] += 1u; // kills++
-        atomicAdd(&sim_counters.kills_total, 1u);
         atomicAdd(&telemetry.kills, 1u);
         a_energy += min(9.0, 8.0 * tr5);
 
-        // Frustum-Culled Stochastic Audio Emission (Kill Event):
-        let cam_min = params.camera_pos - params.camera_size * 0.5;
-        let cam_max = params.camera_pos + params.camera_size * 0.5;
-        let in_view = (pos.x >= cam_min.x && pos.x <= cam_max.x && pos.y >= cam_min.y && pos.y <= cam_max.y);
+        // Toroidal Seam Frustum-Culled Stochastic Audio Emission (Kill Event):
+        let dx = abs(pos.x - params.camera_pos.x);
+        let dist_x = min(dx, 900.0 - dx);
+        let dy = abs(pos.y - params.camera_pos.y);
+        let dist_y = min(dy, 600.0 - dy);
+        let in_view = (dist_x <= params.camera_size.x * 0.5 && dist_y <= params.camera_size.y * 0.5);
         if (in_view) {
             let zoom_factor = clamp(1.0 - (params.camera_size.x - 150.0) / (900.0 - 150.0), 0.0, 1.0);
             let kill_volume = mix(0.08, 1.0, zoom_factor);
             let density_filter = select(1u, 4u, params.agent_count > 10000u);
             if (pcg_rand(agent_idx, victim_idx, params.tick) % density_filter == 0u) {
-                let voice_slot = atomicAdd(&sim_counters.audio_voice_count, 1u);
+                let voice_slot = atomicAdd(&telemetry.audio_voice_count, 1u);
                 if (voice_slot < 256u) {
                     queue_buffer.audio[voice_slot] = AudioVoice(pos, 1u /* EVENT_KILL */, kill_volume);
                 }
@@ -696,7 +746,7 @@ if (best_dist < contact_dist && a_attack > 0.25 && a_cooldown == 0u) {
         let claim_death = atomicCompareExchangeWeak(&agent_atomics[victim_idx].dead_claimed, 0u, 1u);
         if (claim_death.exchanged) {
             agents[victim_idx].meta[7] = 1u; // dead = 1
-            let free_slot = atomicAdd(&sim_counters.freelist_top, 1u);
+            let free_slot = atomicAdd(&telemetry.freelist_top, 1u);
             freelist[free_slot] = victim_idx;
         }
     }
@@ -708,50 +758,73 @@ if (a_energy <= 0.0) {
     let claim_death = atomicCompareExchangeWeak(&agent_atomics[agent_idx].dead_claimed, 0u, 1u);
     if (claim_death.exchanged) {
         agents[agent_idx].meta[7] = 1u; // dead = 1
-        let free_slot = atomicAdd(&sim_counters.freelist_top, 1u);
+        let free_slot = atomicAdd(&telemetry.freelist_top, 1u);
         freelist[free_slot] = agent_idx;
     }
 }
 
 // Mating handshake snippet in agent_step.wgsl:
 if (a_energy > 58.0 + 12.0 * tr0 && a_age > 65u && a_birth == 0u && brain_out5 > -0.15) {
-    if (best_dist < 18.0 && partner_energy > 42.0 && partner_root != a_root && pcg_rand(agent_idx, 99u, tick) < 0.15) {
-        let claim = atomicCompareExchangeWeak(&agent_atomics[partner_idx].mate_claim, 0u, agent_id);
-        if (claim.exchanged) {
-            // Handshake won! Allocate child slot via CAS loop preventing underflow at capacity:
-            var cur_top = atomicLoad(&sim_counters.freelist_top);
-            var child_slot = 0xFFFFFFFFu;
-            while (cur_top > 0u) {
-                let cas = atomicCompareExchangeWeak(&sim_counters.freelist_top, cur_top, cur_top - 1u);
-                if (cas.exchanged) {
-                    child_slot = freelist[cur_top - 1u];
-                    break;
+    var mate_partner = 0xFFFFFFFFu;
+    var sexual_success = false;
+
+    // Check if a viable partner is nearby:
+    if (best_dist < 18.0 && partner_energy > 42.0 && partner_root != a_root) {
+        if (params.sexual_selection == 1u) {
+            // Mod 3: Natural Sexual Selection Tournament (bid via atomicMax):
+            let bid = (u32(a_energy * 100.0) << 16) | (agent_idx & 0xFFFFu);
+            atomicMax(&agent_atomics[partner_idx].mate_claim, bid);
+            mate_partner = partner_idx;
+            sexual_success = true;
+        } else if (pcg_rand(agent_idx, 99u, tick) < 0.15) {
+            // Optimization A: Canonical Symmetry Breaking (partner_id > agent_id cuts bus traffic 50%):
+            if (agents[partner_idx].meta[0] > agent_id) {
+                let claim = atomicCompareExchangeWeak(&agent_atomics[partner_idx].mate_claim, 0u, agent_id);
+                if (claim.exchanged) {
+                    mate_partner = partner_idx;
+                    sexual_success = true;
                 }
-                cur_top = cas.old_value;
             }
+        }
+    }
 
-            if (child_slot != 0xFFFFFFFFu) {
-                atomicSub(&agent_atomics[agent_idx].energy_milli, 24000);
-                atomicSub(&agent_atomics[partner_idx].energy_milli, 6000);
-                a_birth = 95u;
+    // Handshake complete or asexual fallback! Allocate child slot via CAS loop:
+    var cur_top = atomicLoad(&telemetry.freelist_top);
+    var child_slot = 0xFFFFFFFFu;
+    while (cur_top > 0u) {
+        let cas = atomicCompareExchangeWeak(&telemetry.freelist_top, cur_top, cur_top - 1u);
+        if (cas.exchanged) {
+            child_slot = freelist[cur_top - 1u];
+            break;
+        }
+        cur_top = cas.old_value;
+    }
 
-                let queue_idx = atomicAdd(&sim_counters.birth_count, 1u);
-                if (queue_idx < 1024u) {
-                    queue_buffer.births[queue_idx] = BirthEvent(agent_idx, partner_idx, child_slot, 0u);
-                }
+    if (child_slot != 0xFFFFFFFFu) {
+        atomicSub(&agent_atomics[agent_idx].energy_milli, 24000);
+        if (sexual_success && mate_partner != 0xFFFFFFFFu) {
+            atomicSub(&agent_atomics[mate_partner].energy_milli, 6000);
+        }
+        a_birth = 95u;
 
-                // Birth Audio Voice Emission:
-                let cam_min = params.camera_pos - params.camera_size * 0.5;
-                let cam_max = params.camera_pos + params.camera_size * 0.5;
-                let in_view = (pos.x >= cam_min.x && pos.x <= cam_max.x && pos.y >= cam_min.y && pos.y <= cam_max.y);
-                if (in_view) {
-                    let zoom_factor = clamp(1.0 - (params.camera_size.x - 150.0) / (900.0 - 150.0), 0.0, 1.0);
-                    let birth_volume = mix(0.06, 0.8, zoom_factor);
-                    let voice_slot = atomicAdd(&sim_counters.audio_voice_count, 1u);
-                    if (voice_slot < 256u) {
-                        queue_buffer.audio[voice_slot] = AudioVoice(pos, 2u /* EVENT_BIRTH */, birth_volume);
-                    }
-                }
+        // Optimization B: Seamless Asexual Fallback (mate_partner = 0xFFFFFFFFu when virgin birth):
+        let queue_idx = atomicAdd(&telemetry.birth_count, 1u);
+        if (queue_idx < 1024u) {
+            queue_buffer.births[queue_idx] = BirthEvent(agent_idx, mate_partner, child_slot, 0u);
+        }
+
+        // Toroidal Seam Frustum-Culled Birth Audio Voice:
+        let dx = abs(pos.x - params.camera_pos.x);
+        let dist_x = min(dx, 900.0 - dx);
+        let dy = abs(pos.y - params.camera_pos.y);
+        let dist_y = min(dy, 600.0 - dy);
+        let in_view = (dist_x <= params.camera_size.x * 0.5 && dist_y <= params.camera_size.y * 0.5);
+        if (in_view) {
+            let zoom_factor = clamp(1.0 - (params.camera_size.x - 150.0) / (900.0 - 150.0), 0.0, 1.0);
+            let birth_volume = mix(0.06, 0.8, zoom_factor);
+            let voice_slot = atomicAdd(&telemetry.audio_voice_count, 1u);
+            if (voice_slot < 256u) {
+                queue_buffer.audio[voice_slot] = AudioVoice(pos, 2u /* EVENT_BIRTH */, birth_volume);
             }
         }
     }
@@ -832,20 +905,30 @@ fn test_dual_engine_live_hotswap_parity() {
 #[test]
 fn test_gpu_telemetry_and_extinction_detection() {
     // Verifies:
-    // 1. 128-byte GpuTelemetry reads back via DMA staging buffer
+    // 1. 128-byte GpuTelemetry reads back via DMA staging buffer (8ns)
     // 2. apex_record_milli accurately reflects atomicMax of creature energy
     // 3. 16-lineage counts detect lineage extinction via zero-search without scanning agent buffer
 }
 
 #[test]
-fn test_picking_visual_consistency_at_32x_speed() {
+fn test_two_tier_atomic_min_picking_disambiguation() {
     // Verifies:
-    // 1. In a 32-tick batch, picking evaluates strictly on Sub-Tick 1 with 16px hitbox
-    // 2. Picked agent index is locked across Sub-Ticks 2..32, matching the rendered visual frame
+    // 1. In a 32-tick batch, picking evaluates strictly on Sub-Tick 1
+    // 2. Direct body hit (Priority 0) beats proximity halo (Priority 1)
+    // 3. Packed atomicMin resolves sub-pixel Euclidean distance ties between clustered agents
+    // 4. Specimen picking identity guard (slot_idx, agent_id) flags death if slot recycled
+}
+
+#[test]
+fn test_mating_canonical_symmetry_and_sexual_selection_mod() {
+    // Verifies:
+    // 1. Canonical symmetry breaking (partner_id > agent_id) eliminates mutual race conditions
+    // 2. Seamless asexual fallback (child(a, null)) when partner unavailable or claim fails
+    // 3. Mod 3 Sexual Selection Tournament: atomicMax chooses fittest suitor
 }
 ```
 - [ ] **Step 2: Run test to verify it fails**
-- [ ] **Step 3: Implement engine switch in Bevy UI, bi-directional state bridge (`sync_rust_to_gpu` / `sync_gpu_to_rust`), 128-byte DMA telemetry readbacks, 32x speed picking locking on Sub-Tick 1, Bevy audio playback reading 256-voice queue, connect LBVH frustum culling, draw Minimap LOD clusters, and wire `[BARNES-HUT: OFF/ON]` and `[EXPANDED CORTEX: OFF/ON]` mod toggles to `GpuSimParams`**
+- [ ] **Step 3: Implement engine switch in Bevy UI, bi-directional state bridge (`sync_rust_to_gpu` / `sync_gpu_to_rust`), 128-byte DMA telemetry readbacks, 32x speed picking locking on Sub-Tick 1 with `(slot_idx, agent_id)` identity guard, Two-Tier `atomicMin` distance disambiguation, Bevy audio playback reading 256-voice queue, connect LBVH frustum culling, draw Minimap LOD clusters, and wire `[BARNES-HUT: OFF/ON]`, `[EXPANDED CORTEX: OFF/ON]`, and `[SEXUAL SELECTION: OFF/ON]` mod toggles to `GpuSimParams`**
 - [ ] **Step 4: Run all workspace tests (`cargo test --workspace`) ensuring 100% pass**
 - [ ] **Step 5: Build release (`cargo build -p clank_app --release`), capture GPU screenshot via API (`POST /screenshot`), inspect with `view_file`**
 - [ ] **Step 6: Git commit on `feature/bevy-gpu`**
@@ -873,11 +956,12 @@ cargo test -p clank_app --test dual_engine_test
 2. Launch native application and trigger `POST /screenshot` via Python test harness.
 3. Visually inspect screenshot using `view_file` to confirm:
    - Top header engine badge displays active mode (`ENGINE: RUST` vs `ENGINE: GPU`).
+   - Mod toggle badges display active states (`[BARNES-HUT]`, `[EXPANDED CORTEX]`, `[SEXUAL SELECTION]`).
    - Creatures move, feed, fight, and reproduce with identical visual fidelity.
    - Soil texture renders smoothly without artifacts.
    - Zooming in uses LBVH frustum culling without visual pop-in.
    - Dragging AoE tools (Extinguish, Nourish, Blight) operates in $O(\log N)$ time.
    - Minimap draws cluster density discs from intermediate LBVH levels.
    - UI metrics (population, generation, record graph) update in real-time from 128-byte `GpuTelemetry`.
-   - Clicking on a creature at 32x speed accurately selects the clicked specimen on the specimen card.
-   - Audio sounds modulate dynamically with zoom level (quiet murmur zoomed out, crisp bites zoomed in).
+   - Clicking on a creature in a dense swarm at 32x speed accurately selects the clicked specimen without cluster jumping.
+   - Audio sounds modulate dynamically with zoom level (quiet murmur zoomed out, crisp bites zoomed in) and pan smoothly across the toroidal seam.
