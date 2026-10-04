@@ -124,9 +124,9 @@
     - **Operation 4: Savefile Backward Compatibility**: Saving always extracts the canonical 326 `i8` genes into `AgentData`, ensuring all `.clank` and `.json` files are 100% cross-compatible between CPU and GPU engines.
     - **Operation 5: Struct Tail Padding Acceleration (`_pad: [u32; 4]`)**: `_pad[0]` caches the precalculated 32-bit Morton code (eliminating redundant bit-interleaving across secondary passes), and `_pad[1]` caches the packed lineage color (`rgba8unorm`) for direct dart mesh instancing without runtime palette queries.
 
-15. **Frustum-Culled Stochastic Audio (256 Voices = 4 KB)**:
+15. **Frustum-Culled Stochastic Audio (256 Voices = 4 KB) & Scaled Birth Queue (65,536 Events = 1 MB)**:
     - **Single Page-Aligned Voice Buffer**: Audio events (bites, kills, births) are emitted to a fixed 256-voice atomic append buffer (`AudioVoice`: 16 bytes: `pos: [f32; 2]`, `event_type: u32`, `volume: f32`). 256 voices $\times$ 16 bytes = 4,096 bytes (4 KB, exactly 1 hardware memory page).
-    - **Consolidated 20 KB Queue Buffer**: Combined with the 1,024-entry birth queue ($16\text{ KB}$), the unified queue storage buffer is exactly $20\text{ KB}$ ($20,480\text{ bytes}$, divisible by 4, cache-line aligned).
+    - **Consolidated 1,028 KB Queue Buffer**: Scaled to support reproductive population booms in swarms of 1,000,000 agents without dropping births. Combined with the 65,536-entry birth queue ($1,024\text{ KB} = 1.0\text{ MB}$), the unified queue storage buffer is exactly $1,028\text{ KB}$ ($1,052,672\text{ bytes}$, $1,028\text{ KB} \ll 128\text{ MB}$ WebGPU storage buffer limit, 16-byte aligned).
     - **Toroidal Seam Viewport Frustum Culling**: Events occurring outside the camera viewport are culled directly on the GPU using toroidal shortest distances:
       ```wgsl
       let dx = abs(pos.x - params.camera_pos.x);
@@ -165,7 +165,7 @@
     - **Layer 3: Parallel Radix / Prefix Bit-Packing & Stream Compaction**:
       - *8-Byte Morton Indirection Sorting (Task 4)*: Radix sort operates over `vec2u(morton_key, slot_idx)`, reducing sorting bus bandwidth by **$64\times$** compared to shifting 512-byte structs.
       - *Camera Frustum Stream Compaction (Task 6)*: Visible creatures are compacted via parallel prefix scans (`atomicAdd(&draw_args.instance_count, 1u)`) into `visible_agent_indices: array<u32>`, driving `draw_indirect` with 0 CPU intervention.
-      - *Page-Aligned Event Compaction (Task 5)*: Discrete births and audio voices are packed into the unified 20 KB `ConsolidatedQueue`.
+      - *Page-Aligned Event Compaction (Task 5)*: Discrete births and audio voices are packed into the unified 1,028 KB `ConsolidatedQueue` (65,536 births = 1 MB, 256 audio voices = 4 KB).
     - **Layer 4: In-Shader Domain Compression & Mathematical Equivalence Proof**:
       - *Neural Quantization (`unpack4x8snorm`)*: The HTML reference (`clankolution.html`) already stores genes as `Int8Array(326)` and scales hidden sums by `0.61 / 127.0`. The built-in WGSL instruction `unpack4x8snorm(word)` executes the exact division by `127.0` in hardware. The floating-point matrix math is **100% bit-exact to the JavaScript engine**.
       - *Morton Coordinate Compression*: Continuous kinematics $(x, y, v_x, v_y)$ are always stored as full 32-bit floats (`f32`); Morton codes are strictly used as spatial hash keys for bucket sorting.
@@ -626,8 +626,8 @@ fn spatial_query_main(@builtin(global_invocation_id) id: vec3u) {
         var best_priority = 2u; // 0 = direct body hit, 1 = halo, 2 = none
         var best_dist = search_r;
 
-        // Stack-based O(log N) LBVH traversal:
-        var stack: array<u32, 32>;
+        // Stack-based O(log N) LBVH traversal (depth 64 safely bounds tree height for 1M+ agents):
+        var stack: array<u32, 64>;
         var stack_ptr = 0u;
         stack[stack_ptr] = 0u; // Root node
         stack_ptr += 1u;
@@ -664,8 +664,8 @@ fn spatial_query_main(@builtin(global_invocation_id) id: vec3u) {
                     }
                 }
             } else {
-                // Internal node: push children
-                if (stack_ptr < 30u) {
+                // Internal node: push children (guard stack capacity of 64 entries)
+                if (stack_ptr < 62u) {
                     stack[stack_ptr] = node.right_child; stack_ptr += 1u;
                     stack[stack_ptr] = node.left_child;  stack_ptr += 1u;
                 }
@@ -773,10 +773,10 @@ override ENABLE_BARNES_HUT: bool = false;
 override ENABLE_EXPANDED_CORTEX: bool = false;
 override ENABLE_SEXUAL_SELECTION: bool = false;
 
-// Consolidated Queue Buffer (Binding 6: exactly 20 KB = 16 KB births + 4 KB audio):
+// Consolidated Queue Buffer (Binding 6: exactly 1,028 KB = 1 MB births [65,536] + 4 KB audio [256]):
 struct ConsolidatedQueue {
-    births: array<BirthEvent, 1024>, // 16 KB
-    audio: array<AudioVoice, 256>,   // 4 KB (1 memory page)
+    births: array<BirthEvent, 65536>, // 1,048,576 bytes (1,024 KB = 1 MB)
+    audio: array<AudioVoice, 256>,    // 4,096 bytes (4 KB, 1 memory page)
 }
 @group(0) @binding(6) var<storage, read_write> queue_buffer: ConsolidatedQueue;
 @group(0) @binding(7) var<storage, read_write> telemetry: GpuTelemetry;
@@ -912,44 +912,49 @@ if (a_energy > 58.0 + 12.0 * tr0 && a_age > 65u && a_birth == 0u && brain_out5 >
         }
     }
 
-    // Handshake complete or asexual fallback! Allocate child slot via CAS loop:
-    var cur_top = atomicLoad(&telemetry.freelist_top);
-    var child_slot = 0xFFFFFFFFu;
-    while (cur_top > 0u) {
-        let cas = atomicCompareExchangeWeak(&telemetry.freelist_top, cur_top, cur_top - 1u);
-        if (cas.exchanged) {
-            child_slot = freelist[cur_top - 1u];
-            break;
-        }
-        cur_top = cas.old_value;
-    }
-
-    if (child_slot != 0xFFFFFFFFu) {
-        atomicSub(&agent_atomics[agent_idx].energy_milli, 24000);
-        if (sexual_success && mate_partner != 0xFFFFFFFFu) {
-            atomicSub(&agent_atomics[mate_partner].energy_milli, 6000);
-        }
-        a_birth = 95u;
-
-        // Optimization B: Seamless Asexual Fallback (mate_partner = 0xFFFFFFFFu when virgin birth):
-        let queue_idx = atomicAdd(&telemetry.birth_count, 1u);
-        if (queue_idx < 1024u) {
-            queue_buffer.births[queue_idx] = BirthEvent(agent_idx, mate_partner, child_slot, 0u);
-        }
-
-        // Toroidal Seam Frustum-Culled Birth Audio Voice:
-        let dx = abs(pos.x - params.camera_pos.x);
-        let dist_x = min(dx, 900.0 - dx);
-        let dy = abs(pos.y - params.camera_pos.y);
-        let dist_y = min(dy, 600.0 - dy);
-        let in_view = (dist_x <= params.camera_size.x * 0.5 && dist_y <= params.camera_size.y * 0.5);
-        if (in_view) {
-            let zoom_factor = clamp(1.0 - (params.camera_size.x - 150.0) / (900.0 - 150.0), 0.0, 1.0);
-            let birth_volume = mix(0.06, 0.8, zoom_factor);
-            let voice_slot = atomicAdd(&telemetry.audio_voice_count, 1u);
-            if (voice_slot < 256u) {
-                queue_buffer.audio[voice_slot] = AudioVoice(pos, 2u /* EVENT_BIRTH */, birth_volume);
+    // Handshake complete or asexual fallback!
+    // 1. Reserve birth queue index FIRST to prevent freelist slot leakage if queue saturates:
+    let queue_idx = atomicAdd(&telemetry.birth_count, 1u);
+    if (queue_idx < 65536u) {
+        // 2. Allocate child slot via CAS pop loop:
+        var cur_top = atomicLoad(&telemetry.freelist_top);
+        var child_slot = 0xFFFFFFFFu;
+        while (cur_top > 0u) {
+            let cas = atomicCompareExchangeWeak(&telemetry.freelist_top, cur_top, cur_top - 1u);
+            if (cas.exchanged) {
+                child_slot = freelist[cur_top - 1u];
+                break;
             }
+            cur_top = cas.old_value;
+        }
+
+        if (child_slot != 0xFFFFFFFFu) {
+            atomicSub(&agent_atomics[agent_idx].energy_milli, 24000);
+            if (sexual_success && mate_partner != 0xFFFFFFFFu) {
+                atomicSub(&agent_atomics[mate_partner].energy_milli, 6000);
+            }
+            a_birth = 95u;
+
+            // Optimization B: Seamless Asexual Fallback (mate_partner = 0xFFFFFFFFu when virgin birth):
+            queue_buffer.births[queue_idx] = BirthEvent(agent_idx, mate_partner, child_slot, 0u);
+
+            // Toroidal Seam Frustum-Culled Birth Audio Voice:
+            let dx = abs(pos.x - params.camera_pos.x);
+            let dist_x = min(dx, 900.0 - dx);
+            let dy = abs(pos.y - params.camera_pos.y);
+            let dist_y = min(dy, 600.0 - dy);
+            let in_view = (dist_x <= params.camera_size.x * 0.5 && dist_y <= params.camera_size.y * 0.5);
+            if (in_view) {
+                let zoom_factor = clamp(1.0 - (params.camera_size.x - 150.0) / (900.0 - 150.0), 0.0, 1.0);
+                let birth_volume = mix(0.06, 0.8, zoom_factor);
+                let voice_slot = atomicAdd(&telemetry.audio_voice_count, 1u);
+                if (voice_slot < 256u) {
+                    queue_buffer.audio[voice_slot] = AudioVoice(pos, 2u /* EVENT_BIRTH */, birth_volume);
+                }
+            }
+        } else {
+            // Freelist was empty (population at carrying capacity): mark birth event as invalid/empty
+            queue_buffer.births[queue_idx] = BirthEvent(0xFFFFFFFFu, 0xFFFFFFFFu, 0xFFFFFFFFu, 0u);
         }
     }
 }
@@ -962,10 +967,11 @@ override ENABLE_EXPANDED_CORTEX: bool = false;
 
 @compute @workgroup_size(32)
 fn birth_main(@builtin(workgroup_id) wg_id: vec3u, @builtin(local_invocation_id) local_id: vec3u) {
-    let event = birth_queue[wg_id.x];
+    let event = queue_buffer.births[wg_id.x];
+    let child_idx = event.child_slot;
+    if (child_idx == 0xFFFFFFFFu) { return; } // Carrying capacity reached or invalid entry
     let parent_a = event.parent_a;
     let parent_b = event.parent_b;
-    let child_idx = event.child_slot;
 
     // Parallel genome crossover & mutation (88 u32 words = 10*7 + 6*3)
     for (var w = local_id.x; w < 88u; w += 32u) {
