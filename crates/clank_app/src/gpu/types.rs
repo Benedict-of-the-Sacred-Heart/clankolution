@@ -38,7 +38,7 @@ pub struct GpuAgentAtomic {
 }
 
 #[repr(C, align(16))]
-#[derive(Clone, Copy, Debug, PartialEq, bytemuck::Pod, bytemuck::Zeroable)]
+#[derive(Clone, Copy, Debug, PartialEq, Default, bytemuck::Pod, bytemuck::Zeroable)]
 pub struct GpuSimParams {
     // Simulation Physics & Rates (16B)
     pub tick: u32,                  // 4 bytes  (0..4)
