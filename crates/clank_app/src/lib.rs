@@ -5,3 +5,4 @@ pub mod rendering;
 pub mod ui;
 pub mod theme;
 pub mod api;
+pub mod gpu;
