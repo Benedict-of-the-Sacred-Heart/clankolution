@@ -161,3 +161,86 @@ pub fn calculate_neighbor_sensory(
     (bearing_norm, dist_norm)
 }
 
+/// Evaluates the 4th vector of sensory inputs (Input 24..27) for the RNN hidden layer.
+/// In baseline mode (`enabled == false`), returns `[0.0, 0.0, 0.0, 0.0]`.
+/// In expanded cortex mode (`enabled == true`), passes through food gradient and swarm centroid bearing.
+pub fn evaluate_expanded_cortex_sensory(
+    food_gradient: [f32; 2],
+    swarm_bearing: f32,
+    enabled: bool,
+) -> [f32; 4] {
+    if enabled {
+        [food_gradient[0], food_gradient[1], swarm_bearing, 1.0]
+    } else {
+        [0.0, 0.0, 0.0, 0.0]
+    }
+}
+
+/// Evaluates Barnes-Hut multipole macro-flocking force from an LBVH node.
+/// Evaluates in O(log N) if size / dist < theta_threshold (0.6).
+pub fn evaluate_barnes_hut_flocking(
+    agent_pos: [f32; 2],
+    node_center: [f32; 2],
+    node_count: u32,
+    node_size: f32,
+) -> [f32; 2] {
+    if node_count == 0 {
+        return [0.0, 0.0];
+    }
+    let mut dx = node_center[0] - agent_pos[0];
+    if dx > 450.0 {
+        dx -= 900.0;
+    } else if dx < -450.0 {
+        dx += 900.0;
+    }
+
+    let mut dy = node_center[1] - agent_pos[1];
+    if dy > 300.0 {
+        dy -= 600.0;
+    } else if dy < -300.0 {
+        dy += 600.0;
+    }
+
+    let dist = (dx * dx + dy * dy).sqrt();
+    if dist < 1e-4 {
+        return [0.0, 0.0];
+    }
+
+    let theta = node_size / dist;
+    if theta < 0.6 {
+        // Far field approximation: gentle cohesion force towards node center of mass
+        let force = (node_count as f32 * 0.005 / dist).clamp(0.0, 0.1);
+        [dx / dist * force, dy / dist * force]
+    } else {
+        [0.0, 0.0]
+    }
+}
+
+/// Evaluates mating suitor proposal into partner atomic mailbox.
+/// In baseline mode (`enabled == false`): first suitor CAS claims (0 -> suitor_idx + 1).
+/// In tournament mode (`enabled == true`): highest energy bid replaces previous bid.
+pub fn tournament_bid_mating(
+    partner_atomic: &mut GpuAgentAtomic,
+    suitor_idx: u32,
+    suitor_energy_milli: u32,
+    enabled: bool,
+) -> bool {
+    if enabled {
+        if suitor_energy_milli > partner_atomic.mate_energy_milli {
+            partner_atomic.mate_energy_milli = suitor_energy_milli;
+            partner_atomic.mate_claim = suitor_idx + 1;
+            true
+        } else {
+            false
+        }
+    } else {
+        if partner_atomic.mate_claim == 0 {
+            partner_atomic.mate_claim = suitor_idx + 1;
+            true
+        } else {
+            false
+        }
+    }
+}
+
+

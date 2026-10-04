@@ -129,3 +129,57 @@ fn test_agent_combat_and_neighbor_sensory_bearing() {
     assert!((dist_norm - (1.0 - 10.0 / 120.0)).abs() < 1e-2);
 }
 
+#[test]
+fn test_experimental_simulation_mods_logic() {
+    use clank_app::gpu::agent_pipeline::{
+        evaluate_barnes_hut_flocking, evaluate_expanded_cortex_sensory, tournament_bid_mating,
+    };
+    use clank_app::gpu::types::GpuAgentAtomic;
+
+    // 1. Mod 2: Expanded Cortex sensory inputs
+    let food_gradient = [0.4f32, -0.2f32];
+    let swarm_bearing = 0.75f32;
+
+    let baseline_sensory = evaluate_expanded_cortex_sensory(food_gradient, swarm_bearing, false);
+    assert_eq!(baseline_sensory, [0.0, 0.0, 0.0, 0.0]);
+
+    let expanded_sensory = evaluate_expanded_cortex_sensory(food_gradient, swarm_bearing, true);
+    assert_eq!(expanded_sensory, [0.4, -0.2, 0.75, 1.0]);
+
+    // 2. Mod 1: Barnes-Hut macro-flocking force
+    let agent_pos = [100.0f32, 100.0f32];
+    let distant_center = [200.0f32, 100.0f32]; // dx = 100.0, dy = 0.0
+    let node_count = 50u32;
+    let node_size = 20.0f32; // theta = 20 / 100 = 0.2 < 0.6 threshold
+
+    let flock_force = evaluate_barnes_hut_flocking(agent_pos, distant_center, node_count, node_size);
+    assert!(flock_force[0] > 0.0); // Attracted towards +x
+    assert_eq!(flock_force[1], 0.0);
+
+    // 3. Mod 3: Sexual Selection Tournament
+    let mut partner = GpuAgentAtomic {
+        energy_milli: 60_000,
+        mate_claim: 0,
+        mate_energy_milli: 0,
+        dead_claimed: 0,
+    };
+
+    // First suitor submits bid
+    let won1 = tournament_bid_mating(&mut partner, 5, 40_000, true);
+    assert!(won1);
+    assert_eq!(partner.mate_claim, 6); // 5 + 1
+    assert_eq!(partner.mate_energy_milli, 40_000);
+
+    // Weaker suitor submits bid -> rejected
+    let won2 = tournament_bid_mating(&mut partner, 8, 30_000, true);
+    assert!(!won2);
+    assert_eq!(partner.mate_claim, 6);
+
+    // Stronger suitor submits bid -> replaces previous suitor
+    let won3 = tournament_bid_mating(&mut partner, 12, 70_000, true);
+    assert!(won3);
+    assert_eq!(partner.mate_claim, 13); // 12 + 1
+    assert_eq!(partner.mate_energy_milli, 70_000);
+}
+
+

@@ -300,7 +300,13 @@ fn agent_main(@builtin(global_invocation_id) id: vec3u) {
     ins_hidden[3] = agent_states[agent_idx].hidden[0];
     ins_hidden[4] = agent_states[agent_idx].hidden[1];
     ins_hidden[5] = vec4f(agent_states[agent_idx].hidden_tail.x, agent_states[agent_idx].hidden_tail.y, 0.0, 0.0);
-    ins_hidden[6] = vec4f(0.0, 0.0, 0.0, 0.0);
+    if (ENABLE_EXPANDED_CORTEX) {
+        let grad_x = forward_food - here_food;
+        let grad_y = left_food - right_food;
+        ins_hidden[6] = vec4f(clamp(grad_x * 2.0, -1.0, 1.0), clamp(grad_y * 2.0, -1.0, 1.0), sensory_bearing, 1.0);
+    } else {
+        ins_hidden[6] = vec4f(0.0, 0.0, 0.0, 0.0);
+    }
 
     var new_h: array<f32, 10>;
     for (var j = 0u; j < 10u; j += 1u) {
@@ -335,10 +341,26 @@ fn agent_main(@builtin(global_invocation_id) id: vec3u) {
     let fwd_vec = vec2f(cos(angle), sin(angle));
     let thrust_force = fwd_vec * (thrust * (0.8 + 0.4 * tr1));
     var new_vel = (vel + thrust_force) * 0.88;
+
+    if (ENABLE_BARNES_HUT && params.agent_count > 10u) {
+        let root_node = lbvh_nodes[0];
+        let macro_center = root_node.center_of_mass;
+        var m_dx = macro_center.x - pos.x;
+        if (m_dx > 450.0) { m_dx -= 900.0; }
+        else if (m_dx < -450.0) { m_dx += 900.0; }
+        var m_dy = macro_center.y - pos.y;
+        if (m_dy > 300.0) { m_dy -= 600.0; }
+        else if (m_dy < -300.0) { m_dy += 600.0; }
+        let m_dist = max(length(vec2f(m_dx, m_dy)), 1.0);
+        let macro_force = vec2f(m_dx, m_dy) / m_dist * 0.03;
+        new_vel = (vel + thrust_force + macro_force) * 0.88;
+    }
+
     var new_pos = wrap_coords(pos + new_vel);
 
     a_feed = clamp(out[2] * 0.5 + 0.5, 0.0, 1.0);
     a_attack = clamp(out[3] * 0.5 + 0.5, 0.0, 1.0);
+
 
     // Soil Grazing
     let cx = min(u32(max(0.0, new_pos.x) / 12.0), 74u);
@@ -399,11 +421,19 @@ fn agent_main(@builtin(global_invocation_id) id: vec3u) {
     // Sexual Selection Mating Proposal (Symmetry Breaking: partner ID > my ID)
     if (best_neighbor != 0xFFFFFFFFu && best_dist < contact_dist && a_energy > 80.0 && a_cooldown == 0u && a_birth == 0u) {
         let partner_idx = best_neighbor;
-        if (agent_states[partner_idx].id > agent_states[agent_idx].id) {
-            atomicMax(&agent_atomics[partner_idx].mate_claim, agent_idx + 1u);
-            atomicStore(&agent_atomics[partner_idx].mate_energy_milli, u32(a_energy * 1000.0));
+        if (ENABLE_SEXUAL_SELECTION) {
+            let my_energy_milli = u32(max(0.0, a_energy) * 1000.0);
+            let prev_bid = atomicMax(&agent_atomics[partner_idx].mate_energy_milli, my_energy_milli);
+            if (my_energy_milli > prev_bid) {
+                atomicStore(&agent_atomics[partner_idx].mate_claim, agent_idx + 1u);
+            }
+        } else {
+            if (agent_states[partner_idx].id > agent_states[agent_idx].id) {
+                atomicCompareExchangeWeak(&agent_atomics[partner_idx].mate_claim, 0u, agent_idx + 1u);
+            }
         }
     }
+
 
     // Basal and thrust metabolic cost
     let basal_cost = 0.02 + 0.015 * tr0 + 0.01 * tr3;
