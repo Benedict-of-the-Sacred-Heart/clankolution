@@ -87,9 +87,14 @@
 
 13. **GPU Particle Sparks & Mesh Instancing**:
     - 16,384+ drifting sparks updated in an isolated GPU compute pass (velocity decay, alpha fading).
-13. **GPU Particle Sparks & Mesh Instancing**:
-    - 16,384+ drifting sparks updated in an isolated GPU compute pass (velocity decay, alpha fading).
     - Instanced creature dart mesh generation on the GPU.
+
+14. **Operations Utilizing the Padded Values & 512-Byte Layout ($2^9$)**:
+    - **Operation 1: Neural Forward Pass (`agent_step.wgsl`)**: In baseline mode (`expanded_cortex == 0u`), dummy input slots are set to `0.0`, guaranteeing 100% bit-exact parity with HTML. In Expanded Cortex mode (`expanded_cortex == 1u`), slots are actively fed chemical tangent gradients and LBVH swarm cluster centroid bearings.
+    - **Operation 2: Genome Mutation Masking (`birth_step.wgsl`)**: In baseline mode, mutation applies a bitmask (`word & 0x0000FFFFu`) to the 7th word of hidden neurons and 3rd word of output neurons, preventing silent random drift in inactive weights. When Expanded Cortex is toggled ON, the mask is lifted and mutations actively evolve novel traits.
+    - **Operation 3: Dual-Engine Live Hot-Swapping (`sync_rust_to_gpu` & `sync_gpu_to_rust`)**: Exact bit-level pack/unpack maps 326 sequential `i8` genes into 88 vec4-aligned `u32` words (7 words per hidden neuron, 3 words per output neuron) with zero loss or drift.
+    - **Operation 4: Savefile Backward Compatibility**: Saving always extracts the canonical 326 `i8` genes into `AgentData`, ensuring all `.clank` and `.json` files are 100% cross-compatible between CPU and GPU engines.
+    - **Operation 5: Struct Tail Padding Acceleration (`_pad: [u32; 4]`)**: `_pad[0]` caches the precalculated 32-bit Morton code (eliminating redundant bit-interleaving across secondary passes), and `_pad[1]` caches the packed lineage color (`rgba8unorm`) for direct dart mesh instancing without runtime palette queries.
 
 ---
 
@@ -98,7 +103,7 @@
 - [ ] **Task 1: Branch Setup & GPU Compute Architecture Scaffolding**
   - Create branch `feature/bevy-gpu` from `feature/bevy-port`.
   - Add `bytemuck = { version = "1.21", features = ["derive"] }` to `crates/clank_app/Cargo.toml`.
-  - Add `gpu` module in `crates/clank_app/src/gpu/` with buffer types, `GpuAgent` (496B, 88 words), `GpuAgentAtomic` (with `dead_claimed`), `GpuSimParams` (64B), `GpuLbvhNode` (48B), `GpuSoilCell` (16B), `GpuSimCounters` (16B), and pipeline skeletons.
+  - Add `gpu` module in `crates/clank_app/src/gpu/` with buffer types, `GpuAgent` (512B, 88 words, exact $2^9$ power-of-two), `GpuAgentAtomic` (with `dead_claimed`), `GpuSimParams` (64B), `GpuLbvhNode` (48B), `GpuSoilCell` (16B), `GpuSimCounters` (16B), and pipeline skeletons.
   - Implement unit tests for GPU struct memory layouts and 16-byte WGSL alignment.
 
 - [ ] **Task 2: Tombstone Freelist & Zero-Copy Agent Storage Buffer**
@@ -162,7 +167,7 @@ use clank_app::gpu::types::{GpuAgent, GpuSimParams, GpuLbvhNode, GpuAgentAtomic,
 #[test]
 fn test_gpu_struct_alignments() {
     assert_eq!(std::mem::size_of::<GpuAgent>() % 16, 0);
-    assert_eq!(std::mem::size_of::<GpuAgent>(), 496);
+    assert_eq!(std::mem::size_of::<GpuAgent>(), 512);
     assert_eq!(std::mem::size_of::<GpuSimParams>() % 16, 0);
     assert_eq!(std::mem::size_of::<GpuSimParams>(), 64);
     assert_eq!(std::mem::size_of::<GpuLbvhNode>() % 16, 0);
@@ -184,13 +189,14 @@ fn test_gpu_struct_alignments() {
 #[repr(C, align(16))]
 #[derive(Clone, Copy, Debug, bytemuck::Pod, bytemuck::Zeroable)]
 pub struct GpuAgent {
-    pub pos_vel: [f32; 4],      // 16 bytes: x, y, vx, vy
+    pub pos_vel: [f32; 4],      // 16 bytes: x, y, vx, vy (Cache Line 0 start)
     pub angle_energy: [f32; 4], // 16 bytes: angle, energy, feeding, attack
-    pub traits: [f32; 8],       // 32 bytes: tr[0..5], signal, last_victim
-    pub hidden: [f32; 12],      // 48 bytes: h[0..9], pad, pad
+    pub traits: [f32; 8],       // 32 bytes: tr[0..5], signal, last_victim (Cache Line 0 end: 64B)
+    pub hidden: [f32; 12],      // 48 bytes: h[0..9] recurrent hidden states, pad, pad
     pub meta: [u32; 8],         // 32 bytes: id, root, gen, age, cooldown, birth, kills, dead
     pub packed_genes: [u32; 88],// 352 bytes: 10 hidden * 7 vec4s (70 words) + 6 output * 3 vec4s (18 words)
-} // Total: 496 bytes (31 * 16 bytes)
+    pub _pad: [u32; 4],         // 16 bytes: _pad[0] = cached Morton code, _pad[1] = packed lineage color, _pad[2..3] = reserved
+} // Total: 512 bytes (exact power-of-two 2^9, 8 * 64B / 4 * 128B cache lines)
 
 #[repr(C, align(16))]
 #[derive(Clone, Copy, Debug, bytemuck::Pod, bytemuck::Zeroable)]
@@ -297,6 +303,16 @@ fn test_freelist_underflow_protection_at_capacity() {
     assert_eq!(freelist.allocate(), None);
     assert_eq!(freelist.freelist_top(), 0);
 }
+
+#[test]
+fn test_freelist_dead_claimed_cas_prevents_double_free() {
+    // Verifies that atomic CAS on dead_claimed (0 -> 1) ensures exactly one thread frees the slot
+    // even if predation and starvation trigger concurrently on the same tick.
+    let mut freelist = TombstoneFreelistManager::new(1024);
+    let slot = freelist.allocate().unwrap();
+    assert!(freelist.claim_death_and_free(slot)); // First claim succeeds -> freed
+    assert!(!freelist.claim_death_and_free(slot)); // Second claim fails -> prevented double-free!
+}
 ```
 - [ ] **Step 2: Run test to verify it fails**
 - [ ] **Step 3: Implement Tombstone Freelist logic in Rust and WGSL CAS allocation snippet**
@@ -314,6 +330,18 @@ fn allocate_child_slot() -> u32 {
         cur_top = cas.old_value;
     }
     return child_slot; // 0xFFFFFFFFu indicates population capacity reached
+}
+
+// WGSL CAS death ownership: guarantees slot is pushed to freelist exactly once
+fn claim_death_and_free(victim_idx: u32) -> bool {
+    let cas = atomicCompareExchangeWeak(&agent_atomics[victim_idx].dead_claimed, 0u, 1u);
+    if (cas.exchanged) {
+        agents[victim_idx].meta[7] = 1u; // dead = 1
+        let free_slot = atomicAdd(&sim_counters.freelist_top, 1u);
+        freelist[free_slot] = victim_idx;
+        return true;
+    }
+    return false; // Already freed by another concurrent thread
 }
 ```
 - [ ] **Step 4: Run test to verify it passes**
@@ -629,14 +657,29 @@ fn birth_main(@builtin(workgroup_id) wg_id: vec3u, @builtin(local_invocation_id)
         var word_a = agents[parent_a].packed_genes[w];
         var word_b = agents[parent_b].packed_genes[w];
         // Crossover 48% and triangular mutation per gene byte...
+        var mutated_word = crossover_and_mutate(word_a, word_b, local_id.x, tick);
+
+        // If baseline mode, mask out dummy padded bytes so inactive genes don't drift:
+        if (params.expanded_cortex == 0u) {
+            if (w < 70u && (w % 7u) == 6u) {
+                mutated_word = mutated_word & 0x0000FFFFu; // Bytes 2 & 3 clamped to 0
+            }
+            if (w >= 70u && ((w - 70u) % 3u) == 2u) {
+                mutated_word = mutated_word & 0x00FFFFFFu; // Byte 3 clamped to 0
+            }
+        }
         agents[child_idx].packed_genes[w] = mutated_word;
     }
 
-    // Trait crossover & mutation on thread 0:
+    // Trait crossover, morphology & tail padding initialization on thread 0:
     if (local_id.x == 0u) {
         // Crossover 45% and clamp(base + (r1 + r2 - 1) * mutRate * 0.6, 0.03, 0.98)...
         // Initialize child position near parent: a.x + rand(-9, 9), a.y + rand(-9, 9)
         // Set child energy = 24.0 (24,000 milli)
+        agents[child_idx]._pad[0] = 0u; // Cached Morton code (assigned by morton_encode)
+        agents[child_idx]._pad[1] = pack_lineage_color(agents[child_idx].meta[1]); // Precomputed color cache
+        agents[child_idx]._pad[2] = 0u;
+        agents[child_idx]._pad[3] = 0u;
     }
 }
 ```
