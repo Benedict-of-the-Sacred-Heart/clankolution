@@ -266,3 +266,29 @@ fn test_lbvh_phase2_aabb_fitting_correctness() {
     }
 }
 
+#[test]
+fn test_lbvh_minimap_lod_clusters() {
+    let mut agents = Vec::new();
+    for i in 0..16 {
+        agents.push(GpuAgentState {
+            pos_vel: [(i as f32) * 50.0, 100.0, 0.0, 0.0],
+            angle_energy: [0.0; 4],
+            traits: [0.0; 8],
+            hidden: [0.0; 10],
+            id: i as u32,
+            meta_flags: i as u32 % 4,
+            age_gen: 0,
+            morton_code: compute_morton_32([(i as f32) * 50.0, 100.0]),
+            packed_color: 0,
+            visual_cache: 0,
+        });
+    }
+
+    let tree = LbvhTree::build(&agents);
+    let clusters = tree.extract_minimap_clusters(2);
+    assert!(!clusters.is_empty());
+    let total_counted: u32 = clusters.iter().map(|c| c.count).sum();
+    assert_eq!(total_counted, 16);
+}
+
+

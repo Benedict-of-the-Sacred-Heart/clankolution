@@ -355,6 +355,53 @@ impl LbvhTree {
     pub fn is_empty(&self) -> bool {
         self.nodes.is_empty()
     }
+
+    /// Extracts aggregated cluster discs from intermediate tree depths (e.g. depth 5–6)
+    /// for hierarchical radar minimap LOD rendering.
+    pub fn extract_minimap_clusters(&self, target_depth: usize) -> Vec<MinimapCluster> {
+        let mut clusters = Vec::new();
+        if self.nodes.is_empty() {
+            return clusters;
+        }
+
+        let mut stack = Vec::new();
+        stack.push((0u32, 0usize)); // (node_idx, current_depth)
+
+        while let Some((node_idx, depth)) = stack.pop() {
+            let node = &self.nodes[node_idx as usize];
+            if depth == target_depth || node.leaf_idx != 0xFFFFFFFF {
+                if node.count > 0 {
+                    let w = node.aabb_max[0] - node.aabb_min[0];
+                    let h = node.aabb_max[1] - node.aabb_min[1];
+                    let radius = (w.max(h) * 0.5).max(3.0);
+                    clusters.push(MinimapCluster {
+                        center: node.center_of_mass,
+                        count: node.count,
+                        dominant_lineage: node.dominant_lineage,
+                        radius,
+                    });
+                }
+            } else {
+                if node.left_child != 0xFFFFFFFF {
+                    stack.push((node.left_child, depth + 1));
+                }
+                if node.right_child != 0xFFFFFFFF {
+                    stack.push((node.right_child, depth + 1));
+                }
+            }
+        }
+
+        clusters
+    }
+}
+
+/// Aggregated cluster disc for hierarchical radar minimap LOD rendering.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct MinimapCluster {
+    pub center: [f32; 2],
+    pub count: u32,
+    pub dominant_lineage: u32,
+    pub radius: f32,
 }
 
 impl std::ops::Index<usize> for LbvhTree {
@@ -363,3 +410,4 @@ impl std::ops::Index<usize> for LbvhTree {
         &self.nodes[index]
     }
 }
+
