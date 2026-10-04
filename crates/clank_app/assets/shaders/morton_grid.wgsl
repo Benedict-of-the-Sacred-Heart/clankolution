@@ -84,8 +84,8 @@ fn populate_cell_offsets(@builtin(global_invocation_id) id: vec3u) {
     if (id.x >= n) { return; }
 
     let slot = spatial_keys[id.x].y;
-    let meta = agent_states[slot].meta_flags;
-    if ((meta & (1u << 13u)) != 0u) { return; }
+    let m_flags = agent_states[slot].meta_flags;
+    if ((m_flags & (1u << 13u)) != 0u) { return; }
 
     let pos = agent_states[slot].pos_vel.xy;
     let cell_id = get_cell_id(pos);

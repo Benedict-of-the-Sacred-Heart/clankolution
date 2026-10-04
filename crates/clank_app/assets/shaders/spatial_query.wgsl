@@ -200,8 +200,8 @@ fn spatial_query_main(@builtin(global_invocation_id) id: vec3u) {
         // AoE Tool Brushes: tool_type >= 1 (1 = nourish, 2 = blight, 3 = extinguish, 4 = seed)
         let agent_idx = id.x;
         if (agent_idx >= params.max_agents) { return; }
-        let meta = agent_states[agent_idx].meta_flags;
-        if ((meta & (1u << 13u)) != 0u) { return; }
+        let m_flags = agent_states[agent_idx].meta_flags;
+        if ((m_flags & (1u << 13u)) != 0u) { return; }
 
         let pos = agent_states[agent_idx].pos_vel.xy;
         let d = toroidal_dist(tool_pos, pos);

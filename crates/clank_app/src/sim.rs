@@ -78,12 +78,55 @@ impl SimWorld {
     }
 }
 
-pub fn sim_step_system(mut sim: ResMut<SimWorld>) {
+#[derive(Resource, Default)]
+pub struct GpuDriverResource {
+    pub driver: Option<crate::gpu::compute_driver::GpuComputeDriver>,
+}
+
+pub fn sim_step_system(
+    mut sim: ResMut<SimWorld>,
+    mut gpu_res: Option<ResMut<GpuDriverResource>>,
+) {
     if sim.paused {
         return;
     }
     let steps = sim.speed.clamp(1, 32);
-    sim.step(steps);
+
+    match sim.active_engine {
+        ActiveEngine::Rust => {
+            sim.step(steps);
+        }
+        ActiveEngine::Gpu => {
+            if let Some(ref mut gpu) = gpu_res {
+                if gpu.driver.is_none() {
+                    gpu.driver = crate::gpu::compute_driver::GpuComputeDriver::create_default();
+                }
+                if let Some(ref mut driver) = gpu.driver {
+                    let (states, genomes, atomics, soil, params) = crate::gpu::bridge::sync_rust_to_gpu(&sim);
+                    driver.upload_state(&states, &genomes, &atomics, &soil, &params);
+                    driver.dispatch_sub_ticks(steps, &params);
+
+                    let updated_states = driver.readback_agent_states(states.len());
+                    let updated_atomics = driver.readback_atomics(states.len());
+                    let updated_soil = driver.readback_soil();
+                    let mut updated_params = params;
+                    updated_params.tick += steps;
+
+                    crate::gpu::bridge::sync_gpu_to_rust(
+                        &updated_states,
+                        &genomes,
+                        &updated_atomics,
+                        &updated_soil,
+                        &updated_params,
+                        &mut sim,
+                    );
+                    return;
+                }
+            }
+            // Fallback to CPU step if no GPU adapter available
+            sim.step(steps);
+        }
+    }
 }
 
 pub struct ClankSimPlugin;
@@ -91,6 +134,7 @@ pub struct ClankSimPlugin;
 impl Plugin for ClankSimPlugin {
     fn build(&self, app: &mut App) {
         app.init_resource::<SimWorld>()
+            .init_resource::<GpuDriverResource>()
             .add_systems(Update, sim_step_system);
     }
 }

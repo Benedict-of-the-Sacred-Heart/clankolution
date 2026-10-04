@@ -6,3 +6,4 @@ pub mod lbvh;
 pub mod agent_pipeline;
 pub mod birth_pipeline;
 pub mod bridge;
+pub mod compute_driver;

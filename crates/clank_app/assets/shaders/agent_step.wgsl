@@ -168,8 +168,8 @@ fn agent_main(@builtin(global_invocation_id) id: vec3u) {
     if (agent_idx >= params.max_agents) { return; }
 
     // Top-of-Shader Tombstone Dead-Check Guard with dead_claimed CAS synchronization:
-    let meta = agent_states[agent_idx].meta_flags;
-    let is_dead = (meta & (1u << 13u)) != 0u;
+    let m_flags = agent_states[agent_idx].meta_flags;
+    let is_dead = (m_flags & (1u << 13u)) != 0u;
     let dead_claimed = atomicLoad(&agent_atomics[agent_idx].dead_claimed) != 0u;
     if (is_dead || dead_claimed) {
         if (!is_dead) {
@@ -195,10 +195,10 @@ fn agent_main(@builtin(global_invocation_id) id: vec3u) {
     let tr4 = agent_states[agent_idx].traits[1][0];
     let tr5 = agent_states[agent_idx].traits[1][1]; // carnivory
 
-    let a_root = meta & 0x0Fu;
-    var a_cooldown = (meta >> 4u) & 0x03u;
-    var a_birth = (meta >> 6u) & 0x7Fu;
-    let a_kills = (meta >> 14u) & 0x3FFFFu;
+    let a_root = m_flags & 0x0Fu;
+    var a_cooldown = (m_flags >> 4u) & 0x03u;
+    var a_birth = (m_flags >> 6u) & 0x7Fu;
+    let a_kills = (m_flags >> 14u) & 0x3FFFFu;
 
     var a_age = agent_states[agent_idx].age_gen & 0xFFFFu;
     let a_gen = agent_states[agent_idx].age_gen >> 16u;

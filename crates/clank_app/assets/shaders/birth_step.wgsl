@@ -87,7 +87,7 @@ struct ConsolidatedQueue {
 @group(0) @binding(0) var<storage, read_write> agent_states: array<GpuAgentState>;
 @group(0) @binding(1) var<storage, read_write> agent_genomes: array<GpuAgentGenome>;
 @group(0) @binding(2) var<storage, read_write> agent_atomics: array<GpuAgentAtomic>;
-@group(0) @binding(3) var<storage, read> queue_buffer: ConsolidatedQueue;
+@group(0) @binding(3) var<storage, read_write> queue_buffer: ConsolidatedQueue;
 @group(0) @binding(4) var<storage, read_write> freelist: array<u32>;
 @group(1) @binding(0) var<uniform> params: GpuSimParams;
 
