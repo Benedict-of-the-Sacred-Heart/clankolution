@@ -129,7 +129,7 @@
       - Priority 0: Direct body hit ($d \le R_{\text{body}}$, where $R_{\text{body}} = 2.0 + 3.0 \times \text{tr}_0$, approx $3.5\text{px} - 5\text{px}$).
       - Priority 1: Proximity halo ($R_{\text{body}} < d \le R_{\text{pick}}$).
       - Zoom-adaptive radius: $R_{\text{pick}} = \text{clamp}(16.0 \times (\text{camera\_size}.x / 900.0), 4.0, 24.0)$.
-      - Packed candidate: `let packed = (priority << 30) | (dist_milli << 14) | (agent_idx & 0x3FFFu);`
+      - Packed candidate (32-bit): `let packed = (priority << 31) | ((dist_milli & 0x7FFFu) << 16) | (agent_idx & 0xFFFFu);` (Bit 31: Priority, Bits 16..30: Distance up to 32.767px, Bits 0..15: Full 65,536 Agent Index capacity).
       - Evaluated strictly on Sub-Tick 1 of the multi-tick batch via `atomicMin(&telemetry.selected_candidate, packed)`. Direct body clicks always beat proximity halos, and sub-pixel Euclidean distance resolves ties between closely clustered creatures.
     - **Specimen Picking Identity Guard**: The CPU tracks the tuple `(slot_idx, agent_id)`. If Agent $K$ dies during sub-ticks 2..32 (or a subsequent tick) and slot $K$ is recycled, `agents[slot_idx].meta[0] != picked_id`. The UI immediately detects the death, prevents displaying the newly spawned replacement creature, and displays the deceased creature's final stats.
 
@@ -697,7 +697,7 @@ if (params.sub_tick == 0u && params.tool_type == 0u /* inspect/pick */) {
     if (pick_dist <= max_r) {
         let priority = select(1u, 0u, pick_dist <= visual_r);
         let dist_milli = u32(pick_dist * 1000.0);
-        let packed_candidate = (priority << 30) | (dist_milli << 14) | (agent_idx & 0x3FFFu);
+        let packed_candidate = (priority << 31) | ((dist_milli & 0x7FFFu) << 16) | (agent_idx & 0xFFFFu);
         atomicMin(&telemetry.selected_candidate, packed_candidate);
     }
 }
