@@ -124,6 +124,7 @@
     - **Operation 3: Genome Mutation Masking (`birth_step.wgsl`)**: In baseline mode (`!ENABLE_EXPANDED_CORTEX`), mutation applies a bitmask (`word & 0x0000FFFFu`) to the 7th word of hidden neurons and 3rd word of output neurons, preventing silent random drift in inactive weights. When Expanded Cortex is toggled ON (`ENABLE_EXPANDED_CORTEX`), the mask is lifted and mutations actively evolve novel traits.
     - **Operation 4: Dual-Engine Live Hot-Swapping (`sync_rust_to_gpu` & `sync_gpu_to_rust`)**: Exact bit-level pack/unpack maps 326 sequential `i8` genes into 88 vec4-aligned `u32` words in `agent_genomes` with zero loss or drift.
     - **Operation 5: Savefile Backward Compatibility**: Saving always extracts the canonical 326 `i8` genes into `AgentData`, ensuring all `.clank` and `.json` files are 100% cross-compatible between CPU and GPU engines.
+    - **Operation 6: Precomputed Visual Render Cache (`visual_cache: u32`)**: The final 4 bytes of Cache Line 1 (offsets 124..128) packs 4 rendering attributes (`visual_radius: u8`, `glow_intensity: u8`, `energy_u8`, `visual_flags: u8`). The instanced dart vertex shader loads `vec2u(packed_color, visual_cache)` directly from Cache Line 1, completely bypassing Cache Line 0 (traits, kinematics) and saving ~72 MB of vertex fetch bandwidth per frame (~4.3 GB/s at 60 FPS) across 1,000,000 agents.
 
 15. **Consolidated Output Queue (Telemetry Header + 65,536 Births + 256 Voices = 1,028 KB)**:
     - **Unified Buffer Architecture (`ConsolidatedQueue`)**: Combines aggregate telemetry (128 bytes), birth events (65,536 entries $\times$ 16B = 1,048,576 bytes = 1 MB), and audio voices (256 entries $\times$ 16B = 4,096 bytes = 4 KB) into a single 1,052,800-byte storage buffer ($1,028.1\text{ KB} \ll 128\text{ MB}$ WebGPU storage limit, 16-byte aligned).
@@ -226,7 +227,86 @@
       - Simultaneously: Reads back `staging[(N - 1) % 2]` (mapped during the prior frame) with **0 wait cycles**.
       - Provides completely non-blocking execution at full 60/120 FPS with 1-frame pipelined telemetry latency.
 
-    #### 5. Supplemental Hardening & Robustness Guarantees
+    #### 5. Struct Layout Sizing & `visual_cache: u32` 5 Hardening Invariants (Task 1 & Task 5)
+    - **The Vulnerability**:
+      Writing `pub _reserved: [u32; 2]` (8 bytes) at the end of `GpuAgentState` produced a struct size of $132\text{ bytes}$. Because of `#[repr(C, align(16))]`, $132$ rounded up to $144\text{ bytes}$, breaking the 128-byte power-of-two assertion (`size_of::<GpuAgentState>() == 128`), invalidating cache line alignment, and exceeding the 128 MB single buffer limit for 1M agents.
+    - **The Hardening Fix & Invariants**:
+      Replace `_reserved` with `pub visual_cache: u32` (offsets 124..128), locking `GpuAgentState` to **EXACTLY 128 bytes** (2 cache lines, $2^7$ power-of-two).
+      Packs:
+      - Bits 0..7: `visual_radius: u8` ($0..255 \rightarrow 2.0..5.0\text{ px}$)
+      - Bits 8..15: `glow_intensity: u8` (attack flash, courtship glow, birth aura)
+      - Bits 16..23: `energy_u8` ($0..100$ energy for opacity & vibrancy)
+      - Bits 24..31: `visual_flags` (bit 24: attacking, bit 25: mating, bit 26: selected, bit 27: apex)
+      **The 5 Hardening Invariants**:
+      1. *Zero-Cost Dead State Invariant*: When an agent dies, `visual_cache` is set to `0u`, collapsing scale to $0.0\text{ px}$ and opacity to $0.0$, preventing phantom corpse rendering.
+      2. *Newborn Initialization Invariant*: `birth_step.wgsl` initializes `visual_cache` with child trait 0, initial energy 24.0, and a birth flash (`glow = 255u`).
+      3. *Picking Parity Invariant*: `spatial_query.wgsl` continues to evaluate full-precision `traits[0]` ($2.0 + 3.0 \times \text{tr}_0$), preserving float32 click selection bounds.
+      4. *Hot-Swap Continuity Invariant*: `sync_rust_to_gpu` synthesizes `visual_cache` on upload; `sync_gpu_to_rust` cleanly discards it on readback.
+      5. *VRAM Bandwidth Invariant*: Dart vertex shader loads `vec2u(packed_color, visual_cache)` from Cache Line 1, saving ~72 MB/frame vertex fetch bandwidth (~4.3 GB/s at 60 FPS).
+
+    #### 6. Toroidal Boundary AABB Pruning Blindspot in `spatial_query.wgsl` (Task 4)
+    - **The Vulnerability**:
+      In `spatial_query.wgsl`, if `distance_to_aabb` evaluates standard Euclidean distance without torus wrapping, clicking near an arena seam ($x = 899.0$) against a bounding box on the opposite wrapped side ($x \in [0.0, 10.0]$) computes $dx = 899.0 - 10.0 = 889.0\text{ px}$. Because $889.0 > 16.0$, the entire subtree containing the creature at $x = 0.5$ is pruned, creating a click selection "blind spot" across screen boundaries.
+    - **The Hardening Fix**:
+      Implement branchless 1D toroidal AABB distance in `spatial_query.wgsl`:
+      ```wgsl
+      fn toroidal_aabb_dist_1d(p: f32, b_min: f32, b_max: f32, w: f32) -> f32 {
+          if (p >= b_min && p <= b_max) { return 0.0; }
+          let direct = select(p - b_max, b_min - p, p < b_min);
+          let wrapped = select(w - p + b_min, w - b_max + p, p < b_min);
+          return min(direct, wrapped);
+      }
+
+      fn distance_to_aabb(pos: vec2f, aabb_min: vec2f, aabb_max: vec2f) -> f32 {
+          let dx = toroidal_aabb_dist_1d(pos.x, aabb_min.x, aabb_max.x, 900.0);
+          let dy = toroidal_aabb_dist_1d(pos.y, aabb_min.y, aabb_max.y, 600.0);
+          return sqrt(dx * dx + dy * dy);
+      }
+      ```
+
+    #### 7. Strict Single-Writer Invariant for `GpuAgentState` (Cross-Thread Flag Race) (Task 5)
+    - **The Vulnerability**:
+      If a predator thread executes `agent_states[victim_idx].meta_flags |= (1u << 13u)` while the victim thread is concurrently running, the victim thread's final writeback (`agent_states[victim_idx].meta_flags = updated_flags`) clobbers the dead bit back to `0`, resurrecting a "zombie" creature.
+    - **The Hardening Fix**:
+      Enforce strict single-writer ownership: Thread $i$ writes ONLY to `agent_states[i]`.
+      1. Predator only sets atomic CAS gate `agent_atomics[victim_idx].dead_claimed` and pushes to `freelist`. Predator never writes to `agent_states[victim_idx]`.
+      2. Victim thread checks `atomicLoad(&agent_atomics[agent_idx].dead_claimed)` before committing state. If killed, victim sets its own dead bit (`meta_flags |= (1u << 13u)`), sets `visual_cache = 0u`, and aborts live state commits (movement, grazing, mating).
+
+    #### 8. Pass-Decoupled Lock-Free Freelist (Eliminating Concurrent Push-Pop Races) (Tasks 2 & 5)
+    - **The Vulnerability**:
+      If deaths push to `freelist` (`atomicAdd(&freelist_top, 1u)`) while births pop from it (`atomicCompareExchangeWeak(&freelist_top, cur, cur - 1u)`) in the same `agent_step.wgsl` dispatch, incoming death threads can overwrite stack slots before pop threads finish reading them, causing slot leakage or premature recycling.
+    - **The Hardening Fix**:
+      Decouple push and pop across compute passes:
+      - **In `agent_step.wgsl`**: ONLY pushes occur (deaths push deceased slots to `freelist`). Mating threads only record intent in `queue_buffer.births`.
+      - **Compute Pass Barrier**: Explicit GPU barrier submitted by Bevy between `agent_step` and `birth_step`.
+      - **In `birth_step.wgsl`**: ONLY pops occur. Each newborn thread pops from `freelist` with zero concurrent pushes occurring.
+
+    #### 9. Dead Agent Partitioning in Morton Spatial Indexing (`0xFFFFFFFFu` Sentinel) (Task 4)
+    - **The Vulnerability**:
+      In a 1M agent simulation, inactive corpses in the freelist have residual coordinates. If `morton_encode` generates keys for all slots $0..N_{\max}$, dead agents are sorted into Morton cells and LBVH trees, corrupting spatial queries and picking.
+    - **The Hardening Fix**:
+      In `morton_grid.wgsl`, `morton_encode` assigns dead agents sentinel key `0xFFFFFFFFu`:
+      ```wgsl
+      let is_dead = (agent_states[id.x].meta_flags & (1u << 13u)) != 0u;
+      if (is_dead) {
+          spatial_keys[id.x] = vec2u(0xFFFFFFFFu, id.x);
+      } else {
+          let code = compute_morton_32(agent_states[id.x].pos_vel.xy);
+          agent_states[id.x].morton_code = code;
+          spatial_keys[id.x] = vec2u(code, id.x);
+      }
+      ```
+      When Radix sorted, all dead agents are naturally partitioned to the tail of `spatial_keys`, completely excluded from grid cells 0..53 and LBVH leaf bounds.
+
+    #### 10. Bottom-Up LBVH AABB Fitting Atomic Flag Initialization (Task 4)
+    - **The Vulnerability**:
+      In `lbvh_aabb.wgsl`, parallel tree climbing uses `atomicAdd(&node_flags[current], 1u)` to detect when both children have computed their bounding boxes. If `node_flags` is not reset to 0 every frame, on frame 2 and beyond `atomicAdd` returns $\ge 2$, causing threads to deadlock or produce corrupt bounding boxes.
+    - **The Hardening Fix**:
+      Thread `id.x` in Phase 1 (`lbvh_build.wgsl`) explicitly resets its node's atomic flag:
+      `atomicStore(&node_flags[id.x], 0u);`
+      Because Phase 1 is separated from Phase 2 by a compute pass barrier, all flags are guaranteed to be 0 before climbing begins.
+
+    #### 11. Supplemental Hardening & Robustness Guarantees
     - **Degenerate LBVH Underflow Guard (`lbvh_build.wgsl`)**:
       In `lbvh_build.wgsl`, if `params.agent_count == 0u`, the condition `id.x < params.agent_count - 1u` underflows `0u - 1u` to `u32::MAX` ($4,294,967,295$), launching rogue out-of-bounds writes. Guarded via:
       `let active_count = params.agent_count; if (active_count < 2u || id.x >= active_count - 1u) return;`
@@ -272,13 +352,13 @@
 - [ ] **Task 1: Branch Setup & GPU Compute Architecture Scaffolding**
   - Create branch `feature/bevy-gpu` from `feature/bevy-port`.
   - Add `bytemuck = { version = "1.21", features = ["derive"] }` to `crates/clank_app/Cargo.toml`.
-  - Add `gpu` module in `crates/clank_app/src/gpu/` with buffer types: `GpuAgentState` (128B, exact $2^7$ power-of-two, 2 cache lines), `GpuAgentGenome` (352B, 88 words), `GpuAgentAtomic` (16B, with `dead_claimed`), `GpuSimParams` (64B, exact 4 quadwords, pure baseline physics, multi-tick pacing & tools), `GpuLbvhNode` (48B), `GpuSoilCell` (16B), `BirthEvent` (16B), `AudioVoice` (16B), `GpuTelemetry` (128B), `ConsolidatedQueue` (1,028 KB unified queue with telemetry header), and pipeline skeletons.
-  - Implement unit tests for GPU struct memory layouts and 16-byte WGSL alignment.
+  - Add `gpu` module in `crates/clank_app/src/gpu/` with buffer types: `GpuAgentState` (128B, exact $2^7$ power-of-two, 2 cache lines, with `visual_cache: u32`), `GpuAgentGenome` (352B, 88 words), `GpuAgentAtomic` (16B, with `dead_claimed`), `GpuSimParams` (64B, exact 4 quadwords, pure baseline physics, multi-tick pacing & tools), `GpuLbvhNode` (48B), `GpuSoilCell` (16B), `BirthEvent` (16B), `AudioVoice` (16B), `GpuTelemetry` (128B), `ConsolidatedQueue` (1,028 KB unified queue with telemetry header), and pipeline skeletons.
+  - Implement unit tests for GPU struct memory layouts and 16-byte WGSL alignment (`assert_eq!(size_of::<GpuAgentState>(), 128)`).
 
 - [ ] **Task 2: Tombstone Freelist & Zero-Copy Agent Storage Buffer**
   - Implement lock-free atomic stack allocator (`freelist: array<u32>`, `atomic<u32> queue_buffer.telemetry.freelist_top`).
-  - Implement allocation with CAS underflow guard (`cur_top > 0u`).
-  - Implement CAS death ownership (`dead_claimed: 0u -> 1u`) to eliminate double-freeing from concurrent starvation and predation.
+  - Implement **Pass-Decoupled Freelist**: deaths push in `agent_step.wgsl`; newborn threads pop in `birth_step.wgsl` across compute pass barrier, eliminating ABA / concurrent push-pop races.
+  - Implement CAS death ownership (`dead_claimed: 0u -> 1u`) and Strict Single-Writer Invariant (killer never writes to victim's `agent_states`).
   - Test parallel push/pop and slot recycling in automated unit test suite.
 
 - [ ] **Task 3: GPU Soil Simulation & Direct Texture Generation**
@@ -288,30 +368,32 @@
   - Bind soil as single 2D `rgba16float` texture with universal hardware bilinear filtering across Metal, Vulkan, and DX12.
 
 - [ ] **Task 4: Hybrid Morton Grid, Multi-System LBVH & Spatial Queries**
-  - Implement 32-bit Morton code generator from 2D coordinates in WGSL with boundary clamping (`gx = min(u32(pos.x / 100.0), 8u)`, `gy = min(u32(pos.y / 100.0), 5u)`).
+  - Implement 32-bit Morton code generator with dead agent partitioning (`0xFFFFFFFFu` sentinel in `morton_encode`) and boundary clamping (`gx = min(u32(pos.x / 100.0), 8u)`, `gy = min(u32(pos.y / 100.0), 5u)`).
   - Implement 8-byte indirection parallel Radix Sort on `(morton_key, agent_slot_idx)`, keeping heavy agent structs stationary.
-  - Implement Karras 2012 two-phase LBVH construction: Phase 1 topology (`lbvh_build.wgsl`) with `agent_id` tie-breaking and $N \le 1$ degenerate population guard; Phase 2 bottom-up AABB fitting (`lbvh_aabb.wgsl`) across an explicit compute pass barrier.
+  - Implement Karras 2012 two-phase LBVH construction: Phase 1 topology (`lbvh_build.wgsl`) with `agent_id` tie-breaking, `node_flags[id.x] = 0u` atomic reset, and $N \le 1$ degenerate population guard; Phase 2 bottom-up AABB fitting (`lbvh_aabb.wgsl`) across an explicit compute pass barrier.
   - Implement Tier 1 ($3 \times 3$ local Moore neighborhood) + Tier 2 ring expansion for lonely creatures.
-  - Implement **Unified Interactive Spatial Query Pass (`spatial_query.wgsl`)** with degenerate $N \le 1$ safety guard and dynamic radius shrinking (early tree pruning) for uncapped 32-bit mouse picking and parallel AoE tool bounding box intersections.
+  - Implement **Unified Interactive Spatial Query Pass (`spatial_query.wgsl`)** with branchless 1D toroidal AABB distance (preventing boundary pruning blind spots), degenerate $N \le 1$ safety guard, dynamic radius shrinking (early tree pruning) for uncapped 32-bit mouse picking, and parallel AoE tool bounding box intersections.
 
 - [ ] **Task 5: Packed 88-Word Vectorized RNN, Combat Resolution, PRNG & Decoupled Birth Pipeline**
   - Implement `preamble_clear.wgsl` to reset `mate_claim`, `mate_energy_milli`, `dead_claimed`, `birth_count`, `audio_voice_count`, `selected_agent_idx`, `selected_agent_id`, `cell_offsets`, and `GpuTelemetry` counters with global execution barrier.
   - Implement 1-thread-per-agent WGSL compute shader (`agent_step.wgsl`) binding `agent_states` (128B) and `agent_genomes` (352B) within strict $\le 8$ storage buffer ceiling.
+  - Enforce **Strict Single-Writer Invariant**: thread $i$ writes ONLY to `agent_states[i]`. Victim detects death via `dead_claimed`, marks own dead flag, zeroes `visual_cache`, and aborts live state commits.
   - Enforce `agent_atomics[i].energy_milli` as canonical atomic ground truth, preventing concurrent damage/grazing overwrites.
   - Gate starvation counter increment behind successful death claim CAS (`dead_claimed: 0u -> 1u`), eliminating double-counted deaths.
   - Branchless `unpack4x8snorm` vectorization across 88 `u32` words (7 vec4s hidden, 3 vec4s output).
   - Integrate **Experimental Simulation Mods**: Barnes-Hut Macro-Flocking, Expanded Cortex (extra senses and sprint actuator), and Natural Sexual Selection Tournament.
-  - Apply steering, thrust, and hardware toroidal coordinate wrap.
-  - Implement coalesced atomic soil deposits, atomic millijoule combat resolution with `dead_claimed` CAS, toroidal seam frustum-culled stochastic audio voice emission (256-voice buffer), canonical mating symmetry breaking with seamless asexual fallback, and decoupled SIMD genome mutation pass (`birth_step.wgsl`).
+  - Apply steering, thrust, hardware toroidal coordinate wrap, and pack `visual_cache` at step end.
+  - Implement coalesced atomic soil deposits, atomic millijoule combat resolution with `dead_claimed` CAS, toroidal seam frustum-culled stochastic audio voice emission (256-voice buffer), canonical mating symmetry breaking with seamless asexual fallback, and decoupled SIMD genome mutation pass (`birth_step.wgsl`) with newborn `visual_cache` birth flash initialization.
 
 - [ ] **Task 6: Frustum Culling, Minimap LOD, Dual-Engine UI, Audio & Verification**
   - Implement **GPU Camera Viewport Frustum Culling** via LBVH streaming 128-byte `GpuAgentState` ($4.0\times$ less bandwidth than 512B structs) into an Indirect Draw Buffer.
+  - Implement **instanced dart rendering loading contiguous `vec2u(packed_color, visual_cache)`** directly from Cache Line 1, completely bypassing Cache Line 0 traits and saving ~72 MB of vertex fetch bandwidth per frame.
   - Implement **Minimap LOD Cluster Rendering** sampling intermediate LBVH depth nodes for density circles.
   - Implement **spatially coherent instanced dart rasterization** using Morton-ordered agent index streams for tile-cache efficiency.
   - Implement **Granular Bevy Audio playback** reading 256-voice audio queue with zoom loudness modulation.
   - Implement **Non-Blocking Pipelined Double-Buffered DMA Staging Ring** (`staging[frame % 2]`) for 128-byte `GpuTelemetry` and audio queue readback (0 CPU wait cycles).
   - Implement **32x Speed Visual Consistency Picking** locking selection on Sub-Tick 1 across 32-tick batches with **Specimen Picking Identity Guard** `(slot_idx, agent_id)`.
-  - Add top bar engine toggle: `ENGINE: RUST` $\leftrightarrow$ `ENGINE: GPU` with live bi-directional state bridge.
+  - Add top bar engine toggle: `ENGINE: RUST` $\leftrightarrow$ `ENGINE: GPU` with live bi-directional state bridge synthesizing `visual_cache` on upload.
   - Add **EXPERIMENTAL MUTATIONS** sidebar drawer wiring `SimMods` (`[BARNES-HUT]`, `[EXPANDED CORTEX]`, `[SEXUAL SELECTION]`) to specialized pipeline variants via WGSL `override` constants.
   - Wire telemetry from GPU storage buffers into UI stats, The Record, and Specimen card.
   - Run all 51+ workspace tests.
@@ -385,7 +467,7 @@ pub struct GpuAgentState {
     pub age_gen: u32,           // 4 bytes: age (16b: 0..65,535), gen (16b: 0..65,535)
     pub morton_code: u32,       // 4 bytes: precomputed 32-bit Morton spatial hash key
     pub packed_color: u32,      // 4 bytes: rgba8unorm packed lineage color for direct GPU instancing
-    pub _reserved: [u32; 2],    // 8 bytes: exact 16-byte WGSL alignment padding
+    pub visual_cache: u32,      // 4 bytes: packed rendering cache [radius_u8, glow_u8, energy_u8, flags_u8]
 } // Total: EXACTLY 128 bytes (2^7 power-of-two, 2 * 64B cache lines)
 
 #[repr(C, align(16))]
@@ -564,11 +646,15 @@ fn allocate_child_slot() -> u32 {
     return child_slot; // 0xFFFFFFFFu indicates population capacity reached
 }
 
-// WGSL CAS death ownership: guarantees slot is pushed to freelist exactly once
-fn claim_death_and_free(victim_idx: u32) -> bool {
+// WGSL CAS death ownership: guarantees slot is pushed to freelist exactly once (Pass-Decoupled Freelist)
+fn claim_death_and_free(victim_idx: u32, is_self: bool) -> bool {
     let cas = atomicCompareExchangeWeak(&agent_atomics[victim_idx].dead_claimed, 0u, 1u);
     if (cas.exchanged) {
-        agent_states[victim_idx].meta_flags |= (1u << 13u); // dead = 1 (bit 13)
+        // Strict Single-Writer Invariant: Only victim thread writes to its own agent_states struct!
+        if (is_self) {
+            agent_states[victim_idx].meta_flags |= (1u << 13u); // dead = 1 (bit 13)
+            agent_states[victim_idx].visual_cache = 0u;         // Zero-cost dead state invariant (0 radius, 0 glow)
+        }
         let free_slot = atomicAdd(&queue_buffer.telemetry.freelist_top, 1u);
         freelist[free_slot] = victim_idx;
         return true;
@@ -711,6 +797,20 @@ fn clear_cell_offsets(@builtin(global_invocation_id) id: vec3u) {
     }
 }
 
+// Dead Agent Partitioning: Assign sentinel 0xFFFFFFFFu so tombstone slots sort to the array tail:
+@compute @workgroup_size(64)
+fn morton_encode(@builtin(global_invocation_id) id: vec3u) {
+    if (id.x >= params.max_agents) { return; }
+    let is_dead = (agent_states[id.x].meta_flags & (1u << 13u)) != 0u;
+    if (is_dead) {
+        spatial_keys[id.x] = vec2u(0xFFFFFFFFu, id.x); // Excluded from cells 0..53 & LBVH leaves!
+    } else {
+        let code = compute_morton_32(agent_states[id.x].pos_vel.xy);
+        agent_states[id.x].morton_code = code;
+        spatial_keys[id.x] = vec2u(code, id.x);
+    }
+}
+
 // Morton cell boundary clamping guard:
 fn get_cell_id(pos: vec2f) -> u32 {
     let gx = min(u32(max(0.0, pos.x) / 100.0), 8u);
@@ -722,14 +822,14 @@ fn get_cell_id(pos: vec2f) -> u32 {
 // Two-Phase LBVH Construction: Phase 1 evaluates hierarchy topology; Phase 2 fits bounding boxes bottom-up across an explicit compute pass barrier.
 fn common_prefix_length(i: i32, j: i32, n: u32) -> i32 {
     if (j < 0 || j >= i32(n)) { return -1; }
-    let key_i = sorted_keys[i];
-    let key_j = sorted_keys[j];
+    let key_i = spatial_keys[i].x;
+    let key_j = spatial_keys[j].x;
     if (key_i != key_j) {
         return i32(countLeadingZeros(key_i ^ key_j));
     }
     // Tie-break with unique agent slot id:
-    let id_i = sorted_agent_ids[i];
-    let id_j = sorted_agent_ids[j];
+    let id_i = spatial_keys[i].y;
+    let id_j = spatial_keys[j].y;
     return 32 + i32(countLeadingZeros(id_i ^ id_j));
 }
 
@@ -739,6 +839,8 @@ fn build_lbvh(@builtin(global_invocation_id) id: vec3u) {
     if (active_count < 2u || id.x >= active_count - 1u) {
         return; // Guard against N <= 1 underflow!
     }
+    // Hardening: Initialize bottom-up atomic flag for Phase 2 before the compute barrier:
+    atomicStore(&node_flags[id.x], 0u);
     // Phase 1: Karras 2012 LCP split evaluation, child and parent pointer generation...
 }
 
@@ -748,6 +850,20 @@ fn build_lbvh(@builtin(global_invocation_id) id: vec3u) {
 @group(0) @binding(1) var<storage, read> lbvh_nodes: array<GpuLbvhNode>;
 @group(0) @binding(2) var<storage, read_write> queue_buffer: ConsolidatedQueue;
 @group(0) @binding(3) var<uniform> params: GpuSimParams;
+
+// Branchless 1D toroidal AABB distance: prevents seam pruning blind spots
+fn toroidal_aabb_dist_1d(p: f32, b_min: f32, b_max: f32, w: f32) -> f32 {
+    if (p >= b_min && p <= b_max) { return 0.0; }
+    let direct = select(p - b_max, b_min - p, p < b_min);
+    let wrapped = select(w - p + b_min, w - b_max + p, p < b_min);
+    return min(direct, wrapped);
+}
+
+fn distance_to_aabb(pos: vec2f, aabb_min: vec2f, aabb_max: vec2f) -> f32 {
+    let dx = toroidal_aabb_dist_1d(pos.x, aabb_min.x, aabb_max.x, 900.0);
+    let dy = toroidal_aabb_dist_1d(pos.y, aabb_min.y, aabb_max.y, 600.0);
+    return sqrt(dx * dx + dy * dy);
+}
 
 @compute @workgroup_size(64)
 fn spatial_query_main(@builtin(global_invocation_id) id: vec3u) {
@@ -1036,7 +1152,7 @@ if (best_dist < contact_dist && a_attack > 0.25 && a_cooldown == 0u) {
         // Atomic CAS death ownership prevents double-freeing:
         let claim_death = atomicCompareExchangeWeak(&agent_atomics[victim_idx].dead_claimed, 0u, 1u);
         if (claim_death.exchanged) {
-            agent_states[victim_idx].meta_flags |= (1u << 13u); // dead = 1 (bit 13)
+            // Strict Single-Writer Invariant: Killer NEVER writes to agent_states[victim_idx]!
             let free_slot = atomicAdd(&queue_buffer.telemetry.freelist_top, 1u);
             freelist[free_slot] = victim_idx;
         }
@@ -1047,20 +1163,29 @@ if (best_dist < contact_dist && a_attack > 0.25 && a_cooldown == 0u) {
 let internal_delta_milli = i32((eaten_float - basal_cost - thrust_cost) * 1000.0);
 atomicAdd(&agent_atomics[agent_idx].energy_milli, internal_delta_milli);
 
-// Update visual/state energy float from atomic ground truth:
-a_energy = max(0.0, f32(atomicLoad(&agent_atomics[agent_idx].energy_milli)) * 0.001);
-agent_states[agent_idx].angle_energy[1] = a_energy;
+// Strict Single-Writer Death Check (Combat Victim or Starvation):
+let already_claimed = atomicLoad(&agent_atomics[agent_idx].dead_claimed);
+let current_energy_milli = atomicLoad(&agent_atomics[agent_idx].energy_milli);
 
-// Starvation death handling (Hardening Fix: counter gated behind successful CAS ownership):
-if (atomicLoad(&agent_atomics[agent_idx].energy_milli) <= 0) {
-    let claim_death = atomicCompareExchangeWeak(&agent_atomics[agent_idx].dead_claimed, 0u, 1u);
-    if (claim_death.exchanged) {
-        atomicAdd(&queue_buffer.telemetry.starvations, 1u); // Only increment if death claim succeeded!
-        agent_states[agent_idx].meta_flags |= (1u << 13u); // dead = 1 (bit 13)
-        let free_slot = atomicAdd(&queue_buffer.telemetry.freelist_top, 1u);
-        freelist[free_slot] = agent_idx;
+if (already_claimed != 0u || current_energy_milli <= 0) {
+    if (already_claimed == 0u) {
+        let claim_death = atomicCompareExchangeWeak(&agent_atomics[agent_idx].dead_claimed, 0u, 1u);
+        if (claim_death.exchanged) {
+            atomicAdd(&queue_buffer.telemetry.starvations, 1u); // Only increment if this thread won the death claim!
+            let free_slot = atomicAdd(&queue_buffer.telemetry.freelist_top, 1u);
+            freelist[free_slot] = agent_idx;
+        }
     }
+    // Strict Single-Writer: Victim marks its own dead flag and clears visual_cache (Zero-Cost Dead State Invariant):
+    agent_states[agent_idx].meta_flags |= (1u << 13u); // dead = 1 (bit 13)
+    agent_states[agent_idx].angle_energy[1] = 0.0;
+    agent_states[agent_idx].visual_cache = 0u;         // Degenerate 0-radius, 0-glow, 0-energy
+    return; // Abort committing movement, grazing, or mating!
 }
+
+// Update visual/state energy float from atomic ground truth:
+a_energy = max(0.0, f32(current_energy_milli) * 0.001);
+agent_states[agent_idx].angle_energy[1] = a_energy;
 
 // Mating handshake snippet in agent_step.wgsl:
 if (a_energy > 58.0 + 12.0 * tr0 && a_age > 65u && a_birth == 0u && brain_out5 > -0.15) {
@@ -1078,7 +1203,7 @@ if (a_energy > 58.0 + 12.0 * tr0 && a_age > 65u && a_birth == 0u && brain_out5 >
             }
             mate_partner = partner_idx;
             sexual_success = true;
-        } else if (pcg_rand(agent_idx, 99u, tick) < 0.15) {
+        } else if (pcg_rand(agent_idx, 99u, params.tick) < 0.15) {
             // Optimization A: Canonical Symmetry Breaking (partner_id > agent_id cuts bus traffic 50%):
             if (agent_states[partner_idx].id > agent_states[agent_idx].id) {
                 let claim = atomicCompareExchangeWeak(&agent_atomics[partner_idx].mate_claim, 0u, agent_idx + 1u);
@@ -1090,52 +1215,42 @@ if (a_energy > 58.0 + 12.0 * tr0 && a_age > 65u && a_birth == 0u && brain_out5 >
         }
     }
 
-    // Handshake complete or asexual fallback!
-    // 1. Reserve birth queue index FIRST to prevent freelist slot leakage if queue saturates:
+    // Pass-Decoupled Freelist: Mating threads only record intent in the birth queue.
+    // Child slot allocation occurs across the compute pass barrier in birth_step.wgsl (Zero ABA / Push-Pop Race)!
     let queue_idx = atomicAdd(&queue_buffer.telemetry.birth_count, 1u);
     if (queue_idx < 65536u) {
-        // 2. Allocate child slot via CAS pop loop:
-        var cur_top = atomicLoad(&queue_buffer.telemetry.freelist_top);
-        var child_slot = 0xFFFFFFFFu;
-        while (cur_top > 0u) {
-            let cas = atomicCompareExchangeWeak(&queue_buffer.telemetry.freelist_top, cur_top, cur_top - 1u);
-            if (cas.exchanged) {
-                child_slot = freelist[cur_top - 1u];
-                break;
-            }
-            cur_top = cas.old_value;
+        atomicSub(&agent_atomics[agent_idx].energy_milli, 24000);
+        if (sexual_success && mate_partner != 0xFFFFFFFFu) {
+            atomicSub(&agent_atomics[mate_partner].energy_milli, 6000);
         }
+        a_birth = 95u;
 
-        if (child_slot != 0xFFFFFFFFu) {
-            atomicSub(&agent_atomics[agent_idx].energy_milli, 24000);
-            if (sexual_success && mate_partner != 0xFFFFFFFFu) {
-                atomicSub(&agent_atomics[mate_partner].energy_milli, 6000);
+        // Optimization B: Seamless Asexual Fallback (mate_partner = 0xFFFFFFFFu when virgin birth):
+        queue_buffer.births[queue_idx] = BirthEvent(agent_idx, mate_partner, 0xFFFFFFFFu, 0u);
+
+        // Toroidal Seam Frustum-Culled Birth Audio Voice:
+        let dx = abs(pos.x - params.camera_pos.x);
+        let dist_x = min(dx, 900.0 - dx);
+        let dy = abs(pos.y - params.camera_pos.y);
+        let dist_y = min(dy, 600.0 - dy);
+        let in_view = (dist_x <= params.camera_size.x * 0.5 && dist_y <= params.camera_size.y * 0.5);
+        if (in_view) {
+            let zoom_factor = clamp(1.0 - (params.camera_size.x - 150.0) / (900.0 - 150.0), 0.0, 1.0);
+            let birth_volume = mix(0.06, 0.8, zoom_factor);
+            let voice_slot = atomicAdd(&queue_buffer.telemetry.audio_voice_count, 1u);
+            if (voice_slot < 256u) {
+                queue_buffer.audio[voice_slot] = AudioVoice(pos, 2u /* EVENT_BIRTH */, birth_volume);
             }
-            a_birth = 95u;
-
-            // Optimization B: Seamless Asexual Fallback (mate_partner = 0xFFFFFFFFu when virgin birth):
-            queue_buffer.births[queue_idx] = BirthEvent(agent_idx, mate_partner, child_slot, 0u);
-
-            // Toroidal Seam Frustum-Culled Birth Audio Voice:
-            let dx = abs(pos.x - params.camera_pos.x);
-            let dist_x = min(dx, 900.0 - dx);
-            let dy = abs(pos.y - params.camera_pos.y);
-            let dist_y = min(dy, 600.0 - dy);
-            let in_view = (dist_x <= params.camera_size.x * 0.5 && dist_y <= params.camera_size.y * 0.5);
-            if (in_view) {
-                let zoom_factor = clamp(1.0 - (params.camera_size.x - 150.0) / (900.0 - 150.0), 0.0, 1.0);
-                let birth_volume = mix(0.06, 0.8, zoom_factor);
-                let voice_slot = atomicAdd(&queue_buffer.telemetry.audio_voice_count, 1u);
-                if (voice_slot < 256u) {
-                    queue_buffer.audio[voice_slot] = AudioVoice(pos, 2u /* EVENT_BIRTH */, birth_volume);
-                }
-            }
-        } else {
-            // Freelist was empty (population at carrying capacity): mark birth event as invalid/empty
-            queue_buffer.births[queue_idx] = BirthEvent(0xFFFFFFFFu, 0xFFFFFFFFu, 0xFFFFFFFFu, 0u);
         }
     }
 }
+
+// Living Agent: commit state and pack visual_cache (offsets 124..128):
+let r_u8 = u32(clamp(tr0, 0.0, 1.0) * 255.0);
+let glow_u8 = u32(clamp(max(a_attack, select(0.0, 1.0, a_birth > 0u)), 0.0, 1.0) * 255.0);
+let e_u8 = u32(clamp(a_energy / 100.0, 0.0, 1.0) * 255.0);
+let vis_flags = select(0u, 1u << 24u, a_attack > 0.25) | select(0u, 1u << 25u, a_birth > 0u);
+agent_states[agent_idx].visual_cache = r_u8 | (glow_u8 << 8u) | (e_u8 << 16u) | vis_flags;
 ```
 
 - [ ] **Step 4: Implement Decoupled Birth & Genome Mutation Pass (`birth_step.wgsl`)**
@@ -1147,15 +1262,35 @@ override ENABLE_EXPANDED_CORTEX: bool = false;
 @group(0) @binding(1) var<storage, read_write> agent_genomes: array<GpuAgentGenome>;
 @group(0) @binding(2) var<storage, read_write> agent_atomics: array<GpuAgentAtomic>;
 @group(0) @binding(3) var<storage, read> queue_buffer: ConsolidatedQueue;
+@group(0) @binding(4) var<storage, read_write> freelist: array<u32>;
 @group(1) @binding(0) var<uniform> params: GpuSimParams;
+
+var<workgroup> shared_child_slot: u32;
 
 @compute @workgroup_size(32)
 fn birth_main(@builtin(workgroup_id) wg_id: vec3u, @builtin(local_invocation_id) local_id: vec3u) {
     let event = queue_buffer.births[wg_id.x];
-    let child_idx = event.child_slot;
-    if (child_idx == 0xFFFFFFFFu) { return; } // Carrying capacity reached or invalid entry
     let parent_a = event.parent_a;
     let parent_b = event.parent_b;
+
+    // Pass-Decoupled Allocation: Thread 0 pops from freelist (zero concurrent pushes occurring):
+    if (local_id.x == 0u) {
+        var cur_top = atomicLoad(&queue_buffer.telemetry.freelist_top);
+        var slot = 0xFFFFFFFFu;
+        while (cur_top > 0u) {
+            let cas = atomicCompareExchangeWeak(&queue_buffer.telemetry.freelist_top, cur_top, cur_top - 1u);
+            if (cas.exchanged) {
+                slot = freelist[cur_top - 1u];
+                break;
+            }
+            cur_top = cas.old_value;
+        }
+        shared_child_slot = slot;
+    }
+    workgroupBarrier();
+
+    let child_idx = shared_child_slot;
+    if (child_idx == 0xFFFFFFFFu) { return; } // Population carrying capacity reached!
 
     // Parallel genome crossover & mutation (88 u32 words = 10*7 + 6*3)
     for (var w = local_id.x; w < 88u; w += 32u) {
@@ -1199,6 +1334,12 @@ fn birth_main(@builtin(workgroup_id) wg_id: vec3u, @builtin(local_invocation_id)
         agent_states[child_idx].id = atomicAdd(&queue_buffer.telemetry.apex_agent_id, 1u); // Next unique creature ID
         agent_states[child_idx].morton_code = 0u; // Assigned by morton_encode
         agent_states[child_idx].packed_color = pack_lineage_color(child_root);
+
+        // Newborn Initialization Invariant: Populate visual_cache with birth flash!
+        let child_r_u8 = u32(clamp(agent_states[child_idx].traits[0], 0.0, 1.0) * 255.0);
+        let child_e_u8 = u32(clamp(24.0 / 100.0, 0.0, 1.0) * 255.0);
+        let child_glow_u8 = 255u; // Newborn birth flash!
+        agent_states[child_idx].visual_cache = child_r_u8 | (child_glow_u8 << 8u) | (child_e_u8 << 16u);
     }
 }
 ```
@@ -1259,7 +1400,7 @@ fn test_mating_canonical_symmetry_and_sexual_selection_mod() {
 }
 ```
 - [ ] **Step 2: Run test to verify it fails**
-- [ ] **Step 3: Implement engine switch in Bevy UI, bi-directional state bridge (`sync_rust_to_gpu` / `sync_gpu_to_rust`), non-blocking double-buffered DMA staging ring (`staging[frame % 2]`) for 128B telemetry and 4 KB audio readbacks without CPU stalls, direct 128-byte `GpuAgentState` streaming for LBVH frustum culling and instanced dart rendering ($4.0\times$ bandwidth boost over reading full 480B agents), 32x speed picking locking on Sub-Tick 1 with `(slot_idx, agent_id)` identity guard, Two-Tier uncapped LBVH distance disambiguation, Bevy audio playback reading 256-voice queue, connect LBVH frustum culling, draw Minimap LOD clusters, wire `SimMods` (`[BARNES-HUT]`, `[EXPANDED CORTEX]`, `[SEXUAL SELECTION]`) to specialized pipeline variants via WGSL `override` constants, and add the "EXPERIMENTAL MUTATIONS" drawer to the Bevy UI sidebar**
+- [ ] **Step 3: Implement engine switch in Bevy UI, bi-directional state bridge (`sync_rust_to_gpu` synthesizing `visual_cache` / `sync_gpu_to_rust`), non-blocking double-buffered DMA staging ring (`staging[frame % 2]`) for 128B telemetry and 4 KB audio readbacks without CPU stalls, direct 128-byte `GpuAgentState` streaming for LBVH frustum culling and instanced dart rendering loading contiguous `vec2u(packed_color, visual_cache)` ($4.0\times$ bandwidth boost over reading full 480B agents, bypassing Cache Line 0 traits and saving ~72 MB/frame vertex fetch bandwidth), 32x speed picking locking on Sub-Tick 1 with `(slot_idx, agent_id)` identity guard, Two-Tier uncapped LBVH distance disambiguation, Bevy audio playback reading 256-voice queue, connect LBVH frustum culling, draw Minimap LOD clusters, wire `SimMods` (`[BARNES-HUT]`, `[EXPANDED CORTEX]`, `[SEXUAL SELECTION]`) to specialized pipeline variants via WGSL `override` constants, and add the "EXPERIMENTAL MUTATIONS" drawer to the Bevy UI sidebar**
 - [ ] **Step 4: Run all workspace tests (`cargo test --workspace`) ensuring 100% pass**
 - [ ] **Step 5: Build release (`cargo build -p clank_app --release`), capture GPU screenshot via API (`POST /screenshot`), inspect with `view_file`**
 - [ ] **Step 6: Git commit on `feature/bevy-gpu`**
