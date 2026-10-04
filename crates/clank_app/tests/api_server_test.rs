@@ -26,6 +26,7 @@ fn test_http_api_endpoints() {
             growth: 1.0,
             hostility: 1.0,
             selected_agent: None,
+            active_engine: "rust".to_string(),
         });
     }
 

@@ -2,6 +2,13 @@ use bevy::prelude::*;
 use clank_core::world::World;
 use clank_core::agent::AgentData;
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Default, serde::Serialize, serde::Deserialize)]
+pub enum ActiveEngine {
+    #[default]
+    Rust,
+    Gpu,
+}
+
 #[derive(Resource)]
 pub struct SimWorld {
     pub world: World,
@@ -11,6 +18,7 @@ pub struct SimWorld {
     pub selected_agent_id: Option<u32>,
     pub world_width: f64,
     pub world_height: f64,
+    pub active_engine: ActiveEngine,
 }
 
 impl Default for SimWorld {
@@ -24,6 +32,7 @@ impl Default for SimWorld {
             selected_agent_id: None,
             world_width: 950.0,
             world_height: 747.0,
+            active_engine: ActiveEngine::Rust,
         }
     }
 }
@@ -39,6 +48,7 @@ impl SimWorld {
             selected_agent_id: None,
             world_width: 950.0,
             world_height: 747.0,
+            active_engine: ActiveEngine::Rust,
         }
     }
 

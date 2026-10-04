@@ -44,10 +44,12 @@ fn test_api_types_json_roundtrip() {
         growth: 1.0,
         hostility: 1.0,
         selected_agent: Some(42),
+        active_engine: "rust".to_string(),
     };
     let state_json = serde_json::to_string(&state).expect("serialize state");
     let deserialized_state: ApiStateResponse = serde_json::from_str(&state_json).expect("deserialize state");
     assert_eq!(deserialized_state.population, 50);
+    assert_eq!(deserialized_state.active_engine, "rust");
 
     let metrics = ApiMetricsResponse {
         fps: 60.0,

@@ -182,6 +182,56 @@ pub fn extract_agent_render_data(sim: &SimWorld) -> Vec<AgentRenderItem> {
         .collect()
 }
 
+pub fn extract_gpu_agent_render_data(
+    agents: &[crate::gpu::types::GpuAgentState],
+    world_height: f32,
+    selected_id: Option<u32>,
+    camera_bounds: Option<[f32; 4]>,
+) -> Vec<AgentRenderItem> {
+    agents
+        .iter()
+        .filter(|a| (a.meta_flags & (1 << 13)) == 0) // living only
+        .filter(|a| {
+            if let Some([min_x, min_y, max_x, max_y]) = camera_bounds {
+                let x = a.pos_vel[0];
+                let y = a.pos_vel[1];
+                let r = 2.3 + a.traits[0] * 4.5;
+                x + r >= min_x && x - r <= max_x && y + r >= min_y && y - r <= max_y
+            } else {
+                true
+            }
+        })
+        .map(|a| {
+            let sim_pos = Vec2::new(a.pos_vel[0], a.pos_vel[1]);
+            let bevy_pos = sim_to_bevy_coord(sim_pos, world_height);
+            let radius = 2.3 + a.traits[0] * 4.5;
+            let root = a.meta_flags & 0x0F;
+            let energy = a.angle_energy[1] as f64;
+            let color = agent_body_color(root, energy);
+            let is_selected = selected_id == Some(a.id);
+            let a_birth = (a.meta_flags >> 6) & 0x7F;
+
+            AgentRenderItem {
+                id: a.id,
+                sim_pos,
+                bevy_pos,
+                angle: a.angle_energy[0],
+                radius,
+                color,
+                is_selected,
+                attack: a.angle_energy[3],
+                birth: a_birth,
+                signal: a.traits[6],
+                sight: a.traits[2],
+                bulk: a.traits[0],
+                armor: a.traits[3],
+                carnivory: a.traits[5],
+                trail: Vec::new(),
+            }
+        })
+        .collect()
+}
+
 pub fn generate_soil_rgba(soil: &SoilGrid, out_buf: &mut [u8]) {
     let inv18 = 1.0 / 1.8;
     for i in 0..soil.grid_size {

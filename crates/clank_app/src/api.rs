@@ -43,6 +43,12 @@ pub struct ApiStateResponse {
     pub hostility: f64,
     #[serde(default)]
     pub selected_agent: Option<u32>,
+    #[serde(default = "default_active_engine")]
+    pub active_engine: String,
+}
+
+fn default_active_engine() -> String {
+    "rust".to_string()
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -712,6 +718,10 @@ pub fn api_state_sync_system(
         growth: sim.world.growth / 100.0,
         hostility: sim.world.hostility / 100.0,
         selected_agent: sim.selected_agent_id,
+        active_engine: match sim.active_engine {
+            crate::sim::ActiveEngine::Rust => "rust".to_string(),
+            crate::sim::ActiveEngine::Gpu => "gpu".to_string(),
+        },
     };
     if let Ok(mut lock) = shared.0.write() {
         lock.state = Some(state);

@@ -35,6 +35,10 @@ pub struct UiState {
     pub theme_initialized: bool,
     pub history_timer: f32,
     pub scroll_offset: Option<f32>,
+    pub barnes_hut: bool,
+    pub expanded_cortex: bool,
+    pub sexual_selection: bool,
+    pub show_mod_drawer: bool,
 }
 
 impl Default for UiState {
@@ -53,6 +57,10 @@ impl Default for UiState {
             theme_initialized: false,
             history_timer: 0.0,
             scroll_offset: None,
+            barnes_hut: false,
+            expanded_cortex: false,
+            sexual_selection: false,
+            show_mod_drawer: true,
         }
     }
 }
@@ -261,12 +269,25 @@ pub fn clank_ui_system(
 
                     ui.add_space(7.0);
 
-                    let btn_engine = egui::Button::new(RichText::new("ENGINE: RUST").size(10.0).monospace().strong().color(Color32::from_rgb(56, 239, 125)))
-                        .fill(Color32::from_rgb(20, 53, 43))
-                        .stroke(Stroke::new(1.0, Color32::from_rgb(56, 239, 125)))
+                    let (label, bg_col, stroke_col, text_col) = match sim.active_engine {
+                        crate::sim::ActiveEngine::Rust => ("ENGINE: RUST", Color32::from_rgb(20, 53, 43), Color32::from_rgb(56, 239, 125), Color32::from_rgb(56, 239, 125)),
+                        crate::sim::ActiveEngine::Gpu => ("ENGINE: GPU", Color32::from_rgb(18, 48, 65), Color32::from_rgb(0, 220, 255), Color32::from_rgb(0, 220, 255)),
+                    };
+                    let btn_engine = egui::Button::new(RichText::new(label).size(10.0).monospace().strong().color(text_col))
+                        .fill(bg_col)
+                        .stroke(Stroke::new(1.0, stroke_col))
                         .corner_radius(CornerRadius::same(3));
                     if ui.add_sized([106.0, 28.0], btn_engine).clicked() {
-                        state.add_chronicle(format!("{:05}  Native Bevy+Rust engine running at {}x.", sim.world.tick, sim.speed));
+                        match sim.active_engine {
+                            crate::sim::ActiveEngine::Rust => {
+                                sim.active_engine = crate::sim::ActiveEngine::Gpu;
+                                state.add_chronicle(format!("{:05}  Switched to GPU compute simulation engine.", sim.world.tick));
+                            }
+                            crate::sim::ActiveEngine::Gpu => {
+                                sim.active_engine = crate::sim::ActiveEngine::Rust;
+                                state.add_chronicle(format!("{:05}  Switched to Rust reference simulation engine.", sim.world.tick));
+                            }
+                        }
                     }
                 });
             });
@@ -382,6 +403,14 @@ pub fn clank_ui_system(
                         ui.label(RichText::new("SPECIMEN").size(10.5).monospace().strong().color(COLOR_GOLD));
                         ui.add_space(4.0);
                         render_specimen_box(ui, &sim);
+
+                        ui.add_space(14.0);
+                        ui.separator();
+
+                        // EXPERIMENTAL MUTATIONS (GPU SIM MODS)
+                        ui.label(RichText::new("EXPERIMENTAL MUTATIONS").size(10.5).monospace().strong().color(COLOR_GOLD));
+                        ui.add_space(4.0);
+                        render_mod_drawer(ui, &mut state);
 
                         ui.add_space(14.0);
                         ui.separator();
@@ -602,6 +631,30 @@ fn render_pressure_sliders(ui: &mut egui::Ui, sim: &mut SimWorld) {
     if ui.add(egui::Slider::new(&mut cap, 50..=1000).show_value(false)).changed() {
         sim.world.max_cap = cap;
     }
+}
+
+fn render_mod_drawer(ui: &mut egui::Ui, state: &mut UiState) {
+    ui.horizontal(|ui| {
+        let label = if state.barnes_hut { "[BARNES-HUT: ON]" } else { "[BARNES-HUT: OFF]" };
+        let col = if state.barnes_hut { COLOR_CYAN } else { COLOR_MUTED };
+        if ui.button(RichText::new(label).size(9.5).monospace().color(col)).clicked() {
+            state.barnes_hut = !state.barnes_hut;
+        }
+
+        let label_ctx = if state.expanded_cortex { "[EXPANDED CORTEX: ON]" } else { "[EXPANDED CORTEX: OFF]" };
+        let col_ctx = if state.expanded_cortex { COLOR_CYAN } else { COLOR_MUTED };
+        if ui.button(RichText::new(label_ctx).size(9.5).monospace().color(col_ctx)).clicked() {
+            state.expanded_cortex = !state.expanded_cortex;
+        }
+    });
+    ui.add_space(3.0);
+    ui.horizontal(|ui| {
+        let label_sex = if state.sexual_selection { "[SEXUAL SELECTION: ON]" } else { "[SEXUAL SELECTION: OFF]" };
+        let col_sex = if state.sexual_selection { COLOR_CYAN } else { COLOR_MUTED };
+        if ui.button(RichText::new(label_sex).size(9.5).monospace().color(col_sex)).clicked() {
+            state.sexual_selection = !state.sexual_selection;
+        }
+    });
 }
 
 fn render_history_chart(ui: &mut egui::Ui, state: &UiState, max_cap: usize) {

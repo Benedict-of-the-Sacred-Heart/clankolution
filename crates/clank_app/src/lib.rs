@@ -6,3 +6,4 @@ pub mod ui;
 pub mod theme;
 pub mod api;
 pub mod gpu;
+pub mod audio;
