@@ -109,11 +109,11 @@
         `if (my_energy_milli > prev_bid) { atomicStore(&agent_atomics[partner_idx].mate_claim, agent_idx + 1u); }`
         In `birth_step.wgsl`, the desired mate automatically pairs with the highest-energy/fittest suitor (`mate_claim - 1u`), driving rapid Darwinian sexual selection across up to 4.29 billion creature slots without bit packing or buffer overhead!
     - **Mod 4: Lineage Genome Bank (Ultra-Scale Architectural Concept)**:
-      - Concept design for future 10,000,000+ creature scaling. The baseline engine strictly preserves the direct 512-byte `GpuAgent` layout for 100% bit-exact parity with `clankolution.html` with zero structural modifications.
-      - Concept architecture: Partitions the 88-word genome into 8 deduplicated functional gene blocks (44 bytes each: feelers, vision, scent, RNN core, steering, thrust, attack, mating). Creatures store 8 `u16` block pointers (16 bytes total instead of 352 bytes), shrinking the dynamic agent struct footprint from 512 bytes to 160 bytes ($3.2\times$ reduction) and unlocking ultra-scale simulations of 10,000,000+ creatures within ~1.6 GB of VRAM without altering baseline pipeline structs.
+      - Concept design for future 10,000,000+ creature scaling. The baseline engine strictly preserves the split 128-byte `GpuAgentState` and 352-byte `GpuAgentGenome` layout for 100% bit-exact parity with `clankolution.html` with zero structural modifications.
+      - Concept architecture: Partitions the 88-word genome into 8 deduplicated functional gene blocks (44 bytes each: feelers, vision, scent, RNN core, steering, thrust, attack, mating). Creatures store 8 `u16` block pointers (16 bytes total instead of 352 bytes), shrinking the dynamic agent struct footprint to 144 bytes ($3.3\times$ reduction) and unlocking ultra-scale simulations of 10,000,000+ creatures within ~1.6 GB of VRAM without altering baseline pipeline structs.
 
 12. **Seamless Dual-Engine State Hot-Swapping**:
-    - Bi-directional bridge between Bevy ECS `SimWorld` and the GPU storage buffers (`GpuAgent`, `GpuAgentAtomic`, `GpuSoilCell`).
+    - Bi-directional bridge between Bevy ECS `SimWorld` and the GPU storage buffers (`GpuAgentState`, `GpuAgentGenome`, `GpuAgentAtomic`, `GpuSoilCell`).
     - Switching `[ENGINE: RUST]` $\leftrightarrow$ `[ENGINE: GPU]` dynamically transfers live agents and simulation tick, allowing users to hot-swap engines live mid-run without resetting the simulation timeline or losing creature lineages.
 
 13. **GPU Particle Sparks & Mesh Instancing**:
@@ -648,7 +648,7 @@ pub struct GpuLbvhNode {
 - Test: `crates/clank_app/tests/gpu_freelist_test.rs`
 
 **Interfaces:**
-- Consumes: `GpuAgent`, `MAX_AGENTS` (e.g. 1,000,000 agents)
+- Consumes: `GpuAgentState`, `MAX_AGENTS` (e.g. 1,000,000 agents)
 - Produces: `TombstoneFreelistManager` managing allocation head, tombstone flags, and zero-copy recycling
 
 - [ ] **Step 1: Write failing test for Freelist initialization, slot recycling, and underflow protection**
@@ -807,7 +807,7 @@ fn soil_main(@builtin(global_invocation_id) id: vec3u) {
 - Test: `crates/clank_app/tests/gpu_spatial_test.rs`
 
 **Interfaces:**
-- Consumes: `GpuAgent` positions, grid dimensions ($9 \times 6$, cell size $100\text{px}$)
+- Consumes: `GpuAgentState` positions, grid dimensions ($9 \times 6$, cell size $100\text{px}$)
 - Produces: Sorted Morton indices (8-byte indirection buffer `vec2u(morton_key, agent_id)`), cell offset table, Karras LBVH tree with tie-breaking, unified interactive spatial query pass (`spatial_query.wgsl`: $O(\log N)$ uncapped mouse picking with dynamic radius shrinking and AoE tool queries)
 
 - [ ] **Step 1: Write failing test for Morton bit-interleaving, cell_offsets sentinel initialization, LBVH tree building with tie-breaking, degenerate population guard ($N \le 1$), uncapped picking query with dynamic radius shrinking, and AoE tool queries**
@@ -1046,7 +1046,7 @@ fn spatial_query_main(@builtin(global_invocation_id) id: vec3u) {
 - Test: `crates/clank_app/tests/gpu_birth_mutation_test.rs`
 
 **Interfaces:**
-- Consumes: Soil texture (bilinear reads), `GpuSoilCell` storage buffer (atomic grazing/deposits), Spatial index (Morton cells), LBVH tree, `GpuAgent` storage buffer, `GpuAgentAtomic` L2 buffer, `GpuSimParams`
+- Consumes: `soil_data` texture (bilinear reads), `GpuSoilCell` storage buffer (atomic grazing/deposits), Spatial index (Morton cells), LBVH tree, `GpuAgentState` (128B) and `GpuAgentGenome` (352B) storage buffers, `GpuAgentAtomic` L2 buffer, `GpuSimParams`
 - Produces: Updated kinematics with toroidal wrapping, hidden RNN states via branchless `unpack4x8snorm` across 88 `u32` words, coalesced soil deposits, atomic combat resolution with `dead_claimed` CAS, and decoupled SIMD genome mutation
 
 - [ ] **Step 1: Write failing test for universal `unpack4x8snorm` forward pass, combat resolution with double-free CAS, and toroidal coordinate wrapping**
@@ -1471,7 +1471,8 @@ fn birth_main(@builtin(workgroup_id) wg_id: vec3u, @builtin(local_invocation_id)
 
 **Files:**
 - Modify: `crates/clank_app/src/rendering.rs` (LBVH Camera Frustum Culling & Morton-ordered instanced dart stream)
-- Modify: `crates/clank_app/src/audio.rs` (Consolidated 256-voice queue consumption & granular Bevy audio playback)
+- Create: `crates/clank_app/src/audio.rs` (Consolidated 256-voice queue consumption & granular Bevy audio playback)
+- Modify: `crates/clank_app/src/lib.rs` (register `pub mod audio;`)
 - Modify: `crates/clank_app/src/ui.rs` (Top bar toggle: `ENGINE: RUST` / `ENGINE: GPU`, Minimap LOD radar display, 32x speed picking)
 - Modify: `crates/clank_app/src/api.rs` (Telemetry reporting for active engine)
 - Test: `crates/clank_app/tests/dual_engine_test.rs`
