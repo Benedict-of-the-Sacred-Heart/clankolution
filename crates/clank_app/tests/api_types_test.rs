@@ -11,12 +11,15 @@ fn test_api_types_json_roundtrip() {
         max_cap: Some(500),
         scroll_offset: Some(100.0),
         selected_agent: Some(42),
+        active_engine: Some("gpu".to_string()),
     };
     let json = serde_json::to_string(&settings).expect("serialize settings");
     let deserialized: ApiSettingsRequest = serde_json::from_str(&json).expect("deserialize settings");
     assert_eq!(deserialized.speed, Some(4.0));
     assert_eq!(deserialized.mutation, Some(0.25));
     assert_eq!(deserialized.selected_agent, Some(42));
+    assert_eq!(deserialized.active_engine, Some("gpu".to_string()));
+
 
     let tool = ApiToolRequest {
         tool: "nourish".to_string(),
