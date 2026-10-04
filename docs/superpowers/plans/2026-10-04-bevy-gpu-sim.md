@@ -602,6 +602,7 @@ fn test_soil_atomic_buffer_and_texture_bounds() {
     // 2. Renewal formula: f += renewal * bloom * (1 - f / 1.7) clamped to [0.0, 2.5]
     // 3. Taint decay: t * 0.994 - 0.0001, scent decay: s * 0.954
     // 4. Output texture matches 75x50 rgba16float format
+    // 5. Boundary coordinate clamping: min(pos.x / 12.0, 74) and min(pos.y / 12.0, 49) prevents OOB write at seam (900.0, 600.0)
 }
 ```
 - [ ] **Step 2: Run test to verify it fails**
@@ -1042,8 +1043,16 @@ if (best_dist < contact_dist && a_attack > 0.25 && a_cooldown == 0u) {
     }
 }
 
+// Canonical Atomic Energy Model: apply internal net delta (grazing - basal - thrust) to atomic ground truth:
+let internal_delta_milli = i32((eaten_float - basal_cost - thrust_cost) * 1000.0);
+atomicAdd(&agent_atomics[agent_idx].energy_milli, internal_delta_milli);
+
+// Update visual/state energy float from atomic ground truth:
+a_energy = max(0.0, f32(atomicLoad(&agent_atomics[agent_idx].energy_milli)) * 0.001);
+agent_states[agent_idx].angle_energy[1] = a_energy;
+
 // Starvation death handling (Hardening Fix: counter gated behind successful CAS ownership):
-if (a_energy <= 0.0) {
+if (atomicLoad(&agent_atomics[agent_idx].energy_milli) <= 0) {
     let claim_death = atomicCompareExchangeWeak(&agent_atomics[agent_idx].dead_claimed, 0u, 1u);
     if (claim_death.exchanged) {
         atomicAdd(&queue_buffer.telemetry.starvations, 1u); // Only increment if death claim succeeded!
