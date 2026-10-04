@@ -392,30 +392,53 @@ pub fn update_soil_texture_system(
     }
 }
 
-pub fn generate_dart_mesh_data(
-    sim: &SimWorld,
+#[inline]
+pub fn unpack_visual_cache(visual_cache: u32, packed_color: u32) -> Option<(f32, Color, bool, bool)> {
+    if visual_cache == 0 {
+        return None;
+    }
+    let r_u8 = (visual_cache & 0xFF) as f32;
+    let radius = 2.3 + (r_u8 / 255.0) * 4.5;
+    let e_u8 = ((visual_cache >> 16) & 0xFF) as f32;
+    let alpha = (0.55 + (e_u8 / 255.0 * 100.0 / 160.0)).clamp(0.55, 1.0);
+
+    let r = (packed_color & 0xFF) as u8;
+    let g = ((packed_color >> 8) & 0xFF) as u8;
+    let b = ((packed_color >> 16) & 0xFF) as u8;
+    let base_color = Color::srgba_u8(r, g, b, (alpha * 255.0) as u8);
+
+    let is_attacking = (visual_cache & (1 << 24)) != 0;
+    let has_birth = (visual_cache & (1 << 25)) != 0;
+
+    Some((radius, base_color, is_attacking, has_birth))
+}
+
+pub fn generate_dart_mesh_from_gpu_states(
+    agents: &[crate::gpu::types::GpuAgentState],
+    world_height: f32,
     positions: &mut Vec<[f32; 3]>,
     colors: &mut Vec<[f32; 4]>,
 ) {
     positions.clear();
     colors.clear();
+    positions.reserve(agents.len() * 6);
+    colors.reserve(agents.len() * 6);
 
-    let items = extract_agent_render_data(sim);
-    positions.reserve(items.len() * 6);
-    colors.reserve(items.len() * 6);
+    for a in agents {
+        let Some((radius, color, _is_attacking, _has_birth)) = unpack_visual_cache(a.visual_cache, a.packed_color) else {
+            continue;
+        };
 
-    for item in &items {
-        let rot = Mat2::from_angle(-item.angle);
-        let r = item.radius;
-        let c = item.color.to_srgba();
-
-        // Solid Body: 2 Triangles forming the 4-vertex concave dart
-        let nose = item.bevy_pos + rot * Vec2::new(r * 1.5, 0.0);
-        let right = item.bevy_pos + rot * Vec2::new(-r * 0.75, r * (0.5 + item.armor * 0.45));
-        let rear = item.bevy_pos + rot * Vec2::new(-r * (0.45 + item.carnivory), 0.0);
-        let left = item.bevy_pos + rot * Vec2::new(-r * 0.75, -r * (0.5 + item.armor * 0.45));
-
+        let sim_pos = Vec2::new(a.pos_vel[0], a.pos_vel[1]);
+        let bevy_pos = sim_to_bevy_coord(sim_pos, world_height);
+        let rot = Mat2::from_angle(-a.angle_energy[0]);
+        let c = color.to_srgba();
         let body_rgba = [c.red, c.green, c.blue, c.alpha];
+
+        let nose = bevy_pos + rot * Vec2::new(radius * 1.5, 0.0);
+        let right = bevy_pos + rot * Vec2::new(-radius * 0.75, radius * 0.75);
+        let rear = bevy_pos + rot * Vec2::new(-radius * 0.5, 0.0);
+        let left = bevy_pos + rot * Vec2::new(-radius * 0.75, -radius * 0.75);
 
         // Body Triangle 1: [nose, right, rear]
         positions.push([nose.x, nose.y, -2.0]);
@@ -444,6 +467,81 @@ pub fn generate_dart_mesh_data(
     }
 }
 
+pub fn generate_outline_mesh_from_gpu_states(
+    agents: &[crate::gpu::types::GpuAgentState],
+    world_height: f32,
+    positions: &mut Vec<[f32; 3]>,
+    colors: &mut Vec<[f32; 4]>,
+) {
+    positions.clear();
+    colors.clear();
+    positions.reserve(agents.len() * 8);
+    colors.reserve(agents.len() * 8);
+
+    for a in agents {
+        let Some((radius, _color, is_attacking, _has_birth)) = unpack_visual_cache(a.visual_cache, a.packed_color) else {
+            continue;
+        };
+
+        let sim_pos = Vec2::new(a.pos_vel[0], a.pos_vel[1]);
+        let bevy_pos = sim_to_bevy_coord(sim_pos, world_height);
+        let rot = Mat2::from_angle(-a.angle_energy[0]);
+
+        let nose = bevy_pos + rot * Vec2::new(radius * 1.5, 0.0);
+        let right = bevy_pos + rot * Vec2::new(-radius * 0.75, radius * 0.75);
+        let rear = bevy_pos + rot * Vec2::new(-radius * 0.5, 0.0);
+        let left = bevy_pos + rot * Vec2::new(-radius * 0.75, -radius * 0.75);
+
+        let border_rgba = if is_attacking {
+            [1.0, 0.33, 0.31, 1.0]
+        } else {
+            [0.082, 0.188, 0.204, 1.0]
+        };
+
+        // 4 lines = 8 vertices for LineList
+        positions.push([nose.x, nose.y, -1.9]);
+        positions.push([right.x, right.y, -1.9]);
+        colors.push(border_rgba);
+        colors.push(border_rgba);
+
+        positions.push([right.x, right.y, -1.9]);
+        positions.push([rear.x, rear.y, -1.9]);
+        colors.push(border_rgba);
+        colors.push(border_rgba);
+
+        positions.push([rear.x, rear.y, -1.9]);
+        positions.push([left.x, left.y, -1.9]);
+        colors.push(border_rgba);
+        colors.push(border_rgba);
+
+        positions.push([left.x, left.y, -1.9]);
+        positions.push([nose.x, nose.y, -1.9]);
+        colors.push(border_rgba);
+        colors.push(border_rgba);
+    }
+
+    if positions.is_empty() {
+        positions.push([0.0, 0.0, -100.0]);
+        positions.push([0.0, 0.0, -100.0]);
+        colors.push([0.0, 0.0, 0.0, 0.0]);
+        colors.push([0.0, 0.0, 0.0, 0.0]);
+    }
+}
+
+pub fn generate_dart_mesh_data(
+    sim: &SimWorld,
+    positions: &mut Vec<[f32; 3]>,
+    colors: &mut Vec<[f32; 4]>,
+) {
+    let (gpu_states, _, _, _, _) = crate::gpu::bridge::sync_rust_to_gpu(sim);
+    generate_dart_mesh_from_gpu_states(&gpu_states, sim.world_height as f32, positions, colors);
+}
+
+#[derive(Resource)]
+pub struct AgentOutlineMeshResource {
+    pub mesh_handle: Handle<Mesh>,
+}
+
 pub fn setup_agent_rendering(
     mut commands: Commands,
     mut meshes: ResMut<Assets<Mesh>>,
@@ -457,26 +555,50 @@ pub fn setup_agent_rendering(
 
     commands.spawn((
         Mesh2d(mesh_handle.clone()),
-        MeshMaterial2d(mat_handle),
+        MeshMaterial2d(mat_handle.clone()),
         Transform::default(),
     ));
     commands.insert_resource(AgentMeshResource { mesh_handle });
+
+    let mut outline_mesh = Mesh::new(PrimitiveTopology::LineList, RenderAssetUsages::default());
+    outline_mesh.insert_attribute(Mesh::ATTRIBUTE_POSITION, vec![[0.0, 0.0, -100.0]; 2]);
+    outline_mesh.insert_attribute(Mesh::ATTRIBUTE_COLOR, vec![[0.0, 0.0, 0.0, 0.0]; 2]);
+    let outline_handle = meshes.add(outline_mesh);
+
+    commands.spawn((
+        Mesh2d(outline_handle.clone()),
+        MeshMaterial2d(mat_handle),
+        Transform::default(),
+    ));
+    commands.insert_resource(AgentOutlineMeshResource { mesh_handle: outline_handle });
 }
 
 pub fn update_agent_mesh_system(
     sim: Option<Res<SimWorld>>,
     res: Option<Res<AgentMeshResource>>,
+    outline_res: Option<Res<AgentOutlineMeshResource>>,
     mut meshes: ResMut<Assets<Mesh>>,
 ) {
     let (Some(sim), Some(res)) = (sim, res) else { return };
-    let Some(mut mesh) = meshes.get_mut(&res.mesh_handle) else { return };
+    let (gpu_states, _, _, _, _) = crate::gpu::bridge::sync_rust_to_gpu(&sim);
 
-    let mut positions = Vec::new();
-    let mut colors = Vec::new();
-    generate_dart_mesh_data(&sim, &mut positions, &mut colors);
+    if let Some(mut mesh) = meshes.get_mut(&res.mesh_handle) {
+        let mut positions = Vec::new();
+        let mut colors = Vec::new();
+        generate_dart_mesh_from_gpu_states(&gpu_states, sim.world_height as f32, &mut positions, &mut colors);
+        mesh.insert_attribute(Mesh::ATTRIBUTE_POSITION, positions);
+        mesh.insert_attribute(Mesh::ATTRIBUTE_COLOR, colors);
+    }
 
-    mesh.insert_attribute(Mesh::ATTRIBUTE_POSITION, positions);
-    mesh.insert_attribute(Mesh::ATTRIBUTE_COLOR, colors);
+    if let Some(outline_res) = outline_res {
+        if let Some(mut mesh) = meshes.get_mut(&outline_res.mesh_handle) {
+            let mut positions = Vec::new();
+            let mut colors = Vec::new();
+            generate_outline_mesh_from_gpu_states(&gpu_states, sim.world_height as f32, &mut positions, &mut colors);
+            mesh.insert_attribute(Mesh::ATTRIBUTE_POSITION, positions);
+            mesh.insert_attribute(Mesh::ATTRIBUTE_COLOR, colors);
+        }
+    }
 }
 
 pub fn generate_particle_mesh_data(
@@ -626,65 +748,34 @@ pub fn render_sim_gizmos_system(
     let w = sim.world_width as f32;
     let h = sim.world_height as f32;
 
-    let items = extract_agent_render_data(&sim);
-    for item in items {
-        // 1. Trails (Faded multi-segment history lines in lineage palette)
-        if item.trail.len() > 1 {
-            let trail_color = item.color.with_alpha(0.25);
-            for window in item.trail.windows(2) {
-                if (window[0].x - window[1].x).abs() < w * 0.5
-                    && (window[0].y - window[1].y).abs() < h * 0.5
-                {
-                    gizmos.line_2d(window[0], window[1], trail_color);
+    // Render high-detail focus gizmos (reticle & trail) ONLY for the selected specimen.
+    // Background dart outlines and birth halos are rendered in the unified GPU mesh.
+    if let Some(selected_id) = sim.selected_agent_id {
+        if let Some(a) = sim.world.agents.iter().find(|ag| ag.id == selected_id && ag.dead == 0) {
+            let sim_pos = Vec2::new(a.x as f32, a.y as f32);
+            let bevy_pos = sim_to_bevy_coord(sim_pos, h);
+            let r = (2.3 + a.tr[0] * 4.5) as f32;
+            let c = agent_body_color(a.root, a.energy);
+
+            // Selection Reticle (#fff1d6)
+            gizmos.circle_2d(bevy_pos, r + 8.0, Color::srgb(1.0, 0.945, 0.839));
+
+            // Selected specimen history trail
+            if a.trail_count > 1 {
+                let trail_color = c.with_alpha(0.45);
+                let trail_len = (a.trail_count as usize).min(9);
+                for i in 0..trail_len.saturating_sub(1) {
+                    let p1 = sim_to_bevy_coord(Vec2::new(a.trail_x[i] as f32, a.trail_y[i] as f32), h);
+                    let p2 = sim_to_bevy_coord(Vec2::new(a.trail_x[i + 1] as f32, a.trail_y[i + 1] as f32), h);
+                    if (p1.x - p2.x).abs() < w * 0.5 && (p1.y - p2.y).abs() < h * 0.5 {
+                        gizmos.line_2d(p1, p2, trail_color);
+                    }
                 }
             }
         }
-
-        // 2. Exact Dart Polygon Body Outline
-        let rot = Mat2::from_angle(-item.angle);
-        let r = item.radius;
-        let nose = item.bevy_pos + rot * Vec2::new(r * 1.5, 0.0);
-        let right_wing = item.bevy_pos + rot * Vec2::new(-r * 0.75, r * (0.5 + item.armor * 0.45));
-        let rear_notch = item.bevy_pos + rot * Vec2::new(-r * (0.45 + item.carnivory), 0.0);
-        let left_wing = item.bevy_pos + rot * Vec2::new(-r * 0.75, -r * (0.5 + item.armor * 0.45));
-
-        // Body outline (Red when attacking, else #153034)
-        let border_color = if item.attack > 0.5 {
-            Color::srgb(1.0, 0.33, 0.31)
-        } else {
-            Color::srgb(0.082, 0.188, 0.204)
-        };
-
-        gizmos.line_2d(nose, right_wing, border_color);
-        gizmos.line_2d(right_wing, rear_notch, border_color);
-        gizmos.line_2d(rear_notch, left_wing, border_color);
-        gizmos.line_2d(left_wing, nose, border_color);
-
-        // 3. Sensory Antennae (Whiskers if sight trait > 0.56)
-        if item.sight > 0.56 {
-            let antenna_color = item.color.with_alpha(0.6);
-            let ant1_start = item.bevy_pos + rot * Vec2::new(-r * 0.3, r * 0.6);
-            let ant1_end = item.bevy_pos + rot * Vec2::new(-r * (1.5 + item.sight), r * (1.1 + item.signal));
-            let ant2_start = item.bevy_pos + rot * Vec2::new(-r * 0.3, -r * 0.6);
-            let ant2_end = item.bevy_pos + rot * Vec2::new(-r * (1.5 + item.sight), -r * (1.1 + item.signal));
-            gizmos.line_2d(ant1_start, ant1_end, antenna_color);
-            gizmos.line_2d(ant2_start, ant2_end, antenna_color);
-        }
-
-        // 4. Birth Halo Ring
-        if item.birth > 0 {
-            let halo_color = item.color.with_alpha((item.birth as f32) / 120.0);
-            let halo_radius = r + 3.0 + ((95.0 - item.birth as f32).max(0.0)) * 0.12;
-            gizmos.circle_2d(item.bevy_pos, halo_radius, halo_color);
-        }
-
-        // 5. Selection Reticle (Dashed circle #fff1d6)
-        if item.is_selected {
-            gizmos.circle_2d(item.bevy_pos, r + 8.0, Color::srgb(1.0, 0.945, 0.839));
-        }
     }
 
-    // 6. Eclipse Visual Overlay
+    // Eclipse Visual Overlay
     if sim.world.eclipse > 0 {
         let alpha = ((sim.world.eclipse as f32 / 210.0) * 0.42).clamp(0.0, 0.5);
         let eclipse_color = Color::srgba(0.95, 0.4, 0.32, alpha);
