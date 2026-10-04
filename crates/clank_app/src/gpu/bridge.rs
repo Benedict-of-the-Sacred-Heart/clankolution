@@ -226,10 +226,30 @@ pub fn sync_gpu_to_rust(
 
     // Synchronize agents
     for (i, state) in states.iter().enumerate() {
-        if i >= sim.world.agents.len() {
-            sim.world.agents.push(AgentData::default());
+        if state.id == 0 {
+            // Uninitialized or empty slot
+            continue;
         }
-        let a = &mut sim.world.agents[i];
+
+        let is_dead = (state.meta_flags & (1 << 13)) != 0;
+        let atomic_energy = atomics.get(i).map(|at| at.energy_milli as f64 * 0.001).unwrap_or(state.angle_energy[1] as f64);
+
+        if is_dead && atomic_energy <= 0.0 {
+            if i < sim.world.agents.len() {
+                sim.world.agents[i].dead = 1;
+            }
+            continue;
+        }
+
+        let a = if i < sim.world.agents.len() {
+            &mut sim.world.agents[i]
+        } else {
+            if is_dead {
+                continue;
+            }
+            sim.world.agents.push(AgentData::default());
+            sim.world.agents.last_mut().unwrap()
+        };
         a.id = state.id;
         a.x = state.pos_vel[0] as f64;
         a.y = state.pos_vel[1] as f64;
@@ -238,7 +258,6 @@ pub fn sync_gpu_to_rust(
 
         a.angle = state.angle_energy[0] as f64;
         // Prioritize atomic energy ground truth
-        let atomic_energy = atomics.get(i).map(|at| at.energy_milli as f64 * 0.001).unwrap_or(state.angle_energy[1] as f64);
         a.energy = atomic_energy.max(0.0);
         a.feeding = state.angle_energy[2] as f64;
         a.attack = state.angle_energy[3] as f64;
@@ -267,6 +286,10 @@ pub fn sync_gpu_to_rust(
         a.age = state.age_gen & 0xFFFF;
         a.gen = state.age_gen >> 16;
     }
+
+    // Filter dead agents in-place (matching CPU World::evolve stable compaction)
+    sim.world.agents.retain(|a| a.dead == 0 && a.id != 0);
+    sim.world.sync_pos_cache();
 
     // Synchronize soil
     for (i, cell) in soil.iter().enumerate() {

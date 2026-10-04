@@ -122,6 +122,16 @@ impl GpuComputeDriver {
             usage: BufferUsages::STORAGE | BufferUsages::COPY_DST,
             mapped_at_creation: false,
         });
+        let mut bloom_table = vec![0.0f32; 3750];
+        for y in 0..50 {
+            let y_f = y as f32;
+            for x in 0..75 {
+                let x_f = x as f32;
+                let i = y * 75 + x;
+                bloom_table[i] = 0.0008 + 0.0022 * (0.5 + 0.5 * (x_f * 0.13 + (y_f * 0.19).sin()).sin() * (y_f * 0.11).cos());
+            }
+        }
+        queue.write_buffer(&bloom_table_buf, 0, bytemuck::cast_slice(&bloom_table));
 
         let spatial_keys_buf = device.create_buffer(&wgpu::BufferDescriptor {
             label: Some("spatial_keys_buf"),
@@ -546,6 +556,24 @@ impl GpuComputeDriver {
         if !states.is_empty() {
             self.queue.write_buffer(&self.agent_states_buf, 0, bytemuck::cast_slice(states));
         }
+        let clear_tail = (states.len() + 128).min(self.max_agents as usize);
+        if clear_tail > states.len() {
+            let empty_count = clear_tail - states.len();
+            let tombstone = GpuAgentState {
+                pos_vel: [0.0; 4],
+                angle_energy: [0.0; 4],
+                traits: [0.0; 8],
+                hidden: [0.0; 10],
+                id: 0,
+                meta_flags: 1 << 13,
+                age_gen: 0,
+                morton_code: 0,
+                packed_color: 0,
+                visual_cache: 0,
+            };
+            let empty_vec = vec![tombstone; empty_count];
+            self.queue.write_buffer(&self.agent_states_buf, (states.len() * 128) as u64, bytemuck::cast_slice(&empty_vec));
+        }
         if !genomes.is_empty() {
             self.queue.write_buffer(&self.agent_genomes_buf, 0, bytemuck::cast_slice(genomes));
         }
@@ -556,6 +584,22 @@ impl GpuComputeDriver {
             self.queue.write_buffer(&self.soil_buf, 0, bytemuck::cast_slice(soil));
         }
         self.queue.write_buffer(&self.sim_params_buf, 0, bytemuck::bytes_of(params));
+
+        // Initialize tombstone freelist with all dead/unused slots (lowest slots on top of stack)
+        let mut free_slots: Vec<u32> = Vec::with_capacity(self.max_agents as usize);
+        for i in (states.len()..self.max_agents as usize).rev() {
+            free_slots.push(i as u32);
+        }
+        for (i, s) in states.iter().enumerate().rev() {
+            if (s.meta_flags & (1 << 13)) != 0 {
+                free_slots.push(i as u32);
+            }
+        }
+        let freelist_top = free_slots.len() as u32;
+        if !free_slots.is_empty() {
+            self.queue.write_buffer(&self.freelist_buf, 0, bytemuck::cast_slice(&free_slots));
+        }
+        self.queue.write_buffer(&self.queue_buffer, 28, bytemuck::bytes_of(&freelist_top));
 
         #[repr(C)]
         #[derive(Clone, Copy, bytemuck::Pod, bytemuck::Zeroable)]
@@ -592,7 +636,8 @@ impl GpuComputeDriver {
                 cpass.dispatch_workgroups((75 + 7) / 8, (50 + 7) / 8, 1);
 
                 // 2. Morton grid spatial hashing
-                let agent_workgroups = (cur_params.agent_count + 63) / 64;
+                let active_slots = cur_params.max_agents.max(cur_params.agent_count);
+                let agent_workgroups = (active_slots + 63) / 64;
                 if agent_workgroups > 0 {
                     cpass.set_pipeline(&self.morton_clear_pipeline);
                     cpass.set_bind_group(0, &self.morton_bind_group, &[]);
@@ -619,11 +664,11 @@ impl GpuComputeDriver {
                     cpass.set_bind_group(1, &self.agent_group1, &[]);
                     cpass.dispatch_workgroups(agent_workgroups, 1, 1);
 
-                    // 5. Decoupled birth step
+                    // 5. Decoupled birth step (parallel dispatch for up to 64 births per sub-tick)
                     cpass.set_pipeline(&self.birth_pipeline);
                     cpass.set_bind_group(0, &self.birth_group0, &[]);
                     cpass.set_bind_group(1, &self.birth_group1, &[]);
-                    cpass.dispatch_workgroups(1, 1, 1);
+                    cpass.dispatch_workgroups(64, 1, 1);
                 }
             }
 

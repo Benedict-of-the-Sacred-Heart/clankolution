@@ -106,8 +106,9 @@ pub fn sim_step_system(
                     driver.upload_state(&states, &genomes, &atomics, &soil, &params);
                     driver.dispatch_sub_ticks(steps, &params);
 
-                    let updated_states = driver.readback_agent_states(states.len());
-                    let updated_atomics = driver.readback_atomics(states.len());
+                    let read_count = (states.len() + 128).min(driver.max_agents as usize).min(sim.world.max_cap + 64);
+                    let updated_states = driver.readback_agent_states(read_count);
+                    let updated_atomics = driver.readback_atomics(read_count);
                     let updated_soil = driver.readback_soil();
                     let mut updated_params = params;
                     updated_params.tick += steps;
@@ -120,6 +121,17 @@ pub fn sim_step_system(
                         &updated_params,
                         &mut sim,
                     );
+
+                    // Spore replenishment if population collapses below 15 (matching CPU World::evolve)
+                    if sim.world.agents.len() < 15 && sim.world.tick % 45 == 0 {
+                        let needed = 15 - sim.world.agents.len();
+                        let (w, h) = (sim.world.w, sim.world.h);
+                        for _ in 0..needed {
+                            let x = sim.world.prng.rand(0.0, w);
+                            let y = sim.world.prng.rand(0.0, h);
+                            sim.world.seed_life_at(x, y);
+                        }
+                    }
                     return;
                 }
             }

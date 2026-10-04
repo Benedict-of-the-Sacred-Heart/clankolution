@@ -419,17 +419,58 @@ fn agent_main(@builtin(global_invocation_id) id: vec3u) {
     }
 
     // Sexual Selection Mating Proposal (Symmetry Breaking: partner ID > my ID)
+    var sexual_success = false;
+    var mate_partner = 0xFFFFFFFFu;
     if (best_neighbor != 0xFFFFFFFFu && best_dist < contact_dist && a_energy > 80.0 && a_cooldown == 0u && a_birth == 0u) {
         let partner_idx = best_neighbor;
         if (ENABLE_SEXUAL_SELECTION) {
             let my_energy_milli = u32(max(0.0, a_energy) * 1000.0);
             let prev_bid = atomicMax(&agent_atomics[partner_idx].mate_energy_milli, my_energy_milli);
             if (my_energy_milli > prev_bid) {
-                atomicStore(&agent_atomics[partner_idx].mate_claim, agent_idx + 1u);
+                let claim = atomicCompareExchangeWeak(&agent_atomics[partner_idx].mate_claim, 0u, agent_idx + 1u);
+                if (claim.exchanged) {
+                    mate_partner = partner_idx;
+                    sexual_success = true;
+                }
             }
         } else {
             if (agent_states[partner_idx].id > agent_states[agent_idx].id) {
-                atomicCompareExchangeWeak(&agent_atomics[partner_idx].mate_claim, 0u, agent_idx + 1u);
+                let claim = atomicCompareExchangeWeak(&agent_atomics[partner_idx].mate_claim, 0u, agent_idx + 1u);
+                if (claim.exchanged) {
+                    mate_partner = partner_idx;
+                    sexual_success = true;
+                }
+            }
+        }
+    }
+
+    // Reproduction: sexual success OR asexual budding when energy is high (> 120)
+    let can_reproduce = sexual_success || (a_energy > 120.0 && a_cooldown == 0u && a_birth == 0u);
+    if (can_reproduce) {
+        let queue_idx = atomicAdd(&queue_buffer.telemetry.birth_count, 1u);
+        if (queue_idx < 65536u) {
+            atomicSub(&agent_atomics[agent_idx].energy_milli, 24000);
+            a_energy = max(0.0, a_energy - 24.0);
+            if (sexual_success && mate_partner != 0xFFFFFFFFu) {
+                atomicSub(&agent_atomics[mate_partner].energy_milli, 6000);
+            }
+            a_birth = 95u;
+            a_cooldown = 10u;
+            queue_buffer.births[queue_idx] = BirthEvent(agent_idx, mate_partner, 0xFFFFFFFFu, 0u);
+
+            // Frustum-culled birth audio voice
+            let dx = abs(pos.x - params.camera_pos.x);
+            let dist_x = min(dx, 900.0 - dx);
+            let dy = abs(pos.y - params.camera_pos.y);
+            let dist_y = min(dy, 600.0 - dy);
+            let in_view = (dist_x <= params.camera_size.x * 0.5 && dist_y <= params.camera_size.y * 0.5);
+            if (in_view) {
+                let zoom_factor = clamp(1.0 - (params.camera_size.x - 150.0) / (900.0 - 150.0), 0.0, 1.0);
+                let birth_volume = mix(0.06, 0.8, zoom_factor);
+                let voice_slot = atomicAdd(&queue_buffer.telemetry.audio_voice_count, 1u);
+                if (voice_slot < 256u) {
+                    queue_buffer.audio[voice_slot] = AudioVoice(pos, 2u /* EVENT_BIRTH */, birth_volume);
+                }
             }
         }
     }

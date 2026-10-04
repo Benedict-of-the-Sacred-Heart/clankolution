@@ -435,10 +435,14 @@ pub fn generate_dart_mesh_from_gpu_states(
         let c = color.to_srgba();
         let body_rgba = [c.red, c.green, c.blue, c.alpha];
 
-        let nose = bevy_pos + rot * Vec2::new(radius * 1.5, 0.0);
-        let right = bevy_pos + rot * Vec2::new(-radius * 0.75, radius * 0.75);
-        let rear = bevy_pos + rot * Vec2::new(-radius * 0.5, 0.0);
-        let left = bevy_pos + rot * Vec2::new(-radius * 0.75, -radius * 0.75);
+        let r = radius;
+        let armor = a.traits[3];
+        let carnivory = a.traits[5];
+
+        let nose = bevy_pos + rot * Vec2::new(r * 1.5, 0.0);
+        let right = bevy_pos + rot * Vec2::new(-r * 0.75, r * (0.5 + armor * 0.45));
+        let rear = bevy_pos + rot * Vec2::new(-r * (0.45 + carnivory), 0.0);
+        let left = bevy_pos + rot * Vec2::new(-r * 0.75, -r * (0.5 + armor * 0.45));
 
         // Body Triangle 1: [nose, right, rear]
         positions.push([nose.x, nose.y, -2.0]);
@@ -475,11 +479,11 @@ pub fn generate_outline_mesh_from_gpu_states(
 ) {
     positions.clear();
     colors.clear();
-    positions.reserve(agents.len() * 8);
-    colors.reserve(agents.len() * 8);
+    positions.reserve(agents.len() * 12);
+    colors.reserve(agents.len() * 12);
 
     for a in agents {
-        let Some((radius, _color, is_attacking, _has_birth)) = unpack_visual_cache(a.visual_cache, a.packed_color) else {
+        let Some((radius, _color, is_attacking, has_birth)) = unpack_visual_cache(a.visual_cache, a.packed_color) else {
             continue;
         };
 
@@ -487,10 +491,14 @@ pub fn generate_outline_mesh_from_gpu_states(
         let bevy_pos = sim_to_bevy_coord(sim_pos, world_height);
         let rot = Mat2::from_angle(-a.angle_energy[0]);
 
-        let nose = bevy_pos + rot * Vec2::new(radius * 1.5, 0.0);
-        let right = bevy_pos + rot * Vec2::new(-radius * 0.75, radius * 0.75);
-        let rear = bevy_pos + rot * Vec2::new(-radius * 0.5, 0.0);
-        let left = bevy_pos + rot * Vec2::new(-radius * 0.75, -radius * 0.75);
+        let r = radius;
+        let armor = a.traits[3];
+        let carnivory = a.traits[5];
+
+        let nose = bevy_pos + rot * Vec2::new(r * 1.5, 0.0);
+        let right = bevy_pos + rot * Vec2::new(-r * 0.75, r * (0.5 + armor * 0.45));
+        let rear = bevy_pos + rot * Vec2::new(-r * (0.45 + carnivory), 0.0);
+        let left = bevy_pos + rot * Vec2::new(-r * 0.75, -r * (0.5 + armor * 0.45));
 
         let border_rgba = if is_attacking {
             [1.0, 0.33, 0.31, 1.0]
@@ -518,6 +526,44 @@ pub fn generate_outline_mesh_from_gpu_states(
         positions.push([nose.x, nose.y, -1.9]);
         colors.push(border_rgba);
         colors.push(border_rgba);
+
+        // Sensory antennae whiskers if sight > 0.56
+        if a.traits[2] > 0.56 {
+            let ant_color = [border_rgba[0], border_rgba[1], border_rgba[2], 0.6];
+            let sight = a.traits[2];
+            let signal = a.traits[6];
+            let ant1_start = bevy_pos + rot * Vec2::new(-r * 0.3, r * 0.6);
+            let ant1_end = bevy_pos + rot * Vec2::new(-r * (1.5 + sight), r * (1.1 + signal));
+            let ant2_start = bevy_pos + rot * Vec2::new(-r * 0.3, -r * 0.6);
+            let ant2_end = bevy_pos + rot * Vec2::new(-r * (1.5 + sight), -r * (1.1 + signal));
+
+            positions.push([ant1_start.x, ant1_start.y, -1.9]);
+            positions.push([ant1_end.x, ant1_end.y, -1.9]);
+            colors.push(ant_color);
+            colors.push(ant_color);
+
+            positions.push([ant2_start.x, ant2_start.y, -1.9]);
+            positions.push([ant2_end.x, ant2_end.y, -1.9]);
+            colors.push(ant_color);
+            colors.push(ant_color);
+        }
+
+        // Birth halo ring if newborn
+        if has_birth {
+            let birth_val = ((a.meta_flags >> 6) & 0x7F) as f32;
+            let halo_r = r + 3.0 + ((95.0 - birth_val).max(0.0)) * 0.12;
+            let halo_color = [1.0, 0.95, 0.8, (birth_val / 120.0).clamp(0.0, 1.0)];
+            for seg in 0..8 {
+                let theta1 = (seg as f32) * std::f32::consts::TAU / 8.0;
+                let theta2 = ((seg + 1) as f32) * std::f32::consts::TAU / 8.0;
+                let p1 = bevy_pos + Vec2::new(theta1.cos() * halo_r, theta1.sin() * halo_r);
+                let p2 = bevy_pos + Vec2::new(theta2.cos() * halo_r, theta2.sin() * halo_r);
+                positions.push([p1.x, p1.y, -1.8]);
+                positions.push([p2.x, p2.y, -1.8]);
+                colors.push(halo_color);
+                colors.push(halo_color);
+            }
+        }
     }
 
     if positions.is_empty() {

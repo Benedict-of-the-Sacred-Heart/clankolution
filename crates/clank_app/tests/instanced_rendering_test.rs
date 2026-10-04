@@ -73,3 +73,31 @@ fn test_generate_dart_mesh_from_gpu_states_skips_dead() {
     assert_eq!(outline_pos.len(), 8);
     assert_eq!(outline_col.len(), 8);
 }
+
+#[test]
+fn test_dart_morphology_and_antennae_outline_generation() {
+    let sighted_agent = GpuAgentState {
+        pos_vel: [100.0, 200.0, 0.0, 0.0],
+        angle_energy: [0.0, 80.0, 0.0, 0.0],
+        traits: [0.5, 0.0, 0.8, 0.9, 0.0, 0.7, 0.3, 0.0], // sight=0.8 > 0.56, armor=0.9, carnivory=0.7
+        hidden: [0.0; 10],
+        id: 1,
+        meta_flags: 1,
+        age_gen: 0,
+        morton_code: 0,
+        packed_color: 0xFF00FF00,
+        visual_cache: 128 | (100 << 8) | (200 << 16),
+    };
+
+    let mut body_pos = Vec::new();
+    let mut body_col = Vec::new();
+    generate_dart_mesh_from_gpu_states(&[sighted_agent], 747.0, &mut body_pos, &mut body_col);
+    assert_eq!(body_pos.len(), 6);
+
+    let mut outline_pos = Vec::new();
+    let mut outline_col = Vec::new();
+    generate_outline_mesh_from_gpu_states(&[sighted_agent], 747.0, &mut outline_pos, &mut outline_col);
+
+    // 8 vertices for body perimeter + 4 vertices for 2 sensory antennae whiskers = 12 vertices
+    assert_eq!(outline_pos.len(), 12);
+}
