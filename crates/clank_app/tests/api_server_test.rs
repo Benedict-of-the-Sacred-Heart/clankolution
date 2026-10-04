@@ -101,3 +101,31 @@ fn test_concurrent_http_requests() {
     assert!(response.contains("HTTP/1.1 200 OK"));
     assert!(elapsed < Duration::from_millis(500), "Concurrent request blocked for {:?}", elapsed);
 }
+
+#[test]
+fn test_settings_active_engine_switching() {
+    let port = 9338;
+    let (_server, rx, _shared) = create_test_api_server(port);
+
+    let payload = r#"{"active_engine":"gpu"}"#;
+    let mut stream = TcpStream::connect(format!("127.0.0.1:{}", port)).expect("connect /settings");
+    stream.set_read_timeout(Some(Duration::from_secs(2))).unwrap();
+    let request = format!(
+        "POST /settings HTTP/1.1\r\nHost: localhost\r\nContent-Length: {}\r\n\r\n{}",
+        payload.len(),
+        payload
+    );
+    stream.write_all(request.as_bytes()).expect("write");
+    let mut response = String::new();
+    stream.read_to_string(&mut response).expect("read");
+    assert!(response.contains("HTTP/1.1 200 OK"));
+
+    let cmd = rx.recv_timeout(Duration::from_secs(1)).expect("receive command");
+    match cmd {
+        ApiCommand::UpdateSettings(s) => {
+            assert_eq!(s.active_engine.as_deref(), Some("gpu"));
+        }
+        _ => panic!("unexpected command variant"),
+    }
+}
+

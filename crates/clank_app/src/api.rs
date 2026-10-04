@@ -11,7 +11,9 @@ pub struct ApiSettingsRequest {
     pub max_cap: Option<usize>,
     pub scroll_offset: Option<f32>,
     pub selected_agent: Option<u32>,
+    pub active_engine: Option<String>,
 }
+
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ApiToolRequest {
@@ -602,7 +604,15 @@ pub fn api_dispatch_system(
                             sim.selected_agent_id = Some(agent_id);
                         }
                     }
+                    if let Some(ref engine) = req.active_engine {
+                        match engine.to_lowercase().as_str() {
+                            "gpu" => sim.active_engine = crate::sim::ActiveEngine::Gpu,
+                            "rust" | "cpu" => sim.active_engine = crate::sim::ActiveEngine::Rust,
+                            _ => {}
+                        }
+                    }
                 }
+
                 if let Some(ref mut ui) = ui_res {
                     if let Some(speed) = req.speed {
                         ui.speed = speed.max(1.0).min(64.0);
