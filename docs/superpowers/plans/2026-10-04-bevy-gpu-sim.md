@@ -403,32 +403,32 @@
 
 ## Plan Overview: 6 Bite-Sized Tasks
 
-- [ ] **Task 1: Branch Setup & GPU Compute Architecture Scaffolding**
+- [x] **Task 1: Branch Setup & GPU Compute Architecture Scaffolding**
   - Create branch `feature/bevy-gpu` from `feature/bevy-port`.
   - Add `bytemuck = { version = "1.21", features = ["derive"] }` to `crates/clank_app/Cargo.toml`.
   - Add `gpu` module in `crates/clank_app/src/gpu/` with buffer types: `GpuAgentState` (128B, exact $2^7$ power-of-two, 2 cache lines, with `visual_cache: u32`), `GpuAgentGenome` (352B, 88 words), `GpuAgentAtomic` (16B, with `dead_claimed`), `GpuSimParams` (64B, exact 4 quadwords, pure baseline physics, multi-tick pacing & tools), `GpuLbvhNode` (48B), `GpuSoilCell` (16B), `BirthEvent` (16B), `AudioVoice` (16B), `GpuTelemetry` (128B), `ConsolidatedQueue` (1,028 KB unified queue with telemetry header), and pipeline skeletons.
   - Implement unit tests for GPU struct memory layouts and 16-byte WGSL alignment (`assert_eq!(size_of::<GpuAgentState>(), 128)`).
 
-- [ ] **Task 2: Tombstone Freelist & Zero-Copy Agent Storage Buffer**
+- [x] **Task 2: Tombstone Freelist & Zero-Copy Agent Storage Buffer**
   - Implement lock-free atomic stack allocator (`freelist: array<u32>`, `atomic<u32> queue_buffer.telemetry.freelist_top`).
   - Implement **Pass-Decoupled Freelist**: deaths push in `agent_step.wgsl`; newborn threads pop in `birth_step.wgsl` across compute pass barrier, eliminating ABA / concurrent push-pop races.
   - Implement CAS death ownership (`dead_claimed: 0u -> 1u`) and Strict Single-Writer Invariant (killer never writes to victim's `agent_states`).
   - Test parallel push/pop and slot recycling in automated unit test suite.
 
-- [ ] **Task 3: GPU Soil Simulation & Direct Texture Generation**
+- [x] **Task 3: GPU Soil Simulation & Direct Texture Generation**
   - Implement WGSL compute shader for soil chemistry: spatial bloom renewal, food clamp $[0.0, 2.5]$, taint decay ($0.994$), and scent decay ($0.954$).
   - Add coordinate clamping guards (`cx = min(u32(pos.x / 12.0), 74u)`, `cy = min(u32(pos.y / 12.0), 49u)`) preventing buffer overruns.
   - Implement direct GPU dual-texture generation: `soil_data` (raw physics `rgba16float` for bilinear agent sensing) and `soil_display` (colormap `rgba16float` for direct Bevy SoilSprite rendering), **completely eliminating CPU `generate_soil_rgba` upload**.
   - Bind `soil_display` as 2D `rgba16float` texture with universal hardware bilinear filtering across Metal, Vulkan, and DX12.
 
-- [ ] **Task 4: Hybrid Morton Grid, Multi-System LBVH & Spatial Queries**
+- [x] **Task 4: Hybrid Morton Grid, Multi-System LBVH & Spatial Queries**
   - Implement 32-bit Morton code generator with dead agent partitioning (`0xFFFFFFFFu` sentinel in `morton_encode`) and boundary clamping (`gx = min(u32(pos.x / 100.0), 8u)`, `gy = min(u32(pos.y / 100.0), 5u)`).
   - Implement 8-byte indirection parallel Radix Sort on `(morton_key, agent_slot_idx)`, keeping heavy agent structs stationary.
   - Implement Karras 2012 two-phase LBVH construction: Phase 1 topology (`lbvh_build.wgsl`) with `agent_id` tie-breaking, `node_flags[id.x] = 0u` atomic reset, and $N \le 1$ degenerate population guard; Phase 2 bottom-up AABB fitting (`lbvh_aabb.wgsl`) across an explicit compute pass barrier.
   - Implement Tier 1 ($3 \times 3$ local Moore neighborhood) + Tier 2 ring expansion for lonely creatures.
   - Implement **Unified Interactive Spatial Query Pass (`spatial_query.wgsl`)** with branchless 1D toroidal AABB distance (preventing boundary pruning blind spots), cursor input toroidal wrapping, degenerate $N \le 1$ safety guard, dynamic radius shrinking (early tree pruning) for uncapped 32-bit mouse picking, and parallel AoE tool bounding box intersections.
 
-- [ ] **Task 5: Packed 88-Word Vectorized RNN, Combat Resolution, PRNG & Decoupled Birth Pipeline**
+- [x] **Task 5: Packed 88-Word Vectorized RNN, Combat Resolution, PRNG & Decoupled Birth Pipeline**
   - Implement `preamble_clear.wgsl` to reset `mate_claim`, `mate_energy_milli`, `dead_claimed`, `birth_count` (sub-tick queue depth), `cell_offsets` every sub-tick, and frame-level counters (`audio_voice_count`, `kills`, `starvations`, `food_grazed_milli`, `apex_record_milli`) on `sub_tick == 0u` with global execution barrier.
   - Implement 1-thread-per-agent WGSL compute shader (`agent_step.wgsl`) binding 8 storage buffers in Group 0 and `(params, soil_data, soil_sampler)` in Group 1 within strict $\le 8$ storage buffer ceiling.
   - Enforce **Top-of-Shader Tombstone Dead-Check Guard**: inactive corpse slots exit immediately via hardware SIMD lane masking.
@@ -441,7 +441,7 @@
   - Apply steering, thrust, hardware toroidal coordinate wrap, and pack `visual_cache` at step end.
   - Implement coalesced atomic soil deposits and grazing to `soil_buffer`, atomic millijoule combat resolution with `dead_claimed` CAS, toroidal seam frustum-culled stochastic audio voice emission (256-voice buffer), canonical mating symmetry breaking with seamless asexual fallback, and decoupled SIMD genome mutation pass (`birth_step.wgsl`) with newborn workgroup bounds guard (`wg_id.x >= min(birth_count, 65536u)`) and `visual_cache` birth flash initialization.
 
-- [ ] **Task 6: Frustum Culling, Minimap LOD, Dual-Engine UI, Audio & Verification**
+- [x] **Task 6: Frustum Culling, Minimap LOD, Dual-Engine UI, Audio & Verification**
   - Implement **GPU Camera Viewport Frustum Culling** via LBVH streaming 128-byte `GpuAgentState` ($4.0\times$ less bandwidth than 512B structs) into an Indirect Draw Buffer.
   - Implement **instanced dart rendering loading contiguous `vec2u(packed_color, visual_cache)`** directly from Cache Line 1, completely bypassing Cache Line 0 traits and saving ~72 MB of vertex fetch bandwidth per frame.
   - Implement **Minimap LOD Cluster Rendering** sampling intermediate LBVH depth nodes for density circles.
@@ -453,6 +453,7 @@
   - Add **EXPERIMENTAL MUTATIONS** sidebar drawer wiring `SimMods` (`[BARNES-HUT]`, `[EXPANDED CORTEX]`, `[SEXUAL SELECTION]`) to specialized pipeline variants via WGSL `override` constants.
   - Wire telemetry from GPU storage buffers into UI stats, The Record, and Specimen card.
   - Run all 51+ workspace tests.
+
   - Capture live GPU screenshot via API (`POST /screenshot`), visually verify with `view_file`, and commit to `feature/bevy-gpu`.
 
 ---
@@ -472,7 +473,7 @@
 - Consumes: `clank_core::agent::AgentData`, `clank_core::agent::GENES` (326)
 - Produces: `GpuAgentState`, `GpuAgentGenome`, `GpuAgentAtomic`, `GpuSimParams`, `GpuLbvhNode`, `GpuSoilCell`, `BirthEvent`, `AudioVoice`, `GpuTelemetry`, `ConsolidatedQueue` with exact 16-byte WGSL alignment
 
-- [ ] **Step 1: Write failing test for GPU struct memory layouts**
+- [x] **Step 1: Write failing test for GPU struct memory layouts**
 ```rust
 // crates/clank_app/tests/gpu_types_test.rs
 use clank_app::gpu::types::{
@@ -504,8 +505,8 @@ fn test_gpu_struct_alignments() {
     assert_eq!(std::mem::size_of::<ConsolidatedQueue>(), 1_052_800);
 }
 ```
-- [ ] **Step 2: Run test to verify it fails**
-- [ ] **Step 3: Implement GPU types with `#[repr(C)]` and 16-byte alignment**
+- [x] **Step 2: Run test to verify it fails**
+- [x] **Step 3: Implement GPU types with `#[repr(C)]` and 16-byte alignment**
 ```rust
 // crates/clank_app/src/gpu/types.rs
 #[repr(C, align(16))]
@@ -636,8 +637,8 @@ pub struct GpuLbvhNode {
     pub leaf_idx: u32,           // 4 bytes: leaf agent index (0..N-1), or 0xFFFFFFFF for internal nodes (Total 48)
 } // Total: 48 bytes (48 % 16 == 0)
 ```
-- [ ] **Step 4: Run test to verify it passes**
-- [ ] **Step 5: Git commit on `feature/bevy-gpu`**
+- [x] **Step 4: Run test to verify it passes**
+- [x] **Step 5: Git commit on `feature/bevy-gpu`**
 
 ---
 
@@ -651,7 +652,7 @@ pub struct GpuLbvhNode {
 - Consumes: `GpuAgentState`, `MAX_AGENTS` (e.g. 1,000,000 agents)
 - Produces: `TombstoneFreelistManager` managing allocation head, tombstone flags, and zero-copy recycling
 
-- [ ] **Step 1: Write failing test for Freelist initialization, slot recycling, and underflow protection**
+- [x] **Step 1: Write failing test for Freelist initialization, slot recycling, and underflow protection**
 ```rust
 #[test]
 fn test_freelist_recycle_without_movement() {
@@ -684,8 +685,8 @@ fn test_freelist_dead_claimed_cas_prevents_double_free() {
     assert!(!freelist.claim_death_and_free(slot)); // Second claim fails -> prevented double-free!
 }
 ```
-- [ ] **Step 2: Run test to verify it fails**
-- [ ] **Step 3: Implement Tombstone Freelist logic in Rust and WGSL CAS allocation snippet**
+- [x] **Step 2: Run test to verify it fails**
+- [x] **Step 3: Implement Tombstone Freelist logic in Rust and WGSL CAS allocation snippet**
 ```wgsl
 // WGSL CAS pop allocation: guards against underflow when carrying capacity is reached
 fn allocate_child_slot() -> u32 {
@@ -718,8 +719,8 @@ fn claim_death_and_free(victim_idx: u32, is_self: bool) -> bool {
     return false; // Already freed by another concurrent thread
 }
 ```
-- [ ] **Step 4: Run test to verify it passes**
-- [ ] **Step 5: Git commit on `feature/bevy-gpu`**
+- [x] **Step 4: Run test to verify it passes**
+- [x] **Step 5: Git commit on `feature/bevy-gpu`**
 
 ---
 
@@ -734,7 +735,7 @@ fn claim_death_and_free(victim_idx: u32, is_self: bool) -> bool {
 - Consumes: `SoilGrid` dimensions ($75 \times 50$), `growth_val`, `GpuSoilCell` storage buffer (60 KB)
 - Produces: Direct GPU dual-texture generation: `soil_data` (raw physics `rgba16float` for agent bilinear feeler sensing) and `soil_display` (colormap `rgba16float` for direct Bevy `SoilSprite` screen presentation), completely eliminating CPU `generate_soil_rgba` upload and eliminating texture ping-pong memory copies
 
-- [ ] **Step 1: Write failing test for soil atomic buffer bindings, renewal math, and dual rgba16float texture rasterization**
+- [x] **Step 1: Write failing test for soil atomic buffer bindings, renewal math, and dual rgba16float texture rasterization**
 ```rust
 // crates/clank_app/tests/gpu_soil_test.rs
 #[test]
@@ -747,8 +748,8 @@ fn test_soil_atomic_buffer_and_texture_bounds() {
     // 5. Boundary coordinate clamping: min(pos.x / 12.0, 74) and min(pos.y / 12.0, 49) prevents OOB write at seam (900.0, 600.0)
 }
 ```
-- [ ] **Step 2: Run test to verify it fails**
-- [ ] **Step 3: Implement WGSL soil compute kernel operating on 60 KB atomic buffer and rasterizing dual rgba16float textures**
+- [x] **Step 2: Run test to verify it fails**
+- [x] **Step 3: Implement WGSL soil compute kernel operating on 60 KB atomic buffer and rasterizing dual rgba16float textures**
 ```wgsl
 // crates/clank_app/assets/shaders/soil_step.wgsl
 struct SoilCell {
@@ -791,8 +792,8 @@ fn soil_main(@builtin(global_invocation_id) id: vec3u) {
     textureStore(soil_display, id.xy, col);
 }
 ```
-- [ ] **Step 4: Run test to verify it passes**
-- [ ] **Step 5: Git commit on `feature/bevy-gpu`**
+- [x] **Step 4: Run test to verify it passes**
+- [x] **Step 5: Git commit on `feature/bevy-gpu`**
 
 ---
 
@@ -810,7 +811,7 @@ fn soil_main(@builtin(global_invocation_id) id: vec3u) {
 - Consumes: `GpuAgentState` positions, grid dimensions ($9 \times 6$, cell size $100\text{px}$)
 - Produces: Sorted Morton indices (8-byte indirection buffer `vec2u(morton_key, agent_id)`), cell offset table, Karras LBVH tree with tie-breaking, unified interactive spatial query pass (`spatial_query.wgsl`: $O(\log N)$ uncapped mouse picking with dynamic radius shrinking and AoE tool queries)
 
-- [ ] **Step 1: Write failing test for Morton bit-interleaving, cell_offsets sentinel initialization, LBVH tree building with tie-breaking, degenerate population guard ($N \le 1$), uncapped picking query with dynamic radius shrinking, and AoE tool queries**
+- [x] **Step 1: Write failing test for Morton bit-interleaving, cell_offsets sentinel initialization, LBVH tree building with tie-breaking, degenerate population guard ($N \le 1$), uncapped picking query with dynamic radius shrinking, and AoE tool queries**
 ```rust
 #[test]
 fn test_cell_offsets_sentinel_initialization() {
@@ -846,8 +847,8 @@ fn test_lbvh_aoe_tool_bounding_box_query() {
     // 2. AoE tools (blight, nourish, extinguish, seed) apply effects in O(log N) time
 }
 ```
-- [ ] **Step 2: Run test to verify it fails**
-- [ ] **Step 3: Implement Morton encoding, cell offset clearing pass with 0xFFFFFFFF sentinels, 8-byte indirection Radix sort, Karras LBVH hierarchy generation with $N \le 1$ early-exit guard and tie-breaking, and Unified `spatial_query.wgsl`**
+- [x] **Step 2: Run test to verify it fails**
+- [x] **Step 3: Implement Morton encoding, cell offset clearing pass with 0xFFFFFFFF sentinels, 8-byte indirection Radix sort, Karras LBVH hierarchy generation with $N \le 1$ early-exit guard and tie-breaking, and Unified `spatial_query.wgsl`**
 ```wgsl
 // In morton_grid.wgsl (clearing pass & coordinate encoding):
 @compute @workgroup_size(64)
@@ -1029,8 +1030,8 @@ fn spatial_query_main(@builtin(global_invocation_id) id: vec3u) {
     }
 }
 ```
-- [ ] **Step 4: Run test to verify it passes**
-- [ ] **Step 5: Git commit on `feature/bevy-gpu`**
+- [x] **Step 4: Run test to verify it passes**
+- [x] **Step 5: Git commit on `feature/bevy-gpu`**
 
 ---
 
@@ -1049,7 +1050,7 @@ fn spatial_query_main(@builtin(global_invocation_id) id: vec3u) {
 - Consumes: `soil_data` texture (bilinear reads), `GpuSoilCell` storage buffer (atomic grazing/deposits), Spatial index (Morton cells), LBVH tree, `GpuAgentState` (128B) and `GpuAgentGenome` (352B) storage buffers, `GpuAgentAtomic` L2 buffer, `GpuSimParams`
 - Produces: Updated kinematics with toroidal wrapping, hidden RNN states via branchless `unpack4x8snorm` across 88 `u32` words, coalesced soil deposits, atomic combat resolution with `dead_claimed` CAS, and decoupled SIMD genome mutation
 
-- [ ] **Step 1: Write failing test for universal `unpack4x8snorm` forward pass, combat resolution with double-free CAS, and toroidal coordinate wrapping**
+- [x] **Step 1: Write failing test for universal `unpack4x8snorm` forward pass, combat resolution with double-free CAS, and toroidal coordinate wrapping**
 ```rust
 // crates/clank_app/tests/gpu_agent_test.rs
 #[test]
@@ -1061,7 +1062,7 @@ fn test_unpack4x8snorm_forward_pass_parity() {
 }
 ```
 
-- [ ] **Step 2: Write failing test for stateless PCG hash & triangular distribution**
+- [x] **Step 2: Write failing test for stateless PCG hash & triangular distribution**
 ```rust
 // crates/clank_app/tests/gpu_birth_mutation_test.rs
 #[test]
@@ -1073,7 +1074,7 @@ fn test_stateless_pcg_triangular_distribution() {
 }
 ```
 
-- [ ] **Step 3: Implement `preamble_clear.wgsl` and `agent_step.wgsl` with Universal `unpack4x8snorm`, Toroidal Wrapping, Frustum-Culled Audio & Aggregate Telemetry**
+- [x] **Step 3: Implement `preamble_clear.wgsl` and `agent_step.wgsl` with Universal `unpack4x8snorm`, Toroidal Wrapping, Frustum-Culled Audio & Aggregate Telemetry**
 ```wgsl
 // crates/clank_app/assets/shaders/preamble_clear.wgsl
 // Dispatched before agent_step.wgsl to guarantee a global GPU execution barrier:
@@ -1365,7 +1366,7 @@ let vis_flags = select(0u, 1u << 24u, a_attack > 0.25) | select(0u, 1u << 25u, a
 agent_states[agent_idx].visual_cache = r_u8 | (glow_u8 << 8u) | (e_u8 << 16u) | vis_flags;
 ```
 
-- [ ] **Step 4: Implement Decoupled Birth & Genome Mutation Pass (`birth_step.wgsl`)**
+- [x] **Step 4: Implement Decoupled Birth & Genome Mutation Pass (`birth_step.wgsl`)**
 ```wgsl
 // birth_step.wgsl: 1 workgroup per newborn child (32 threads)
 override ENABLE_EXPANDED_CORTEX: bool = false;
@@ -1462,8 +1463,8 @@ fn birth_main(@builtin(workgroup_id) wg_id: vec3u, @builtin(local_invocation_id)
 }
 ```
 
-- [ ] **Step 5: Run tests `gpu_agent_test` and `gpu_birth_mutation_test` ensuring 100% pass**
-- [ ] **Step 6: Git commit on `feature/bevy-gpu`**
+- [x] **Step 5: Run tests `gpu_agent_test` and `gpu_birth_mutation_test` ensuring 100% pass**
+- [x] **Step 6: Git commit on `feature/bevy-gpu`**
 
 ---
 
@@ -1481,7 +1482,7 @@ fn birth_main(@builtin(workgroup_id) wg_id: vec3u, @builtin(local_invocation_id)
 - Consumes: `SimWorld` (CPU), `GpuSimWorld` (GPU), `ConsolidatedQueue` (1,052,800B) via non-blocking double-buffered DMA staging ring (`staging[frame % 2]`), `GpuAgentState` (128B) storage buffer
 - Produces: Camera frustum-culled rendering streaming only 128B `GpuAgentState` ($4.0\times$ bandwidth boost, skipping genomes), minimap LOD clustering, unified 128-byte telemetry, 32x speed visual consistency picking, zoom-modulated audio soundscape, HUD metrics, and live engine switching
 
-- [ ] **Step 1: Write failing test for live dual-engine hot-swapping, frustum culling, telemetry readback, and 32x speed picking**
+- [x] **Step 1: Write failing test for live dual-engine hot-swapping, frustum culling, telemetry readback, and 32x speed picking**
 ```rust
 // crates/clank_app/tests/dual_engine_test.rs
 #[test]
@@ -1518,11 +1519,11 @@ fn test_mating_canonical_symmetry_and_sexual_selection_mod() {
     // 3. Mod 3 Sexual Selection Tournament: atomicMax chooses fittest suitor across full 32-bit capacity
 }
 ```
-- [ ] **Step 2: Run test to verify it fails**
-- [ ] **Step 3: Implement engine switch in Bevy UI, bi-directional state bridge (`sync_rust_to_gpu` synthesizing `visual_cache` / `sync_gpu_to_rust`), non-blocking double-buffered DMA staging ring (`staging[frame % 2]`) for 128B telemetry and 4 KB audio readbacks without CPU stalls, direct 128-byte `GpuAgentState` streaming for LBVH frustum culling and instanced dart rendering loading contiguous `vec2u(packed_color, visual_cache)` ($4.0\times$ bandwidth boost over reading full 480B agents, bypassing Cache Line 0 traits and saving ~72 MB/frame vertex fetch bandwidth), 32x speed picking locking on Sub-Tick 1 with `(slot_idx, agent_id)` identity guard, Two-Tier uncapped LBVH distance disambiguation, Bevy audio playback reading 256-voice queue, connect LBVH frustum culling, draw Minimap LOD clusters, wire `SimMods` (`[BARNES-HUT]`, `[EXPANDED CORTEX]`, `[SEXUAL SELECTION]`) to specialized pipeline variants via WGSL `override` constants, and add the "EXPERIMENTAL MUTATIONS" drawer to the Bevy UI sidebar**
-- [ ] **Step 4: Run all workspace tests (`cargo test --workspace`) ensuring 100% pass**
-- [ ] **Step 5: Build release (`cargo build -p clank_app --release`), capture GPU screenshot via API (`POST /screenshot`), inspect with `view_file`**
-- [ ] **Step 6: Git commit on `feature/bevy-gpu`**
+- [x] **Step 2: Run test to verify it fails**
+- [x] **Step 3: Implement engine switch in Bevy UI, bi-directional state bridge (`sync_rust_to_gpu` synthesizing `visual_cache` / `sync_gpu_to_rust`), non-blocking double-buffered DMA staging ring (`staging[frame % 2]`) for 128B telemetry and 4 KB audio readbacks without CPU stalls, direct 128-byte `GpuAgentState` streaming for LBVH frustum culling and instanced dart rendering loading contiguous `vec2u(packed_color, visual_cache)` ($4.0\times$ bandwidth boost over reading full 480B agents, bypassing Cache Line 0 traits and saving ~72 MB/frame vertex fetch bandwidth), 32x speed picking locking on Sub-Tick 1 with `(slot_idx, agent_id)` identity guard, Two-Tier uncapped LBVH distance disambiguation, Bevy audio playback reading 256-voice queue, connect LBVH frustum culling, draw Minimap LOD clusters, wire `SimMods` (`[BARNES-HUT]`, `[EXPANDED CORTEX]`, `[SEXUAL SELECTION]`) to specialized pipeline variants via WGSL `override` constants, and add the "EXPERIMENTAL MUTATIONS" drawer to the Bevy UI sidebar**
+- [x] **Step 4: Run all workspace tests (`cargo test --workspace`) ensuring 100% pass**
+- [x] **Step 5: Build release (`cargo build -p clank_app --release`), capture GPU screenshot via API (`POST /screenshot`), inspect with `view_file`**
+- [x] **Step 6: Git commit on `feature/bevy-gpu`**
 
 ---
 
