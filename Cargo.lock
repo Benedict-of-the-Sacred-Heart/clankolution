@@ -2210,6 +2210,7 @@ dependencies = [
  "rkyv",
  "serde",
  "serde_json",
+ "wgpu",
 ]
 
 [[package]]

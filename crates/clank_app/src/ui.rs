@@ -151,11 +151,48 @@ pub fn compute_tool_hint(active_tool: ActiveTool) -> &'static str {
     }
 }
 
+#[derive(Resource, Default, Clone, Debug)]
+pub struct MinimapCache {
+    pub clusters: Vec<crate::gpu::lbvh::MinimapCluster>,
+}
+
+pub fn update_minimap_cache_from_sim(sim: &SimWorld, cache: &mut MinimapCache) {
+    let living_states: Vec<crate::gpu::types::GpuAgentState> = sim.world.agents.iter()
+        .filter(|a| a.dead == 0)
+        .map(|a| crate::gpu::types::GpuAgentState {
+            pos_vel: [a.x as f32, a.y as f32, 0.0, 0.0],
+            angle_energy: [0.0; 4],
+            traits: [a.tr[0] as f32, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0],
+            hidden: [0.0; 10],
+            id: a.id,
+            meta_flags: a.root & 0x0F,
+            age_gen: 0,
+            morton_code: crate::gpu::spatial_index::compute_morton_32([a.x as f32, a.y as f32]),
+            packed_color: 0,
+            visual_cache: 1,
+        })
+        .collect();
+
+    if !living_states.is_empty() {
+        let tree = crate::gpu::lbvh::LbvhTree::build(&living_states);
+        cache.clusters = tree.extract_minimap_clusters(4);
+    } else {
+        cache.clusters.clear();
+    }
+}
+
+pub fn update_minimap_cache_system(sim: Option<Res<SimWorld>>, mut cache: ResMut<MinimapCache>) {
+    if let Some(sim) = sim {
+        update_minimap_cache_from_sim(&sim, &mut cache);
+    }
+}
+
 pub fn clank_ui_system(
     mut contexts: EguiContexts,
     mut sim: ResMut<SimWorld>,
     mut state: ResMut<UiState>,
     time: Res<Time>,
+    minimap_cache: Option<Res<MinimapCache>>,
 ) {
     let Ok(ctx) = contexts.ctx_mut() else { return };
 
@@ -410,7 +447,8 @@ pub fn clank_ui_system(
                         // RADAR MINIMAP (LBVH CLUSTERING)
                         ui.label(RichText::new("RADAR MINIMAP").size(10.5).monospace().strong().color(COLOR_GOLD));
                         ui.add_space(4.0);
-                        render_radar_minimap(ui, &sim);
+                        let cached_clusters = minimap_cache.as_ref().map(|c| &c.clusters[..]).unwrap_or(&[]);
+                        render_radar_minimap(ui, cached_clusters);
 
                         ui.add_space(14.0);
                         ui.separator();
@@ -820,7 +858,7 @@ pub fn compute_minimap_cluster_disc(
     ([cx, cy], r, cluster.dominant_lineage)
 }
 
-fn render_radar_minimap(ui: &mut egui::Ui, sim: &SimWorld) {
+fn render_radar_minimap(ui: &mut egui::Ui, clusters: &[crate::gpu::lbvh::MinimapCluster]) {
     let (response, painter) = ui.allocate_painter(Vec2::new(300.0, 100.0), Sense::hover());
     let rect = response.rect;
 
@@ -834,43 +872,23 @@ fn render_radar_minimap(ui: &mut egui::Ui, sim: &SimWorld) {
     painter.line_segment([Pos2::new(mid_x, rect.top()), Pos2::new(mid_x, rect.bottom())], Stroke::new(0.5, Color32::from_rgba_unmultiplied(0, 220, 255, 30)));
     painter.line_segment([Pos2::new(rect.left(), mid_y), Pos2::new(rect.right(), mid_y)], Stroke::new(0.5, Color32::from_rgba_unmultiplied(0, 220, 255, 30)));
 
-    // Extract clusters from living agents via LBVH
-    let living_states: Vec<crate::gpu::types::GpuAgentState> = sim.world.agents.iter()
-        .filter(|a| a.dead == 0)
-        .map(|a| crate::gpu::types::GpuAgentState {
-            pos_vel: [a.x as f32, a.y as f32, 0.0, 0.0],
-            angle_energy: [0.0; 4],
-            traits: [a.tr[0] as f32, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0],
-            hidden: [0.0; 10],
-            id: a.id,
-            meta_flags: a.root & 0x0F,
-            age_gen: 0,
-            morton_code: crate::gpu::spatial_index::compute_morton_32([a.x as f32, a.y as f32]),
-            packed_color: 0,
-            visual_cache: 1,
-        })
-        .collect();
-
-    if !living_states.is_empty() {
-        let tree = crate::gpu::lbvh::LbvhTree::build(&living_states);
-        let clusters = tree.extract_minimap_clusters(4);
-        for cluster in clusters {
-            let (disc_pos, radius, lineage) = compute_minimap_cluster_disc(&cluster, rect.width(), rect.height());
-            let screen_pos = Pos2::new(rect.left() + disc_pos[0], rect.top() + disc_pos[1]);
-            let pal_color = crate::theme::PALETTE[(lineage as usize) % crate::theme::PALETTE.len()];
-            let col = Color32::from_rgba_unmultiplied(pal_color.r(), pal_color.g(), pal_color.b(), 180);
-            painter.circle_filled(screen_pos, radius.min(12.0), col);
-        }
+    for cluster in clusters {
+        let (disc_pos, radius, lineage) = compute_minimap_cluster_disc(cluster, rect.width(), rect.height());
+        let screen_pos = Pos2::new(rect.left() + disc_pos[0], rect.top() + disc_pos[1]);
+        let pal_color = crate::theme::PALETTE[(lineage as usize) % crate::theme::PALETTE.len()];
+        let col = Color32::from_rgba_unmultiplied(pal_color.r(), pal_color.g(), pal_color.b(), 180);
+        painter.circle_filled(screen_pos, radius.min(12.0), col);
     }
 }
 
 pub struct ClankUiPlugin;
 
-
 impl Plugin for ClankUiPlugin {
     fn build(&self, app: &mut App) {
         app.init_resource::<UiState>()
+            .init_resource::<MinimapCache>()
             .add_plugins(EguiPlugin::default())
+            .add_systems(Update, update_minimap_cache_system)
             .add_systems(EguiPrimaryContextPass, clank_ui_system);
     }
 }
