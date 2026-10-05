@@ -25,11 +25,13 @@ fn test_api_types_json_roundtrip() {
         tool: "nourish".to_string(),
         x: Some(120.0),
         y: Some(340.0),
+        count: Some(10),
     };
     let tool_json = serde_json::to_string(&tool).expect("serialize tool");
     let deserialized_tool: ApiToolRequest = serde_json::from_str(&tool_json).expect("deserialize tool");
     assert_eq!(deserialized_tool.tool, "nourish");
     assert_eq!(deserialized_tool.x, Some(120.0));
+    assert_eq!(deserialized_tool.count, Some(10));
 
     let state = ApiStateResponse {
         tick: 100,

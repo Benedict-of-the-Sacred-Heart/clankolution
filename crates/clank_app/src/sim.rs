@@ -106,7 +106,7 @@ pub fn sim_step_system(
                     driver.upload_state(&states, &genomes, &atomics, &soil, &params);
                     driver.dispatch_sub_ticks(steps, &params);
 
-                    let read_count = (states.len() + 128).min(driver.max_agents as usize).min(sim.world.max_cap + 64);
+                    let read_count = (states.len() + 512).min(driver.max_agents as usize).min(sim.world.max_cap + 256);
                     let updated_states = driver.readback_agent_states(read_count);
                     let updated_atomics = driver.readback_atomics(read_count);
                     let updated_soil = driver.readback_soil();

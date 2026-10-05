@@ -556,7 +556,7 @@ impl GpuComputeDriver {
         if !states.is_empty() {
             self.queue.write_buffer(&self.agent_states_buf, 0, bytemuck::cast_slice(states));
         }
-        let clear_tail = (states.len() + 128).min(self.max_agents as usize);
+        let clear_tail = (states.len() + 512).min(self.max_agents as usize);
         if clear_tail > states.len() {
             let empty_count = clear_tail - states.len();
             let tombstone = GpuAgentState {

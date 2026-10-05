@@ -675,8 +675,8 @@ fn render_pressure_sliders(ui: &mut egui::Ui, sim: &mut SimWorld) {
             ui.label(RichText::new(format!("{}", cap)).size(11.0).color(COLOR_CYAN));
         });
     });
-    if ui.add(egui::Slider::new(&mut cap, 50..=1000).show_value(false)).changed() {
-        sim.world.max_cap = cap;
+    if ui.add(egui::Slider::new(&mut cap, 50..=10000).show_value(false)).changed() {
+        sim.world.set_max_capacity(cap as u32);
     }
 }
 

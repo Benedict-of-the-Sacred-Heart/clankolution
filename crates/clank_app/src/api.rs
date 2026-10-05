@@ -20,6 +20,8 @@ pub struct ApiToolRequest {
     pub tool: String,
     pub x: Option<f64>,
     pub y: Option<f64>,
+    #[serde(default)]
+    pub count: Option<usize>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -595,7 +597,7 @@ pub fn api_dispatch_system(
                         };
                     }
                     if let Some(cap) = req.max_cap {
-                        sim.world.max_cap = cap.clamp(50, 2000);
+                        sim.world.set_max_capacity(cap.clamp(50, 10_000) as u32);
                     }
                     if let Some(agent_id) = req.selected_agent {
                         if agent_id == 0 {
@@ -645,13 +647,37 @@ pub fn api_dispatch_system(
                             }
                         }
                         "nourish" => {
-                            sim.world.nourish_at(x, y);
+                            let repeat = req.count.unwrap_or(1).clamp(1, 10_000);
+                            let (w, h) = (sim.world.w, sim.world.h);
+                            for _ in 0..repeat {
+                                let (nx, ny) = if repeat > 1 {
+                                    (
+                                        sim.world.prng.rand(20.0, w - 20.0),
+                                        sim.world.prng.rand(20.0, h - 20.0),
+                                    )
+                                } else {
+                                    (x, y)
+                                };
+                                sim.world.nourish_at(nx, ny);
+                            }
                         }
                         "blight" => {
                             sim.world.blight_at(x, y);
                         }
                         "seed" | "seedlife" => {
-                            sim.world.seed_life_at(x, y);
+                            let repeat = req.count.unwrap_or(1).clamp(1, 10_000);
+                            let (w, h) = (sim.world.w, sim.world.h);
+                            for _ in 0..repeat {
+                                let (sx, sy) = if repeat > 1 {
+                                    (
+                                        sim.world.prng.rand(20.0, w - 20.0),
+                                        sim.world.prng.rand(20.0, h - 20.0),
+                                    )
+                                } else {
+                                    (x, y)
+                                };
+                                sim.world.seed_life_at(sx, sy);
+                            }
                         }
                         "extinguish" | "kill" => {
                             sim.world.extinguish_at(x, y, 23.0);
