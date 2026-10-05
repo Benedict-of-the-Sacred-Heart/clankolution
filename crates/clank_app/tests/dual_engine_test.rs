@@ -64,7 +64,10 @@ fn test_gpu_telemetry_and_extinction_detection() {
         audio_voice_count: 4,
         selected_agent_idx: 42,
         selected_agent_id: 1002,
-        _reserved0: [0; 4],
+        total_births: 8,
+        total_deaths: 17,
+        max_generation: 15,
+        extinctions: 3,
         lineage_counts: [10, 0, 15, 20, 0, 5, 8, 12, 14, 0, 11, 9, 13, 16, 7, 10],
     };
 

@@ -57,6 +57,7 @@ pub struct GpuComputeDriver {
     pub max_agents: u32,
     pub soil_cols: u32,
     pub soil_rows: u32,
+    pub initialized: std::sync::atomic::AtomicBool,
 }
 
 impl GpuComputeDriver {
@@ -570,7 +571,27 @@ impl GpuComputeDriver {
             max_agents,
             soil_cols,
             soil_rows,
+            initialized: std::sync::atomic::AtomicBool::new(false),
         }
+    }
+
+    pub fn is_initialized(&self) -> bool {
+        self.initialized.load(std::sync::atomic::Ordering::Relaxed)
+    }
+
+    pub fn set_initialized(&self, val: bool) {
+        self.initialized.store(val, std::sync::atomic::Ordering::Relaxed);
+    }
+
+    pub fn update_params(&self, params: &GpuSimParams) {
+        self.queue.write_buffer(&self.sim_params_buf, 0, bytemuck::bytes_of(params));
+        let sp = crate::gpu::soil_pipeline::SoilParams {
+            renewal: params.renewal,
+            width: self.soil_cols,
+            height: self.soil_rows,
+            decay_rate: 0.006,
+        };
+        self.queue.write_buffer(&self.soil_params_buf, 0, bytemuck::bytes_of(&sp));
     }
 
     pub fn upload_state(
@@ -639,6 +660,7 @@ impl GpuComputeDriver {
             decay_rate: 0.006,
         };
         self.queue.write_buffer(&self.soil_params_buf, 0, bytemuck::bytes_of(&sp));
+        self.initialized.store(true, std::sync::atomic::Ordering::Relaxed);
     }
 
     pub fn dispatch_sub_ticks(&self, sub_ticks: u32, params: &GpuSimParams) {

@@ -83,6 +83,30 @@ pub struct GpuDriverResource {
     pub driver: Option<crate::gpu::compute_driver::GpuComputeDriver>,
 }
 
+pub fn flush_gpu_to_rust(sim: &mut SimWorld, driver: &crate::gpu::compute_driver::GpuComputeDriver) {
+    let telem = driver.readback_telemetry();
+    let read_count = (telem.population as usize + 512).min(driver.max_agents as usize).min(sim.world.max_cap);
+    let updated_states = driver.readback_agent_states(read_count);
+    let updated_genomes = driver.readback_agent_genomes(read_count);
+    let updated_atomics = driver.readback_atomics(read_count);
+    let updated_soil = driver.readback_soil();
+    let params = crate::gpu::types::GpuSimParams {
+        tick: sim.world.tick,
+        agent_count: telem.population,
+        max_agents: driver.max_agents,
+        max_capacity: sim.world.max_cap as u32,
+        ..Default::default()
+    };
+    crate::gpu::bridge::sync_gpu_to_rust(
+        &updated_states,
+        &updated_genomes,
+        &updated_atomics,
+        &updated_soil,
+        &params,
+        sim,
+    );
+}
+
 pub fn sim_step_system(
     mut sim: ResMut<SimWorld>,
     mut gpu_res: Option<ResMut<GpuDriverResource>>,
@@ -109,39 +133,44 @@ pub fn sim_step_system(
                     gpu.driver = crate::gpu::compute_driver::GpuComputeDriver::create_for_world(cols, rows, 65536);
                 }
                 if let Some(ref mut driver) = gpu.driver {
-                    let (states, genomes, atomics, soil, params) = crate::gpu::bridge::sync_rust_to_gpu(&sim);
-                    driver.upload_state(&states, &genomes, &atomics, &soil, &params);
+                    if !driver.is_initialized() {
+                        let (states, genomes, atomics, soil, params) = crate::gpu::bridge::sync_rust_to_gpu(&sim);
+                        driver.upload_state(&states, &genomes, &atomics, &soil, &params);
+                    }
+
+                    let params = crate::gpu::types::GpuSimParams {
+                        tick: sim.world.tick,
+                        agent_count: sim.world.agents.len() as u32,
+                        max_agents: driver.max_agents,
+                        max_capacity: sim.world.max_cap as u32,
+                        hostility: (sim.world.hostility / 100.0) as f32,
+                        mut_rate: (sim.world.mutation / 100.0) as f32,
+                        speed: sim.speed as f32,
+                        renewal: (sim.world.growth / 100.0) as f32,
+                        sub_tick: 0,
+                        sub_ticks_per_frame: steps,
+                        tool_type: 0xFFFFFFFF,
+                        tool_radius: 45.0,
+                        tool_pos: [0.0, 0.0],
+                        camera_pos: [(sim.world_width * 0.5) as f32, (sim.world_height * 0.5) as f32],
+                        camera_size: [sim.world_width as f32, sim.world_height as f32],
+                        world_size: [sim.world_width as f32, sim.world_height as f32],
+                        soil_grid: [sim.world.soil.cols as u32, sim.world.soil.rows as u32],
+                        eclipse: sim.world.eclipse,
+                        epoch: 0,
+                    };
+
+                    driver.update_params(&params);
                     driver.dispatch_sub_ticks(steps, &params);
 
-                    let read_count = (states.len() + 512).min(driver.max_agents as usize).min(sim.world.max_cap);
-                    let updated_states = driver.readback_agent_states(read_count);
-                    let updated_genomes = driver.readback_agent_genomes(read_count);
-                    let updated_atomics = driver.readback_atomics(read_count);
-                    let updated_soil = driver.readback_soil();
-                    let mut updated_params = params;
-                    updated_params.tick += steps;
-
+                    // Read back ONLY telemetry (128 bytes)
                     let telemetry = driver.readback_telemetry();
+                    sim.world.tick += steps;
                     sim.world.kills += telemetry.kills;
+                    sim.world.births += telemetry.birth_count;
 
-                    crate::gpu::bridge::sync_gpu_to_rust(
-                        &updated_states,
-                        &updated_genomes,
-                        &updated_atomics,
-                        &updated_soil,
-                        &updated_params,
-                        &mut sim,
-                    );
-
-                    // Spore replenishment if population collapses below 15 (matching CPU World::evolve)
-                    if sim.world.agents.len() < 15 && sim.world.tick % 45 == 0 {
-                        let needed = 15 - sim.world.agents.len();
-                        let (w, h) = (sim.world.w, sim.world.h);
-                        for _ in 0..needed {
-                            let x = sim.world.prng.rand(0.0, w);
-                            let y = sim.world.prng.rand(0.0, h);
-                            sim.world.seed_life_at(x, y);
-                        }
+                    if telemetry.selected_agent_idx != 0xFFFFFFFF {
+                        sim.selected_agent_id = Some(telemetry.selected_agent_id);
                     }
                     return;
                 }
