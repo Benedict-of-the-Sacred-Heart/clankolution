@@ -93,10 +93,19 @@ struct ConsolidatedQueue {
     audio: array<AudioVoice, 256>,
 }
 
-@group(0) @binding(0) var<storage, read> agent_states: array<GpuAgentState>;
+struct CullOutput {
+    count: atomic<u32>,
+    pad0: u32,
+    pad1: u32,
+    pad2: u32,
+}
+
+@group(0) @binding(0) var<storage, read_write> agent_states: array<GpuAgentState>;
 @group(0) @binding(1) var<storage, read> lbvh_nodes: array<GpuLbvhNode>;
 @group(0) @binding(2) var<storage, read_write> queue_buffer: ConsolidatedQueue;
 @group(0) @binding(3) var<uniform> params: GpuSimParams;
+@group(0) @binding(4) var<storage, read_write> visible_instances: array<u32>;
+@group(0) @binding(5) var<storage, read_write> cull_output: CullOutput;
 
 fn toroidal_aabb_dist_1d(p: f32, b_min: f32, b_max: f32, w: f32) -> f32 {
     if (p >= b_min && p <= b_max) { return 0.0; }
@@ -220,7 +229,7 @@ fn spatial_query_main(@builtin(global_invocation_id) id: vec3u) {
 
         let pos = agent_states[agent_idx].pos_vel.xy;
         let d = toroidal_dist(tool_pos, pos);
-        let aoe_radius = 60.0;
+        let aoe_radius = select(params.tool_radius, 60.0, params.tool_radius <= 0.0);
         if (d <= aoe_radius) {
             if (params.tool_type == 1u) {
                 // Nourish: grant energy
@@ -234,6 +243,47 @@ fn spatial_query_main(@builtin(global_invocation_id) id: vec3u) {
                 agent_states[agent_idx].angle_energy[1] = 0.0;
                 agent_states[agent_idx].visual_cache = 0u;
             }
+        }
+    }
+}
+
+@compute @workgroup_size(64)
+fn frustum_cull_clear(@builtin(global_invocation_id) id: vec3u) {
+    if (id.x == 0u) {
+        atomicStore(&cull_output.count, 0u);
+    }
+}
+
+@compute @workgroup_size(64)
+fn frustum_cull_main(@builtin(global_invocation_id) id: vec3u) {
+    let agent_idx = id.x;
+    if (agent_idx >= params.max_capacity || agent_idx >= params.max_agents) {
+        return;
+    }
+
+    let state = agent_states[agent_idx];
+
+    // Culling invariant: dead agents (dead flag in meta_flags or visual_cache == 0) are culled
+    if ((state.meta_flags & (1u << 13u)) != 0u || state.visual_cache == 0u) {
+        return;
+    }
+
+    // Toroidal frustum test
+    let pos = state.pos_vel.xy;
+    let cam_pos = params.camera_pos;
+    let cam_size = params.camera_size;
+    let half_w = cam_size.x * 0.5 + 24.0;
+    let half_h = cam_size.y * 0.5 + 24.0;
+
+    let dx = abs(pos.x - cam_pos.x);
+    let dist_x = min(dx, params.world_size.x - dx);
+    let dy = abs(pos.y - cam_pos.y);
+    let dist_y = min(dy, params.world_size.y - dy);
+
+    if (dist_x <= half_w && dist_y <= half_h) {
+        let slot = atomicAdd(&cull_output.count, 1u);
+        if (slot < params.max_capacity && slot < params.max_agents) {
+            visible_instances[slot] = agent_idx;
         }
     }
 }

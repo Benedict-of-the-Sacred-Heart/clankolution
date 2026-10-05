@@ -24,6 +24,8 @@ pub struct GpuComputeDriver {
     pub cell_offsets_buf: wgpu::Buffer,
     pub freelist_buf: wgpu::Buffer,
     pub queue_buffer: wgpu::Buffer,
+    pub visible_instances_buf: wgpu::Buffer,
+    pub cull_output_buf: wgpu::Buffer,
 
     // Uniform Buffers
     pub sim_params_buf: wgpu::Buffer,
@@ -35,6 +37,8 @@ pub struct GpuComputeDriver {
     pub staging_genomes: wgpu::Buffer,
     pub staging_soil: wgpu::Buffer,
     pub staging_atomics: wgpu::Buffer,
+    pub staging_cull_buf: wgpu::Buffer,
+    pub staging_visible_instances: wgpu::Buffer,
 
     // Compute Pipelines
     pub soil_pipeline: wgpu::ComputePipeline,
@@ -44,6 +48,9 @@ pub struct GpuComputeDriver {
     pub lbvh_pipeline: wgpu::ComputePipeline,
     pub agent_pipeline: wgpu::ComputePipeline,
     pub birth_pipeline: wgpu::ComputePipeline,
+    pub spatial_query_pipeline: wgpu::ComputePipeline,
+    pub cull_clear_pipeline: wgpu::ComputePipeline,
+    pub cull_pipeline: wgpu::ComputePipeline,
 
     // Bind Groups
     pub soil_bind_group: wgpu::BindGroup,
@@ -53,6 +60,7 @@ pub struct GpuComputeDriver {
     pub agent_group1: wgpu::BindGroup,
     pub birth_group0: wgpu::BindGroup,
     pub birth_group1: wgpu::BindGroup,
+    pub spatial_query_bind_group: wgpu::BindGroup,
 
     pub max_agents: u32,
     pub soil_cols: u32,
@@ -239,6 +247,35 @@ impl GpuComputeDriver {
         let staging_atomics = device.create_buffer(&wgpu::BufferDescriptor {
             label: Some("staging_atomics"),
             size: agent_atomics_size,
+            usage: BufferUsages::MAP_READ | BufferUsages::COPY_DST,
+            mapped_at_creation: false,
+        });
+
+        let visible_instances_size = (max_agents as u64) * 4;
+        let visible_instances_buf = device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("visible_instances_buf"),
+            size: visible_instances_size,
+            usage: BufferUsages::STORAGE | BufferUsages::COPY_SRC | BufferUsages::COPY_DST | BufferUsages::VERTEX,
+            mapped_at_creation: false,
+        });
+
+        let cull_output_buf = device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("cull_output_buf"),
+            size: 16,
+            usage: BufferUsages::STORAGE | BufferUsages::COPY_SRC | BufferUsages::COPY_DST | BufferUsages::INDIRECT,
+            mapped_at_creation: false,
+        });
+
+        let staging_cull_buf = device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("staging_cull_buf"),
+            size: 16,
+            usage: BufferUsages::MAP_READ | BufferUsages::COPY_DST,
+            mapped_at_creation: false,
+        });
+
+        let staging_visible_instances = device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("staging_visible_instances"),
+            size: visible_instances_size,
             usage: BufferUsages::MAP_READ | BufferUsages::COPY_DST,
             mapped_at_creation: false,
         });
@@ -533,6 +570,69 @@ impl GpuComputeDriver {
             cache: None,
         });
 
+        let spatial_query_sm = device.create_shader_module(wgpu::ShaderModuleDescriptor {
+            label: Some("spatial_query_sm"),
+            source: wgpu::ShaderSource::Wgsl(std::borrow::Cow::Borrowed(include_str!("../../assets/shaders/spatial_query.wgsl"))),
+        });
+
+        let spatial_query_bgl = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+            label: Some("spatial_query_bgl"),
+            entries: &[
+                wgpu::BindGroupLayoutEntry { binding: 0, visibility: wgpu::ShaderStages::COMPUTE, ty: wgpu::BindingType::Buffer { ty: wgpu::BufferBindingType::Storage { read_only: false }, has_dynamic_offset: false, min_binding_size: None }, count: None },
+                wgpu::BindGroupLayoutEntry { binding: 1, visibility: wgpu::ShaderStages::COMPUTE, ty: wgpu::BindingType::Buffer { ty: wgpu::BufferBindingType::Storage { read_only: true }, has_dynamic_offset: false, min_binding_size: None }, count: None },
+                wgpu::BindGroupLayoutEntry { binding: 2, visibility: wgpu::ShaderStages::COMPUTE, ty: wgpu::BindingType::Buffer { ty: wgpu::BufferBindingType::Storage { read_only: false }, has_dynamic_offset: false, min_binding_size: None }, count: None },
+                wgpu::BindGroupLayoutEntry { binding: 3, visibility: wgpu::ShaderStages::COMPUTE, ty: wgpu::BindingType::Buffer { ty: wgpu::BufferBindingType::Uniform, has_dynamic_offset: false, min_binding_size: None }, count: None },
+                wgpu::BindGroupLayoutEntry { binding: 4, visibility: wgpu::ShaderStages::COMPUTE, ty: wgpu::BindingType::Buffer { ty: wgpu::BufferBindingType::Storage { read_only: false }, has_dynamic_offset: false, min_binding_size: None }, count: None },
+                wgpu::BindGroupLayoutEntry { binding: 5, visibility: wgpu::ShaderStages::COMPUTE, ty: wgpu::BindingType::Buffer { ty: wgpu::BufferBindingType::Storage { read_only: false }, has_dynamic_offset: false, min_binding_size: None }, count: None },
+            ],
+        });
+
+        let spatial_query_bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some("spatial_query_bg"),
+            layout: &spatial_query_bgl,
+            entries: &[
+                wgpu::BindGroupEntry { binding: 0, resource: agent_states_buf.as_entire_binding() },
+                wgpu::BindGroupEntry { binding: 1, resource: lbvh_nodes_buf.as_entire_binding() },
+                wgpu::BindGroupEntry { binding: 2, resource: queue_buffer.as_entire_binding() },
+                wgpu::BindGroupEntry { binding: 3, resource: sim_params_buf.as_entire_binding() },
+                wgpu::BindGroupEntry { binding: 4, resource: visible_instances_buf.as_entire_binding() },
+                wgpu::BindGroupEntry { binding: 5, resource: cull_output_buf.as_entire_binding() },
+            ],
+        });
+
+        let spatial_query_pl = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+            label: Some("spatial_query_pl"),
+            bind_group_layouts: &[Some(&spatial_query_bgl)],
+            immediate_size: 0,
+        });
+
+        let spatial_query_pipeline = device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
+            label: Some("spatial_query_pipeline"),
+            layout: Some(&spatial_query_pl),
+            module: &spatial_query_sm,
+            entry_point: Some("spatial_query_main"),
+            compilation_options: wgpu::PipelineCompilationOptions::default(),
+            cache: None,
+        });
+
+        let cull_clear_pipeline = device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
+            label: Some("cull_clear_pipeline"),
+            layout: Some(&spatial_query_pl),
+            module: &spatial_query_sm,
+            entry_point: Some("frustum_cull_clear"),
+            compilation_options: wgpu::PipelineCompilationOptions::default(),
+            cache: None,
+        });
+
+        let cull_pipeline = device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
+            label: Some("cull_pipeline"),
+            layout: Some(&spatial_query_pl),
+            module: &spatial_query_sm,
+            entry_point: Some("frustum_cull_main"),
+            compilation_options: wgpu::PipelineCompilationOptions::default(),
+            cache: None,
+        });
+
         Self {
             device,
             queue,
@@ -547,6 +647,8 @@ impl GpuComputeDriver {
             cell_offsets_buf,
             freelist_buf,
             queue_buffer,
+            visible_instances_buf,
+            cull_output_buf,
             sim_params_buf,
             soil_params_buf,
             staging_telemetry,
@@ -554,6 +656,8 @@ impl GpuComputeDriver {
             staging_genomes,
             staging_soil,
             staging_atomics,
+            staging_cull_buf,
+            staging_visible_instances,
             soil_pipeline,
             morton_clear_pipeline,
             morton_encode_pipeline,
@@ -561,6 +665,9 @@ impl GpuComputeDriver {
             lbvh_pipeline,
             agent_pipeline,
             birth_pipeline,
+            spatial_query_pipeline,
+            cull_clear_pipeline,
+            cull_pipeline,
             soil_bind_group,
             morton_bind_group,
             lbvh_bind_group,
@@ -568,6 +675,7 @@ impl GpuComputeDriver {
             agent_group1,
             birth_group0,
             birth_group1,
+            spatial_query_bind_group,
             max_agents,
             soil_cols,
             soil_rows,
@@ -857,5 +965,82 @@ impl GpuComputeDriver {
         self.staging_atomics.unmap();
 
         atomics
+    }
+
+    pub fn dispatch_culling(&self, params: &GpuSimParams) -> u32 {
+        self.queue.write_buffer(&self.sim_params_buf, 0, bytemuck::bytes_of(params));
+
+        let mut encoder = self.device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
+            label: Some("cull_encoder"),
+        });
+
+        {
+            let mut cpass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {
+                label: Some("cull_pass"),
+                timestamp_writes: None,
+            });
+            cpass.set_bind_group(0, &self.spatial_query_bind_group, &[]);
+
+            // Clear cull counter to 0
+            cpass.set_pipeline(&self.cull_clear_pipeline);
+            cpass.dispatch_workgroups(1, 1, 1);
+
+            // Frustum cull active agents
+            let active_slots = params.max_agents.max(params.agent_count);
+            let workgroups = (active_slots + 63) / 64;
+            if workgroups > 0 {
+                cpass.set_pipeline(&self.cull_pipeline);
+                cpass.dispatch_workgroups(workgroups, 1, 1);
+            }
+        }
+
+        encoder.copy_buffer_to_buffer(&self.cull_output_buf, 0, &self.staging_cull_buf, 0, 16);
+        self.queue.submit([encoder.finish()]);
+
+        let slice = self.staging_cull_buf.slice(0..16);
+        let (sender, receiver) = std::sync::mpsc::channel();
+        slice.map_async(wgpu::MapMode::Read, move |res| {
+            let _ = sender.send(res);
+        });
+        self.device.poll(wgpu::PollType::wait_indefinitely()).unwrap();
+        receiver.recv().unwrap().unwrap();
+
+        let visible_count = {
+            let data = slice.get_mapped_range();
+            let count = u32::from_le_bytes(data[0..4].try_into().unwrap());
+            drop(data);
+            count
+        };
+        self.staging_cull_buf.unmap();
+
+        visible_count.min(params.max_capacity).min(params.max_agents)
+    }
+
+    pub fn readback_visible_instances(&self, count: usize) -> Vec<u32> {
+        let count = count.min(self.max_agents as usize);
+        if count == 0 {
+            return Vec::new();
+        }
+        let byte_len = (count * 4) as u64;
+        let mut encoder = self.device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
+            label: Some("readback_visible_encoder"),
+        });
+        encoder.copy_buffer_to_buffer(&self.visible_instances_buf, 0, &self.staging_visible_instances, 0, byte_len);
+        self.queue.submit([encoder.finish()]);
+
+        let slice = self.staging_visible_instances.slice(0..byte_len);
+        let (sender, receiver) = std::sync::mpsc::channel();
+        slice.map_async(wgpu::MapMode::Read, move |res| {
+            let _ = sender.send(res);
+        });
+        self.device.poll(wgpu::PollType::wait_indefinitely()).unwrap();
+        receiver.recv().unwrap().unwrap();
+
+        let result = {
+            let data = slice.get_mapped_range();
+            bytemuck::cast_slice(&data).to_vec()
+        };
+        self.staging_visible_instances.unmap();
+        result
     }
 }
