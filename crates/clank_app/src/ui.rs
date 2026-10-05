@@ -206,7 +206,7 @@ pub fn clank_ui_system(
     state.history_timer += time.delta_secs();
     if state.history_timer >= 0.25 {
         state.history_timer = 0.0;
-        let pop = sim.world.agents.iter().filter(|a| a.dead == 0).count();
+        let pop = sim.active_population();
         let food_sum: f32 = sim.world.soil.food.iter().sum::<f32>() / (sim.world.soil.cols * sim.world.soil.rows) as f32;
         let kills = sim.world.kills as usize;
         state.record_history(pop, food_sum, kills);
@@ -373,7 +373,7 @@ pub fn clank_ui_system(
                         ui.add_space(10.0);
 
                         // 2x2 Stat Grid
-                        let active_count = sim.world.agents.iter().filter(|a| a.dead == 0).count();
+                        let active_count = sim.active_population();
                         let max_gen = sim.world.agents.iter().map(|a| a.gen).max().unwrap_or(0);
                         let living_roots = sim.world.agents.iter()
                             .filter(|a| a.dead == 0)
@@ -481,7 +481,7 @@ pub fn clank_ui_system(
             ui.add_space(14.0);
             ui.horizontal(|ui| {
                 ui.add_space(20.0);
-                let active_count = sim.world.agents.iter().filter(|a| a.dead == 0).count();
+                let active_count = sim.active_population();
                 let cycle_sub = compute_cycle_subtitle(sim.world.tick, sim.world.eclipse, active_count);
                 let cycle_text = format!("CYCLE {:05} / {}", sim.world.tick, cycle_sub);
                 ui.label(RichText::new(cycle_text).size(11.0).monospace().color(Color32::from_rgb(160, 195, 188)));

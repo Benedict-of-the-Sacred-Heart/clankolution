@@ -380,7 +380,9 @@ pub fn update_soil_texture_system(
             if let Some(gpu) = gpu_driver.as_ref() {
                 if let Some(ref driver) = gpu.driver {
                     if driver.is_initialized() {
-                        driver.copy_soil_display_rgba(data);
+                        if sim.world.tick % 2 == 0 {
+                            driver.copy_soil_display_rgba(data);
+                        }
                         copied = true;
                     }
                 }
@@ -590,6 +592,166 @@ pub fn generate_outline_mesh_from_gpu_states(
     }
 }
 
+pub fn generate_dart_mesh_from_instances(
+    instances: &[crate::gpu::types::GpuDartInstance],
+    world_height: f32,
+    positions: &mut Vec<[f32; 3]>,
+    colors: &mut Vec<[f32; 4]>,
+) {
+    positions.clear();
+    colors.clear();
+    positions.reserve(instances.len() * 6);
+    colors.reserve(instances.len() * 6);
+
+    for inst in instances {
+        let Some((radius, color, _is_attacking, _has_birth)) = unpack_visual_cache(inst.vis_data[1], inst.vis_data[0]) else {
+            continue;
+        };
+
+        let sim_pos = Vec2::new(inst.pos_angle[0], inst.pos_angle[1]);
+        let bevy_pos = sim_to_bevy_coord(sim_pos, world_height);
+        let rot = Mat2::from_angle(-inst.pos_angle[2]);
+        let c = color.to_srgba();
+        let body_rgba = [c.red, c.green, c.blue, c.alpha];
+
+        let r = radius;
+        let armor = inst.pad0;
+        let carnivory = f32::from_bits(inst.pad1[0]);
+
+        let nose = bevy_pos + rot * Vec2::new(r * 1.5, 0.0);
+        let right = bevy_pos + rot * Vec2::new(-r * 0.75, r * (0.5 + armor * 0.45));
+        let rear = bevy_pos + rot * Vec2::new(-r * (0.45 + carnivory), 0.0);
+        let left = bevy_pos + rot * Vec2::new(-r * 0.75, -r * (0.5 + armor * 0.45));
+
+        // Body Triangle 1: [nose, right, rear]
+        positions.push([nose.x, nose.y, -2.0]);
+        positions.push([right.x, right.y, -2.0]);
+        positions.push([rear.x, rear.y, -2.0]);
+        colors.push(body_rgba);
+        colors.push(body_rgba);
+        colors.push(body_rgba);
+
+        // Body Triangle 2: [nose, rear, left]
+        positions.push([nose.x, nose.y, -2.0]);
+        positions.push([rear.x, rear.y, -2.0]);
+        positions.push([left.x, left.y, -2.0]);
+        colors.push(body_rgba);
+        colors.push(body_rgba);
+        colors.push(body_rgba);
+    }
+
+    if positions.is_empty() {
+        positions.push([0.0, 0.0, -100.0]);
+        positions.push([0.0, 0.0, -100.0]);
+        positions.push([0.0, 0.0, -100.0]);
+        colors.push([0.0, 0.0, 0.0, 0.0]);
+        colors.push([0.0, 0.0, 0.0, 0.0]);
+        colors.push([0.0, 0.0, 0.0, 0.0]);
+    }
+}
+
+pub fn generate_outline_mesh_from_instances(
+    instances: &[crate::gpu::types::GpuDartInstance],
+    world_height: f32,
+    positions: &mut Vec<[f32; 3]>,
+    colors: &mut Vec<[f32; 4]>,
+) {
+    positions.clear();
+    colors.clear();
+    positions.reserve(instances.len() * 12);
+    colors.reserve(instances.len() * 12);
+
+    for inst in instances {
+        let Some((radius, _color, is_attacking, has_birth)) = unpack_visual_cache(inst.vis_data[1], inst.vis_data[0]) else {
+            continue;
+        };
+
+        let sim_pos = Vec2::new(inst.pos_angle[0], inst.pos_angle[1]);
+        let bevy_pos = sim_to_bevy_coord(sim_pos, world_height);
+        let rot = Mat2::from_angle(-inst.pos_angle[2]);
+
+        let r = radius;
+        let armor = inst.pad0;
+        let carnivory = f32::from_bits(inst.pad1[0]);
+        let sight = f32::from_bits(inst.pad1[1]);
+
+        let nose = bevy_pos + rot * Vec2::new(r * 1.5, 0.0);
+        let right = bevy_pos + rot * Vec2::new(-r * 0.75, r * (0.5 + armor * 0.45));
+        let rear = bevy_pos + rot * Vec2::new(-r * (0.45 + carnivory), 0.0);
+        let left = bevy_pos + rot * Vec2::new(-r * 0.75, -r * (0.5 + armor * 0.45));
+
+        let border_rgba = if is_attacking {
+            [1.0, 0.33, 0.31, 1.0]
+        } else {
+            [0.082, 0.188, 0.204, 1.0]
+        };
+
+        // 4 lines = 8 vertices for LineList
+        positions.push([nose.x, nose.y, -1.9]);
+        positions.push([right.x, right.y, -1.9]);
+        colors.push(border_rgba);
+        colors.push(border_rgba);
+
+        positions.push([right.x, right.y, -1.9]);
+        positions.push([rear.x, rear.y, -1.9]);
+        colors.push(border_rgba);
+        colors.push(border_rgba);
+
+        positions.push([rear.x, rear.y, -1.9]);
+        positions.push([left.x, left.y, -1.9]);
+        colors.push(border_rgba);
+        colors.push(border_rgba);
+
+        positions.push([left.x, left.y, -1.9]);
+        positions.push([nose.x, nose.y, -1.9]);
+        colors.push(border_rgba);
+        colors.push(border_rgba);
+
+        // Sensory antennae whiskers if sight > 0.56
+        if sight > 0.56 {
+            let ant_color = [border_rgba[0], border_rgba[1], border_rgba[2], 0.6];
+            let signal = 0.5;
+            let ant1_start = bevy_pos + rot * Vec2::new(-r * 0.3, r * 0.6);
+            let ant1_end = bevy_pos + rot * Vec2::new(-r * (1.5 + sight), r * (1.1 + signal));
+            let ant2_start = bevy_pos + rot * Vec2::new(-r * 0.3, -r * 0.6);
+            let ant2_end = bevy_pos + rot * Vec2::new(-r * (1.5 + sight), -r * (1.1 + signal));
+
+            positions.push([ant1_start.x, ant1_start.y, -1.9]);
+            positions.push([ant1_end.x, ant1_end.y, -1.9]);
+            colors.push(ant_color);
+            colors.push(ant_color);
+
+            positions.push([ant2_start.x, ant2_start.y, -1.9]);
+            positions.push([ant2_end.x, ant2_end.y, -1.9]);
+            colors.push(ant_color);
+            colors.push(ant_color);
+        }
+
+        // Birth halo ring if newborn
+        if has_birth {
+            let halo_r = r + 3.0;
+            let halo_color = [1.0, 0.95, 0.8, 0.8];
+            for seg in 0..8 {
+                let theta1 = (seg as f32) * std::f32::consts::TAU / 8.0;
+                let theta2 = ((seg + 1) as f32) * std::f32::consts::TAU / 8.0;
+                let p1 = bevy_pos + Vec2::new(theta1.cos() * halo_r, theta1.sin() * halo_r);
+                let p2 = bevy_pos + Vec2::new(theta2.cos() * halo_r, theta2.sin() * halo_r);
+                positions.push([p1.x, p1.y, -1.8]);
+                positions.push([p2.x, p2.y, -1.8]);
+                colors.push(halo_color);
+                colors.push(halo_color);
+            }
+        }
+    }
+
+    if positions.is_empty() {
+        positions.push([0.0, 0.0, -100.0]);
+        positions.push([0.0, 0.0, -100.0]);
+        colors.push([0.0, 0.0, 0.0, 0.0]);
+        colors.push([0.0, 0.0, 0.0, 0.0]);
+    }
+}
+
 pub fn generate_dart_mesh_data(
     sim: &SimWorld,
     positions: &mut Vec<[f32; 3]>,
@@ -637,6 +799,8 @@ pub fn setup_agent_rendering(
 
 pub fn update_agent_mesh_system(
     sim: Option<Res<SimWorld>>,
+    gpu_driver: Option<Res<crate::sim::GpuDriverResource>>,
+    camera_query: Query<(&Camera, &GlobalTransform), With<crate::camera::MainCamera>>,
     res: Option<Res<AgentMeshResource>>,
     outline_res: Option<Res<AgentOutlineMeshResource>>,
     mut meshes: ResMut<Assets<Mesh>>,
@@ -644,19 +808,53 @@ pub fn update_agent_mesh_system(
     let (Some(sim), Some(res)) = (sim, res) else { return };
 
     if sim.active_engine == crate::sim::ActiveEngine::Gpu {
-        // Zero CPU vertex generation in GPU mode:
-        // Clear/collapse mesh to avoid 80,000 vertex CPU allocation and transfer
-        if let Some(mut mesh) = meshes.get_mut(&res.mesh_handle) {
-            if mesh.count_vertices() > 3 {
-                mesh.insert_attribute(Mesh::ATTRIBUTE_POSITION, vec![[0.0, 0.0, -100.0]; 3]);
-                mesh.insert_attribute(Mesh::ATTRIBUTE_COLOR, vec![[0.0, 0.0, 0.0, 0.0]; 3]);
-            }
-        }
-        if let Some(outline_res) = outline_res {
-            if let Some(mut mesh) = meshes.get_mut(&outline_res.mesh_handle) {
-                if mesh.count_vertices() > 2 {
-                    mesh.insert_attribute(Mesh::ATTRIBUTE_POSITION, vec![[0.0, 0.0, -100.0]; 2]);
-                    mesh.insert_attribute(Mesh::ATTRIBUTE_COLOR, vec![[0.0, 0.0, 0.0, 0.0]; 2]);
+        if let Some(ref gpu) = gpu_driver {
+            if let Some(ref driver) = gpu.driver {
+                if driver.is_initialized() {
+                    let (cam_pos, cam_size) = if let Ok((camera, transform)) = camera_query.single() {
+                        let pos_bevy = transform.translation().truncate();
+                        let pos_sim = bevy_to_sim_coord(pos_bevy, sim.world_height as f32);
+                        let size = camera.logical_viewport_size().unwrap_or(Vec2::new(sim.world_width as f32, sim.world_height as f32));
+                        ([pos_sim.x, pos_sim.y], [size.x, size.y])
+                    } else {
+                        ([(sim.world_width * 0.5) as f32, (sim.world_height * 0.5) as f32], [sim.world_width as f32, sim.world_height as f32])
+                    };
+
+                    let cull_params = crate::gpu::types::GpuSimParams {
+                        world_size: [sim.world_width as f32, sim.world_height as f32],
+                        camera_pos: cam_pos,
+                        camera_size: cam_size,
+                        agent_count: sim.gpu_population,
+                        max_capacity: sim.world.max_cap as u32,
+                        max_agents: driver.max_agents,
+                        ..Default::default()
+                    };
+
+                    let visible_count = driver.dispatch_culling(&cull_params) as usize;
+                    let instances = if visible_count > 0 {
+                        driver.readback_dart_instances(visible_count)
+                    } else {
+                        Vec::new()
+                    };
+
+                    if let Some(mut mesh) = meshes.get_mut(&res.mesh_handle) {
+                        let mut positions = Vec::new();
+                        let mut colors = Vec::new();
+                        generate_dart_mesh_from_instances(&instances, sim.world_height as f32, &mut positions, &mut colors);
+                        mesh.insert_attribute(Mesh::ATTRIBUTE_POSITION, positions);
+                        mesh.insert_attribute(Mesh::ATTRIBUTE_COLOR, colors);
+                    }
+
+                    if let Some(outline_res) = outline_res {
+                        if let Some(mut mesh) = meshes.get_mut(&outline_res.mesh_handle) {
+                            let mut positions = Vec::new();
+                            let mut colors = Vec::new();
+                            generate_outline_mesh_from_instances(&instances, sim.world_height as f32, &mut positions, &mut colors);
+                            mesh.insert_attribute(Mesh::ATTRIBUTE_POSITION, positions);
+                            mesh.insert_attribute(Mesh::ATTRIBUTE_COLOR, colors);
+                        }
+                    }
+                    return;
                 }
             }
         }
@@ -897,6 +1095,7 @@ pub fn agent_picking_system(
     window_query: Query<&Window, With<bevy::window::PrimaryWindow>>,
     camera_query: Query<(&Camera, &GlobalTransform), With<crate::camera::MainCamera>>,
     sim: Option<ResMut<SimWorld>>,
+    mut gpu_driver: Option<ResMut<crate::sim::GpuDriverResource>>,
     ui_state: Option<Res<crate::ui::UiState>>,
     mut egui_contexts: Option<bevy_egui::EguiContexts>,
 ) {
@@ -938,6 +1137,15 @@ pub fn agent_picking_system(
         crate::ui::ActiveTool::SeedLife => {
             if mouse_buttons.just_pressed(MouseButton::Left) || (sim.world.tick % 8 == 0) {
                 sim.world.seed_life_at(sim_pos.x as f64, sim_pos.y as f64);
+                if sim.active_engine == crate::sim::ActiveEngine::Gpu {
+                    if let Some(ref mut gpu) = gpu_driver {
+                        if let Some(ref driver) = gpu.driver {
+                            if driver.is_initialized() {
+                                driver.seed_agents_gpu(&[(sim_pos.x, sim_pos.y)]);
+                            }
+                        }
+                    }
+                }
             }
         }
         crate::ui::ActiveTool::Extinguish => {

@@ -19,6 +19,7 @@ pub struct SimWorld {
     pub world_width: f64,
     pub world_height: f64,
     pub active_engine: ActiveEngine,
+    pub gpu_population: u32,
 }
 
 impl Default for SimWorld {
@@ -33,6 +34,7 @@ impl Default for SimWorld {
             world_width: 950.0,
             world_height: 747.0,
             active_engine: ActiveEngine::Rust,
+            gpu_population: 0,
         }
     }
 }
@@ -49,6 +51,15 @@ impl SimWorld {
             world_width: 950.0,
             world_height: 747.0,
             active_engine: ActiveEngine::Rust,
+            gpu_population: 0,
+        }
+    }
+
+    pub fn active_population(&self) -> usize {
+        if self.active_engine == ActiveEngine::Gpu {
+            self.gpu_population as usize
+        } else {
+            self.world.agents.iter().filter(|a| a.dead == 0).count()
         }
     }
 
@@ -85,7 +96,7 @@ pub struct GpuDriverResource {
 
 pub fn flush_gpu_to_rust(sim: &mut SimWorld, driver: &crate::gpu::compute_driver::GpuComputeDriver) {
     let telem = driver.readback_telemetry();
-    let read_count = (telem.population as usize + 512).min(driver.max_agents as usize).min(sim.world.max_cap);
+    let read_count = sim.world.max_cap.min(driver.max_agents as usize);
     let updated_states = driver.readback_agent_states(read_count);
     let updated_genomes = driver.readback_agent_genomes(read_count);
     let updated_atomics = driver.readback_atomics(read_count);
@@ -127,6 +138,7 @@ pub fn sim_step_system(
                 }
             }
             sim.step(steps);
+            sim.gpu_population = sim.world.agents.iter().filter(|a| a.dead == 0).count() as u32;
         }
         ActiveEngine::Gpu => {
             if let Some(ref mut gpu) = gpu_res {
@@ -144,11 +156,18 @@ pub fn sim_step_system(
                     if !driver.is_initialized() {
                         let (states, genomes, atomics, soil, params) = crate::gpu::bridge::sync_rust_to_gpu(&sim);
                         driver.upload_state(&states, &genomes, &atomics, &soil, &params);
+                        sim.gpu_population = sim.world.agents.iter().filter(|a| a.dead == 0).count() as u32;
                     }
+
+                    let current_count = if sim.gpu_population > 0 {
+                        sim.gpu_population
+                    } else {
+                        sim.world.agents.len() as u32
+                    };
 
                     let params = crate::gpu::types::GpuSimParams {
                         tick: sim.world.tick,
-                        agent_count: sim.world.agents.len() as u32,
+                        agent_count: current_count,
                         max_agents: driver.max_agents,
                         max_capacity: sim.world.max_cap as u32,
                         hostility: (sim.world.hostility / 100.0) as f32,
@@ -175,24 +194,25 @@ pub fn sim_step_system(
                     let telemetry = driver.readback_telemetry();
                     sim.world.tick += steps;
                     sim.world.kills += telemetry.kills;
-                    sim.world.births += telemetry.birth_count;
+                    sim.world.births += telemetry.total_births.max(telemetry.birth_count);
+                    sim.gpu_population = telemetry.population;
 
                     if telemetry.selected_agent_idx != 0xFFFFFFFF {
                         sim.selected_agent_id = Some(telemetry.selected_agent_id);
                     }
 
-                    // Spore replenishment if population collapses in GPU mode
+                    // Automatic agent replenishment if population collapses in GPU mode
                     if telemetry.population < 15 && sim.world.tick % 45 == 0 {
                         let n = (15 - telemetry.population).min(15) as usize;
-                        let mut spore_positions = Vec::with_capacity(n);
+                        let mut agent_positions = Vec::with_capacity(n);
                         let w = sim.world.w;
                         let h = sim.world.h;
                         for _ in 0..n {
                             let x = sim.world.prng.rand(0.0, w) as f32;
                             let y = sim.world.prng.rand(0.0, h) as f32;
-                            spore_positions.push((x, y));
+                            agent_positions.push((x, y));
                         }
-                        driver.seed_spores_gpu(&spore_positions);
+                        driver.seed_agents_gpu(&agent_positions);
                     }
 
                     return;

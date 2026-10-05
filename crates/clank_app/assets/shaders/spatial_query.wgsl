@@ -294,9 +294,9 @@ fn frustum_cull_main(@builtin(global_invocation_id) id: vec3u) {
             visible_instances[slot] = agent_idx;
             let angle = state.angle_energy[0];
             dart_instances[slot].pos_angle = vec3f(pos.x, pos.y, angle);
-            dart_instances[slot].pad0 = 0.0;
+            dart_instances[slot].pad0 = state.traits[0].w;
             dart_instances[slot].vis_data = vec2u(state.packed_color, state.visual_cache);
-            dart_instances[slot].pad1 = vec2u(0u, 0u);
+            dart_instances[slot].pad1 = vec2u(bitcast<u32>(state.traits[1].y), bitcast<u32>(state.traits[0].z));
         }
     }
 }

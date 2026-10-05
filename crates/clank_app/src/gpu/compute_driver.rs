@@ -60,10 +60,12 @@ pub struct GpuComputeDriver {
     pub staging_atomics: wgpu::Buffer,
     pub staging_cull_buf: wgpu::Buffer,
     pub staging_visible_instances: wgpu::Buffer,
+    pub staging_dart_instances: wgpu::Buffer,
     pub staging_freelist: wgpu::Buffer,
 
     // Pipelines
     pub soil_pipeline: wgpu::ComputePipeline,
+    pub preamble_pipeline: wgpu::ComputePipeline,
     pub morton_clear_pipeline: wgpu::ComputePipeline,
     pub morton_encode_pipeline: wgpu::ComputePipeline,
     pub morton_offsets_pipeline: wgpu::ComputePipeline,
@@ -77,6 +79,8 @@ pub struct GpuComputeDriver {
 
     // Bind Groups
     pub soil_bind_group: wgpu::BindGroup,
+    pub preamble_bg0: wgpu::BindGroup,
+    pub preamble_bg1: wgpu::BindGroup,
     pub morton_bind_group: wgpu::BindGroup,
     pub lbvh_bind_group: wgpu::BindGroup,
     pub agent_group0: wgpu::BindGroup,
@@ -90,8 +94,8 @@ pub struct GpuComputeDriver {
     pub soil_cols: u32,
     pub soil_rows: u32,
     pub initialized: std::sync::atomic::AtomicBool,
-    pub next_spore_id: std::sync::atomic::AtomicU32,
-    pub next_spore_root: std::sync::atomic::AtomicU32,
+    pub next_agent_id: std::sync::atomic::AtomicU32,
+    pub next_agent_root: std::sync::atomic::AtomicU32,
 }
 
 impl GpuComputeDriver {
@@ -358,6 +362,13 @@ impl GpuComputeDriver {
             label: Some("dart_instances_buf"),
             size: dart_instances_size,
             usage: BufferUsages::STORAGE | BufferUsages::VERTEX | BufferUsages::COPY_SRC | BufferUsages::COPY_DST,
+            mapped_at_creation: false,
+        });
+
+        let staging_dart_instances = device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("staging_dart_instances"),
+            size: dart_instances_size,
+            usage: BufferUsages::MAP_READ | BufferUsages::COPY_DST,
             mapped_at_creation: false,
         });
 
@@ -723,6 +734,55 @@ impl GpuComputeDriver {
             cache: None,
         });
 
+        let preamble_sm = device.create_shader_module(wgpu::ShaderModuleDescriptor {
+            label: Some("preamble_sm"),
+            source: wgpu::ShaderSource::Wgsl(include_str!("../../assets/shaders/preamble_clear.wgsl").into()),
+        });
+
+        let preamble_bgl0 = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+            label: Some("preamble_bgl0"),
+            entries: &[
+                wgpu::BindGroupLayoutEntry { binding: 0, visibility: wgpu::ShaderStages::COMPUTE, ty: wgpu::BindingType::Buffer { ty: wgpu::BufferBindingType::Storage { read_only: false }, has_dynamic_offset: false, min_binding_size: None }, count: None },
+                wgpu::BindGroupLayoutEntry { binding: 1, visibility: wgpu::ShaderStages::COMPUTE, ty: wgpu::BindingType::Buffer { ty: wgpu::BufferBindingType::Storage { read_only: false }, has_dynamic_offset: false, min_binding_size: None }, count: None },
+                wgpu::BindGroupLayoutEntry { binding: 2, visibility: wgpu::ShaderStages::COMPUTE, ty: wgpu::BindingType::Buffer { ty: wgpu::BufferBindingType::Storage { read_only: false }, has_dynamic_offset: false, min_binding_size: None }, count: None },
+            ],
+        });
+        let preamble_bgl1 = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+            label: Some("preamble_bgl1"),
+            entries: &[
+                wgpu::BindGroupLayoutEntry { binding: 0, visibility: wgpu::ShaderStages::COMPUTE, ty: wgpu::BindingType::Buffer { ty: wgpu::BufferBindingType::Uniform, has_dynamic_offset: false, min_binding_size: None }, count: None },
+            ],
+        });
+        let preamble_bg0 = device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some("preamble_bg0"),
+            layout: &preamble_bgl0,
+            entries: &[
+                wgpu::BindGroupEntry { binding: 0, resource: agent_atomics_buf.as_entire_binding() },
+                wgpu::BindGroupEntry { binding: 1, resource: queue_buffer.as_entire_binding() },
+                wgpu::BindGroupEntry { binding: 2, resource: cell_offsets_buf.as_entire_binding() },
+            ],
+        });
+        let preamble_bg1 = device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some("preamble_bg1"),
+            layout: &preamble_bgl1,
+            entries: &[
+                wgpu::BindGroupEntry { binding: 0, resource: sim_params_buf.as_entire_binding() },
+            ],
+        });
+        let preamble_pl = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+            label: Some("preamble_pl"),
+            bind_group_layouts: &[Some(&preamble_bgl0), Some(&preamble_bgl1)],
+            immediate_size: 0,
+        });
+        let preamble_pipeline = device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
+            label: Some("preamble_pipeline"),
+            layout: Some(&preamble_pl),
+            module: &preamble_sm,
+            entry_point: Some("preamble_main"),
+            compilation_options: wgpu::PipelineCompilationOptions::default(),
+            cache: None,
+        });
+
         let dart_sm = device.create_shader_module(wgpu::ShaderModuleDescriptor {
             label: Some("dart_instanced_sm"),
             source: wgpu::ShaderSource::Wgsl(std::borrow::Cow::Borrowed(include_str!("../../assets/shaders/dart_instanced.wgsl"))),
@@ -835,8 +895,10 @@ impl GpuComputeDriver {
             staging_atomics,
             staging_cull_buf,
             staging_visible_instances,
+            staging_dart_instances,
             staging_freelist,
             soil_pipeline,
+            preamble_pipeline,
             morton_clear_pipeline,
             morton_encode_pipeline,
             morton_offsets_pipeline,
@@ -848,6 +910,8 @@ impl GpuComputeDriver {
             cull_pipeline,
             dart_render_pipeline,
             soil_bind_group,
+            preamble_bg0,
+            preamble_bg1,
             morton_bind_group,
             lbvh_bind_group,
             agent_group0,
@@ -860,8 +924,8 @@ impl GpuComputeDriver {
             soil_cols,
             soil_rows,
             initialized: std::sync::atomic::AtomicBool::new(false),
-            next_spore_id: std::sync::atomic::AtomicU32::new(10000),
-            next_spore_root: std::sync::atomic::AtomicU32::new(0),
+            next_agent_id: std::sync::atomic::AtomicU32::new(10000),
+            next_agent_root: std::sync::atomic::AtomicU32::new(0),
         }
     }
 
@@ -976,10 +1040,16 @@ impl GpuComputeDriver {
                 cpass.set_bind_group(0, &self.soil_bind_group, &[]);
                 cpass.dispatch_workgroups((self.soil_cols + 7) / 8, (self.soil_rows + 7) / 8, 1);
 
-                // 2. Morton grid spatial hashing
+                // 2. Preamble clear pass: clears mate/death claims, queue counters, and resets instantaneous population on final sub-tick
                 let active_slots = cur_params.max_agents.max(cur_params.agent_count);
                 let agent_workgroups = (active_slots + 63) / 64;
                 if agent_workgroups > 0 {
+                    cpass.set_pipeline(&self.preamble_pipeline);
+                    cpass.set_bind_group(0, &self.preamble_bg0, &[]);
+                    cpass.set_bind_group(1, &self.preamble_bg1, &[]);
+                    cpass.dispatch_workgroups(agent_workgroups, 1, 1);
+
+                    // 3. Morton grid spatial hashing
                     cpass.set_pipeline(&self.morton_clear_pipeline);
                     cpass.set_bind_group(0, &self.morton_bind_group, &[]);
                     cpass.dispatch_workgroups(1, 1, 1);
@@ -1303,6 +1373,33 @@ impl GpuComputeDriver {
         result
     }
 
+    pub fn readback_dart_instances(&self, count: usize) -> Vec<crate::gpu::types::GpuDartInstance> {
+        if count == 0 {
+            return Vec::new();
+        }
+        let byte_len = (count * 32) as u64;
+        let mut encoder = self.device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
+            label: Some("readback_dart_instances_encoder"),
+        });
+        encoder.copy_buffer_to_buffer(&self.dart_instances_buf, 0, &self.staging_dart_instances, 0, byte_len);
+        self.queue.submit([encoder.finish()]);
+
+        let slice = self.staging_dart_instances.slice(0..byte_len);
+        let (sender, receiver) = std::sync::mpsc::channel();
+        slice.map_async(wgpu::MapMode::Read, move |res| {
+            let _ = sender.send(res);
+        });
+        self.device.poll(wgpu::PollType::wait_indefinitely()).unwrap();
+        receiver.recv().unwrap().unwrap();
+
+        let result = {
+            let data = slice.get_mapped_range();
+            bytemuck::cast_slice::<u8, crate::gpu::types::GpuDartInstance>(&data[0..byte_len as usize]).to_vec()
+        };
+        self.staging_dart_instances.unmap();
+        result
+    }
+
     pub fn render_darts_instanced(
         &self,
         target_view: &wgpu::TextureView,
@@ -1375,19 +1472,23 @@ impl GpuComputeDriver {
         12
     }
 
-    pub fn seed_spores_gpu(&self, spores: &[(f32, f32)]) -> Vec<u32> {
-        if spores.is_empty() {
+    pub fn seed_spores_gpu(&self, agents: &[(f32, f32)]) -> Vec<u32> {
+        self.seed_agents_gpu(agents)
+    }
+
+    pub fn seed_agents_gpu(&self, agents: &[(f32, f32)]) -> Vec<u32> {
+        if agents.is_empty() {
             return Vec::new();
         }
 
         // 1. Read back current telemetry to check available freelist slots
         let telem = self.readback_telemetry();
-        let cur_freelist_top = telem.freelist_top;
+        let cur_freelist_top = telem.freelist_top.min(self.max_agents);
         if cur_freelist_top == 0 {
             return Vec::new();
         }
 
-        let count = spores.len().min(cur_freelist_top as usize);
+        let count = agents.len().min(cur_freelist_top as usize);
         if count == 0 {
             return Vec::new();
         }
@@ -1419,11 +1520,15 @@ impl GpuComputeDriver {
         let world_w = (self.soil_cols as f32) * 12.0;
         let world_h = (self.soil_rows as f32) * 12.0;
 
-        // 3. For each slot, initialize spore agent directly in GPU VRAM
-        for (i, &slot) in slots.iter().enumerate() {
-            let (x, y) = spores[i];
-            let id = self.next_spore_id.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-            let root = (self.next_spore_root.fetch_add(1, std::sync::atomic::Ordering::Relaxed) % 16) as u32;
+        let mut states = Vec::with_capacity(slots.len());
+        let mut genomes = Vec::with_capacity(slots.len());
+        let mut atomics = Vec::with_capacity(slots.len());
+
+        // 3. For each slot, initialize agent data
+        for (i, &_slot) in slots.iter().enumerate() {
+            let (x, y) = agents[i];
+            let id = self.next_agent_id.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            let root = (self.next_agent_root.fetch_add(1, std::sync::atomic::Ordering::Relaxed) % 16) as u32;
             let energy = 43.0f32;
             let angle = ((i as f32) * 1.6180339) % (2.0 * std::f32::consts::PI);
 
@@ -1442,7 +1547,7 @@ impl GpuComputeDriver {
                 [world_w, world_h],
             );
 
-            let state = GpuAgentState {
+            states.push(GpuAgentState {
                 pos_vel: [x, y, 0.0, 0.0],
                 angle_energy: [angle, energy, 0.0, 0.0],
                 traits: [0.5, 0.5, 0.5, 0.5, 0.5, 0.5, 0.0, 0.0],
@@ -1453,7 +1558,7 @@ impl GpuComputeDriver {
                 morton_code: morton,
                 packed_color,
                 visual_cache,
-            };
+            });
 
             // Spore genome with pseudo-random weights
             let mut packed_genes = [0u32; 88];
@@ -1464,18 +1569,34 @@ impl GpuComputeDriver {
                 let w3 = (((i * 127 + g * 71) % 116) as i32 - 58) as i8 as u8;
                 packed_genes[g] = (w0 as u32) | ((w1 as u32) << 8) | ((w2 as u32) << 16) | ((w3 as u32) << 24);
             }
-            let genome = GpuAgentGenome { packed_genes };
+            genomes.push(GpuAgentGenome { packed_genes });
 
-            let atomic = GpuAgentAtomic {
+            atomics.push(GpuAgentAtomic {
                 energy_milli: (energy * 1000.0) as i32,
                 mate_claim: 0,
                 mate_energy_milli: 0,
                 dead_claimed: 0,
-            };
+            });
+        }
 
-            self.queue.write_buffer(&self.agent_states_buf, (slot as u64) * 128, bytemuck::bytes_of(&state));
-            self.queue.write_buffer(&self.agent_genomes_buf, (slot as u64) * 352, bytemuck::bytes_of(&genome));
-            self.queue.write_buffer(&self.agent_atomics_buf, (slot as u64) * 16, bytemuck::bytes_of(&atomic));
+        // Group into contiguous slot runs to minimize write_buffer overhead
+        let mut run_start = 0;
+        while run_start < slots.len() {
+            let mut run_end = run_start + 1;
+            while run_end < slots.len() && slots[run_end] == slots[run_end - 1] + 1 {
+                run_end += 1;
+            }
+
+            let first_slot = slots[run_start];
+            let run_states: Vec<GpuAgentState> = (run_start..run_end).map(|idx| states[idx]).collect();
+            let run_genomes: Vec<GpuAgentGenome> = (run_start..run_end).map(|idx| genomes[idx]).collect();
+            let run_atomics: Vec<GpuAgentAtomic> = (run_start..run_end).map(|idx| atomics[idx]).collect();
+
+            self.queue.write_buffer(&self.agent_states_buf, (first_slot as u64) * 128, bytemuck::cast_slice(&run_states));
+            self.queue.write_buffer(&self.agent_genomes_buf, (first_slot as u64) * 352, bytemuck::cast_slice(&run_genomes));
+            self.queue.write_buffer(&self.agent_atomics_buf, (first_slot as u64) * 16, bytemuck::cast_slice(&run_atomics));
+
+            run_start = run_end;
         }
 
         // 4. Update freelist_top in queue_buffer

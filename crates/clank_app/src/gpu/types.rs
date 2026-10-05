@@ -144,3 +144,13 @@ pub struct GpuLbvhNode {
     pub parent: u32,              // 4 bytes: parent node index
     pub leaf_idx: u32,            // 4 bytes: leaf agent index (0..N-1), or 0xFFFFFFFF for internal nodes (Total 48)
 }
+
+#[repr(C, align(16))]
+#[derive(Clone, Copy, Debug, Default, PartialEq, bytemuck::Pod, bytemuck::Zeroable)]
+pub struct GpuDartInstance {
+    pub pos_angle: [f32; 3],      // 12 bytes: x, y, angle
+    pub pad0: f32,                // 4 bytes: armor trait
+    pub vis_data: [u32; 2],       // 8 bytes: packed_color, visual_cache
+    pub pad1: [u32; 2],           // 8 bytes: carnivory trait (f32 bits), sight trait (f32 bits)
+}
+

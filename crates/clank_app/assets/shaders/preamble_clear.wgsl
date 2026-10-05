@@ -87,7 +87,6 @@ fn preamble_main(@builtin(global_invocation_id) id: vec3u) {
     if (id.x < params.max_agents) {
         atomicStore(&agent_atomics[id.x].mate_claim, 0u);
         atomicStore(&agent_atomics[id.x].mate_energy_milli, 0u);
-        atomicStore(&agent_atomics[id.x].dead_claimed, 0u);
     }
 
     if (id.x == 0u) {
@@ -97,6 +96,7 @@ fn preamble_main(@builtin(global_invocation_id) id: vec3u) {
         // Frame-level cumulative counter reset (strictly at frame start on sub-tick 0):
         if (params.sub_tick == 0u) {
             atomicStore(&queue_buffer.telemetry.audio_voice_count, 0u);
+            atomicStore(&queue_buffer.telemetry.total_births, 0u);
             atomicStore(&queue_buffer.telemetry.kills, 0u);
             atomicStore(&queue_buffer.telemetry.starvations, 0u);
             atomicStore(&queue_buffer.telemetry.apex_record_milli, 0u);

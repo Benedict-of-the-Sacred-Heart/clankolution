@@ -209,3 +209,38 @@ fn test_particle_mesh_quad_generation() {
     // Depth must be 5.0
     assert_eq!(positions[0][2], 5.0);
 }
+
+#[test]
+fn test_generate_mesh_from_dart_instances() {
+    use clank_app::rendering::{generate_dart_mesh_from_instances, generate_outline_mesh_from_instances};
+    use clank_app::gpu::types::GpuDartInstance;
+
+    let instances = vec![
+        GpuDartInstance {
+            pos_angle: [100.0, 150.0, 0.0],
+            pad0: 0.5,
+            vis_data: [0xFF00FF00, 0x00FF00FF], // living green dart
+            pad1: [0.5f32.to_bits(), 0.8f32.to_bits()],
+        },
+    ];
+
+    let mut dart_positions = Vec::new();
+    let mut dart_colors = Vec::new();
+    generate_dart_mesh_from_instances(&instances, 600.0, &mut dart_positions, &mut dart_colors);
+
+    // 1 agent = 2 triangles = 6 vertices
+    assert_eq!(dart_positions.len(), 6);
+    assert_eq!(dart_colors.len(), 6);
+    // Depth must be -2.0
+    assert_eq!(dart_positions[0][2], -2.0);
+
+    let mut outline_positions = Vec::new();
+    let mut outline_colors = Vec::new();
+    generate_outline_mesh_from_instances(&instances, 600.0, &mut outline_positions, &mut outline_colors);
+
+    // 1 agent with sight > 0.56 = 8 body line vertices + 4 antennae vertices = 12 vertices
+    assert_eq!(outline_positions.len(), 12);
+    assert_eq!(outline_colors.len(), 12);
+    // Depth must be -1.9
+    assert_eq!(outline_positions[0][2], -1.9);
+}

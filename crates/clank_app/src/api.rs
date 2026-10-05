@@ -668,6 +668,7 @@ pub fn api_dispatch_system(
                         "seed" | "seedlife" => {
                             let repeat = req.count.unwrap_or(1).clamp(1, 65_536);
                             let (w, h) = (sim.world.w, sim.world.h);
+                            let mut positions = Vec::with_capacity(repeat);
                             for _ in 0..repeat {
                                 let (sx, sy) = if repeat > 1 {
                                     (
@@ -678,6 +679,16 @@ pub fn api_dispatch_system(
                                     (x, y)
                                 };
                                 sim.world.seed_life_at(sx, sy);
+                                positions.push((sx as f32, sy as f32));
+                            }
+                            if sim.active_engine == crate::sim::ActiveEngine::Gpu {
+                                if let Some(ref mut gpu) = gpu_res {
+                                    if let Some(ref driver) = gpu.driver {
+                                        if driver.is_initialized() {
+                                            driver.seed_agents_gpu(&positions);
+                                        }
+                                    }
+                                }
                             }
                         }
                         "extinguish" | "kill" => {
@@ -762,7 +773,7 @@ pub fn api_state_sync_system(
         tick: sim.world.tick,
         paused: sim.paused,
         speed: sim.speed,
-        population: sim.world.agents.iter().filter(|a| a.dead == 0).count(),
+        population: sim.active_population(),
         max_capacity: sim.world.max_cap,
         generation: max_gen as u32,
         kills: sim.world.kills,
@@ -800,7 +811,7 @@ pub fn api_metrics_sync_system(
         .and_then(|d| d.smoothed().or_else(|| d.average()).or_else(|| d.value()))
         .unwrap_or(0.0);
     let (tick, pop) = if let Some(ref sim) = sim_res {
-        (sim.world.tick, sim.world.agents.iter().filter(|a| a.dead == 0).count())
+        (sim.world.tick, sim.active_population())
     } else {
         (0, 0)
     };

@@ -79,4 +79,11 @@ fn test_gpu_frustum_culling_visibility() {
     assert!(visible_indices.contains(&3), "Agent 3 should be visible");
     assert!(!visible_indices.contains(&1), "Agent 1 should be culled (out of frustum)");
     assert!(!visible_indices.contains(&2), "Agent 2 should be culled (dead)");
+
+    let dart_instances = driver.readback_dart_instances(visible_count as usize);
+    assert_eq!(dart_instances.len(), 2);
+    assert_eq!(dart_instances[0].pos_angle[0], 450.0);
+    assert_eq!(dart_instances[0].pos_angle[1], 300.0);
+    assert_eq!(dart_instances[1].pos_angle[0], 460.0);
+    assert_eq!(dart_instances[1].pos_angle[1], 310.0);
 }

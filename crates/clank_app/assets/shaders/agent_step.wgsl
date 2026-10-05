@@ -444,7 +444,9 @@ fn agent_main(@builtin(global_invocation_id) id: vec3u) {
             let claim_death = atomicCompareExchangeWeak(&agent_atomics[victim_idx].dead_claimed, 0u, 1u);
             if (claim_death.exchanged) {
                 let free_slot = atomicAdd(&queue_buffer.telemetry.freelist_top, 1u);
-                freelist[free_slot] = victim_idx;
+                if (free_slot < params.max_agents) {
+                    freelist[free_slot] = victim_idx;
+                }
 
                 // Corpse deposition from victim
                 let vpos = agent_states[victim_idx].pos_vel.xy;
@@ -529,7 +531,9 @@ fn agent_main(@builtin(global_invocation_id) id: vec3u) {
                 atomicAdd(&queue_buffer.telemetry.starvations, 1u);
                 atomicAdd(&queue_buffer.telemetry.total_deaths, 1u);
                 let free_slot = atomicAdd(&queue_buffer.telemetry.freelist_top, 1u);
-                freelist[free_slot] = agent_idx;
+                if (free_slot < params.max_agents) {
+                    freelist[free_slot] = agent_idx;
+                }
 
                 // Corpse deposition into soil
                 let corpse_food = clamp(f32(max(0, current_energy_milli)) * 0.000016 + 0.6, 0.3, 2.0);
