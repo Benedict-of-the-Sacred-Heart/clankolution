@@ -116,7 +116,7 @@ impl GpuComputeDriver {
         let agent_genomes_buf = device.create_buffer(&wgpu::BufferDescriptor {
             label: Some("agent_genomes_buf"),
             size: agent_genomes_size,
-            usage: BufferUsages::STORAGE | BufferUsages::COPY_DST,
+            usage: BufferUsages::STORAGE | BufferUsages::COPY_SRC | BufferUsages::COPY_DST,
             mapped_at_creation: false,
         });
 
