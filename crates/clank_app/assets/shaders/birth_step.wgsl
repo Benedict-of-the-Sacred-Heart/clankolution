@@ -21,7 +21,7 @@ struct GpuSimParams {
     sub_tick: u32,
     sub_ticks_per_frame: u32,
     tool_type: u32,
-    _pad0: u32,
+    tool_radius: f32,
 
     tool_pos: vec2f,
     camera_pos: vec2f,
@@ -30,7 +30,8 @@ struct GpuSimParams {
     world_size: vec2f,
 
     soil_grid: vec2u,
-    _pad1: vec2u,
+    eclipse: u32,
+    epoch: u32,
 }
 
 struct GpuAgentState {
@@ -71,7 +72,10 @@ struct GpuTelemetry {
     audio_voice_count: atomic<u32>,
     selected_agent_idx: u32,
     selected_agent_id: u32,
-    _reserved0: array<u32, 4>,
+    total_births: atomic<u32>,
+    total_deaths: atomic<u32>,
+    max_generation: atomic<u32>,
+    extinctions: atomic<u32>,
     lineage_counts: array<atomic<u32>, 16>,
 }
 
@@ -79,7 +83,7 @@ struct BirthEvent {
     parent_a: u32,
     parent_b: u32,
     child_slot: u32,
-    pad: u32,
+    birth_tick: u32,
 }
 
 struct AudioVoice {
@@ -200,6 +204,7 @@ fn birth_main(@builtin(workgroup_id) wg_id: vec3u, @builtin(local_invocation_id)
 
 
     if (local_id.x == 0u) {
+        atomicAdd(&queue_buffer.telemetry.total_births, 1u);
         let parent_pos = agent_states[parent_a].pos_vel.xy;
         let offset = vec2f(
             pcg_triangular(child_idx, 1u, params.tick) * 9.0,
@@ -230,7 +235,9 @@ fn birth_main(@builtin(workgroup_id) wg_id: vec3u, @builtin(local_invocation_id)
         agent_states[child_idx].meta_flags = (child_root & 0x0Fu) | (95u << 6u); // root, birth = 95, dead = 0
 
         let parent_gen = agent_states[parent_a].age_gen >> 16u;
-        agent_states[child_idx].age_gen = ((parent_gen + 1u) & 0xFFFFu) << 16u;
+        let child_gen = parent_gen + 1u;
+        atomicMax(&queue_buffer.telemetry.max_generation, child_gen);
+        agent_states[child_idx].age_gen = (child_gen & 0xFFFFu) << 16u;
         agent_states[child_idx].id = atomicAdd(&queue_buffer.telemetry.apex_agent_id, 1u);
         agent_states[child_idx].morton_code = 0u;
         agent_states[child_idx].packed_color = agent_states[parent_a].packed_color;

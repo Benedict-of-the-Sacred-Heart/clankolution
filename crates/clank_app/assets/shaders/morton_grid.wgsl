@@ -15,7 +15,7 @@ struct GpuSimParams {
     sub_tick: u32,
     sub_ticks_per_frame: u32,
     tool_type: u32,
-    _pad0: u32,
+    tool_radius: f32,
 
     tool_pos: vec2f,
     camera_pos: vec2f,
@@ -24,7 +24,8 @@ struct GpuSimParams {
     world_size: vec2f,
 
     soil_grid: vec2u,
-    _pad1: vec2u,
+    eclipse: u32,
+    epoch: u32,
 }
 
 struct GpuAgentState {

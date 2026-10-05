@@ -159,7 +159,7 @@ pub fn sync_rust_to_gpu(
             food_milli: (f * 1000.0).round() as i32,
             taint_milli: (t * 1000.0).round() as i32,
             scent_milli: (s * 1000.0).round() as i32,
-            pad: 0,
+            fertility_milli: 1000,
         });
     }
 
@@ -175,13 +175,14 @@ pub fn sync_rust_to_gpu(
         sub_tick: 0,
         sub_ticks_per_frame: 1,
         tool_type: 0xFFFFFFFF,
-        _pad0: 0,
+        tool_radius: 45.0,
         tool_pos: [0.0, 0.0],
         camera_pos: [(sim.world_width * 0.5) as f32, (sim.world_height * 0.5) as f32],
         camera_size: [sim.world_width as f32, sim.world_height as f32],
         world_size: [sim.world_width as f32, sim.world_height as f32],
         soil_grid: [sim.world.soil.cols as u32, sim.world.soil.rows as u32],
-        _pad1: [0, 0],
+        eclipse: sim.world.eclipse,
+        epoch: 0,
     };
 
     (states, genomes, atomics, soil, params)

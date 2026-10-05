@@ -18,7 +18,7 @@ struct GpuSimParams {
     sub_tick: u32,
     sub_ticks_per_frame: u32,
     tool_type: u32,
-    _pad0: u32,
+    tool_radius: f32,
 
     tool_pos: vec2f,
     camera_pos: vec2f,
@@ -27,7 +27,8 @@ struct GpuSimParams {
     world_size: vec2f,
 
     soil_grid: vec2u,
-    _pad1: vec2u,
+    eclipse: u32,
+    epoch: u32,
 }
 
 struct GpuAgentAtomic {
@@ -50,7 +51,10 @@ struct GpuTelemetry {
     audio_voice_count: atomic<u32>,
     selected_agent_idx: u32,
     selected_agent_id: u32,
-    _reserved0: array<u32, 4>,
+    total_births: atomic<u32>,
+    total_deaths: atomic<u32>,
+    max_generation: atomic<u32>,
+    extinctions: atomic<u32>,
     lineage_counts: array<atomic<u32>, 16>,
 }
 
@@ -58,7 +62,7 @@ struct BirthEvent {
     parent_a: u32,
     parent_b: u32,
     child_slot: u32,
-    pad: u32,
+    birth_tick: u32,
 }
 
 struct AudioVoice {

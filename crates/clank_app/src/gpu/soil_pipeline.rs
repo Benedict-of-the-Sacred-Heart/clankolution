@@ -20,7 +20,7 @@ pub struct SoilParams {
     pub renewal: f32,
     pub width: u32,
     pub height: u32,
-    pub pad: u32,
+    pub decay_rate: f32,
 }
 
 pub struct GpuSoilPipeline;
@@ -33,7 +33,7 @@ impl GpuSoilPipeline {
             food_milli: (food * 1000.0).round() as i32,
             taint_milli: (taint * 1000.0).round() as i32,
             scent_milli: (scent * 1000.0).round() as i32,
-            pad: 0,
+            fertility_milli: 1000,
         }
     }
 

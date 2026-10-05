@@ -56,7 +56,7 @@ pub struct GpuSimParams {
     pub sub_tick: u32,              // 4 bytes  (32..36)
     pub sub_ticks_per_frame: u32,   // 4 bytes  (36..40)
     pub tool_type: u32,             // 4 bytes  (40..44)
-    pub _pad0: u32,                 // 4 bytes  (44..48)
+    pub tool_radius: f32,           // 4 bytes  (44..48) repurposed from _pad0
 
     // Chunk 3: Tool & Camera Positions (16B)
     pub tool_pos: [f32; 2],         // 8 bytes  (48..56)
@@ -66,9 +66,10 @@ pub struct GpuSimParams {
     pub camera_size: [f32; 2],      // 8 bytes  (64..72)
     pub world_size: [f32; 2],       // 8 bytes  (72..80)
 
-    // Chunk 5: Soil Grid & Alignment Padding (16B)
+    // Chunk 5: Soil Grid & Simulation State (16B)
     pub soil_grid: [u32; 2],        // 8 bytes  (80..88)
-    pub _pad1: [u32; 2],            // 8 bytes  (88..96)
+    pub eclipse: u32,               // 4 bytes  (88..92) repurposed from _pad1[0]
+    pub epoch: u32,                 // 4 bytes  (92..96) repurposed from _pad1[1]
 }
 
 #[repr(C, align(16))]
@@ -77,7 +78,7 @@ pub struct BirthEvent {
     pub parent_a: u32,          // 4 bytes
     pub parent_b: u32,          // 4 bytes: 0xFFFFFFFFu if asexual virgin birth
     pub child_slot: u32,        // 4 bytes
-    pub pad: u32,               // 4 bytes: 16-byte WGSL alignment
+    pub birth_tick: u32,        // 4 bytes: repurposed from pad
 }
 
 #[repr(C, align(16))]
@@ -89,7 +90,7 @@ pub struct AudioVoice {
 }
 
 #[repr(C, align(16))]
-#[derive(Clone, Copy, Debug, PartialEq, Eq, bytemuck::Pod, bytemuck::Zeroable)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Default, bytemuck::Pod, bytemuck::Zeroable)]
 pub struct GpuTelemetry {
     // Cache Line 0 (64 bytes): Engine Counters, Apex Records & Uncapped Specimen Picking
     pub population: u32,        // 4 bytes: active living agents (updated on final sub-tick)
@@ -104,7 +105,10 @@ pub struct GpuTelemetry {
     pub audio_voice_count: u32, // 4 bytes: audio events queued this frame
     pub selected_agent_idx: u32,// 4 bytes: full 32-bit slot index of picked creature (0xFFFFFFFF = none)
     pub selected_agent_id: u32, // 4 bytes: full 32-bit unique creature ID for identity guard
-    pub _reserved0: [u32; 4],   // 16 bytes: reserved (Total Cache Line 0: 64B)
+    pub total_births: u32,      // 4 bytes: lifetime births (repurposed from _reserved0[0])
+    pub total_deaths: u32,      // 4 bytes: lifetime deaths (repurposed from _reserved0[1])
+    pub max_generation: u32,    // 4 bytes: highest generation (repurposed from _reserved0[2])
+    pub extinctions: u32,       // 4 bytes: total lineage extinctions (repurposed from _reserved0[3])
 
     // Cache Line 1 (64 bytes): 16-Lineage Real-Time Extinction Monitoring
     pub lineage_counts: [u32; 16], // 16 * 4B = 64 bytes (head counts for roots 0..15)
@@ -124,7 +128,7 @@ pub struct GpuSoilCell {
     pub food_milli: i32,        // 4 bytes: atomic fixed-point millifood
     pub taint_milli: i32,       // 4 bytes: atomic fixed-point millitaint
     pub scent_milli: i32,       // 4 bytes: atomic fixed-point milliscent
-    pub pad: u32,               // 4 bytes: 16-byte WGSL alignment
+    pub fertility_milli: i32,   // 4 bytes: repurposed from pad
 }
 
 #[repr(C, align(16))]

@@ -632,15 +632,12 @@ impl GpuComputeDriver {
         }
         self.queue.write_buffer(&self.queue_buffer, 28, bytemuck::bytes_of(&freelist_top));
 
-        #[repr(C)]
-        #[derive(Clone, Copy, bytemuck::Pod, bytemuck::Zeroable)]
-        struct SoilParams {
-            renewal: f32,
-            width: u32,
-            height: u32,
-            pad: u32,
-        }
-        let sp = SoilParams { renewal: params.renewal, width: self.soil_cols, height: self.soil_rows, pad: 0 };
+        let sp = crate::gpu::soil_pipeline::SoilParams {
+            renewal: params.renewal,
+            width: self.soil_cols,
+            height: self.soil_rows,
+            decay_rate: 0.006,
+        };
         self.queue.write_buffer(&self.soil_params_buf, 0, bytemuck::bytes_of(&sp));
     }
 

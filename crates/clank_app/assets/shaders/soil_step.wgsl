@@ -9,14 +9,14 @@ struct SoilCell {
     food_milli: atomic<i32>,
     taint_milli: atomic<i32>,
     scent_milli: atomic<i32>,
-    pad: u32,
+    fertility_milli: atomic<i32>,
 }
 
 struct SoilParams {
     renewal: f32,
     width: u32,
     height: u32,
-    pad: u32,
+    decay_rate: f32,
 }
 
 @group(0) @binding(0) var<storage, read_write> soil_buffer: array<SoilCell>;
@@ -66,7 +66,7 @@ fn soil_main(@builtin(global_invocation_id) id: vec3u) {
     // Environmental renewal & decay:
     f += params.renewal * bloom_table[k] * (1.0 - f / 1.7);
     f = clamp(f, 0.0, 2.5);
-    if (t > 0.0) { t = max(0.0, t * 0.994 - 0.0001); }
+    if (t > 0.0) { t = max(0.0, t * (1.0 - params.decay_rate) - 0.0001); }
     if (s > 0.0) { s = s * 0.954; }
 
     // 1. Write back persistent atomic state for agent grazing:

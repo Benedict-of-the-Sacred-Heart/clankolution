@@ -23,7 +23,7 @@ struct GpuSimParams {
     sub_tick: u32,
     sub_ticks_per_frame: u32,
     tool_type: u32,
-    _pad0: u32,
+    tool_radius: f32,
 
     tool_pos: vec2f,
     camera_pos: vec2f,
@@ -32,7 +32,8 @@ struct GpuSimParams {
     world_size: vec2f,
 
     soil_grid: vec2u,
-    _pad1: vec2u,
+    eclipse: u32,
+    epoch: u32,
 }
 
 struct GpuAgentState {
@@ -64,7 +65,7 @@ struct SoilCell {
     food_milli: atomic<i32>,
     taint_milli: atomic<i32>,
     scent_milli: atomic<i32>,
-    pad: u32,
+    fertility_milli: atomic<i32>,
 }
 
 struct GpuLbvhNode {
@@ -92,7 +93,10 @@ struct GpuTelemetry {
     audio_voice_count: atomic<u32>,
     selected_agent_idx: u32,
     selected_agent_id: u32,
-    _reserved0: array<u32, 4>,
+    total_births: atomic<u32>,
+    total_deaths: atomic<u32>,
+    max_generation: atomic<u32>,
+    extinctions: atomic<u32>,
     lineage_counts: array<atomic<u32>, 16>,
 }
 
@@ -100,7 +104,7 @@ struct BirthEvent {
     parent_a: u32,
     parent_b: u32,
     child_slot: u32,
-    pad: u32,
+    birth_tick: u32,
 }
 
 struct AudioVoice {
@@ -414,6 +418,7 @@ fn agent_main(@builtin(global_invocation_id) id: vec3u) {
         if (old_energy_milli > 0 && old_energy_milli <= damage_milli) {
             a_kills += 1u;
             atomicAdd(&queue_buffer.telemetry.kills, 1u);
+            atomicAdd(&queue_buffer.telemetry.total_deaths, 1u);
             let kill_bonus = min(9.0, 8.0 * tr5);
             atomicAdd(&agent_atomics[agent_idx].energy_milli, i32(kill_bonus * 1000.0));
 
@@ -522,6 +527,7 @@ fn agent_main(@builtin(global_invocation_id) id: vec3u) {
             let claim_death = atomicCompareExchangeWeak(&agent_atomics[agent_idx].dead_claimed, 0u, 1u);
             if (claim_death.exchanged) {
                 atomicAdd(&queue_buffer.telemetry.starvations, 1u);
+                atomicAdd(&queue_buffer.telemetry.total_deaths, 1u);
                 let free_slot = atomicAdd(&queue_buffer.telemetry.freelist_top, 1u);
                 freelist[free_slot] = agent_idx;
 
