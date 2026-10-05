@@ -74,18 +74,18 @@
 - Consumes: `GpuSimParams`, `GpuSoilCell`, `BirthEvent`, `SoilParams`, `GpuTelemetry`
 - Produces: Zero-pad, 4-byte/16-byte validated struct definitions and shader uniforms
 
-- [ ] **Step 1: Write tests in `tests/gpu_types_test.rs` verifying 4-byte/16-byte divisibility and functional field offsets**
-- [ ] **Step 2: Run test to verify failure**
-- [ ] **Step 3: Update Rust structs in `crates/clank_app/src/gpu/types.rs`**
+- [x] **Step 1: Write tests in `tests/gpu_types_test.rs` verifying 4-byte/16-byte divisibility and functional field offsets**
+- [x] **Step 2: Run test to verify failure**
+- [x] **Step 3: Update Rust structs in `crates/clank_app/src/gpu/types.rs`**
   - In `GpuSimParams`: replace `_pad0` with `tool_radius: f32`, `_pad1` with `eclipse: u32, epoch: u32`.
   - In `BirthEvent`: replace `pad: u32` with `birth_tick: u32`.
   - In `GpuSoilCell`: replace `pad: u32` with `fertility_milli: i32`.
   - In `SoilParams`: replace `pad: u32` with `decay_rate: f32`.
   - In `GpuTelemetry`: replace `_reserved0` with `total_births`, `total_deaths`, `max_generation`, `extinctions`.
-- [ ] **Step 4: Update all 8 WGSL shader definitions to match the exact new field names**
-- [ ] **Step 5: Update `bridge.rs` and `compute_driver.rs` to populate functional values**
-- [ ] **Step 6: Run `cargo test --package clank_app --test gpu_types_test` to verify 100% pass**
-- [ ] **Step 7: Git commit**
+- [x] **Step 4: Update all 8 WGSL shader definitions to match the exact new field names**
+- [x] **Step 5: Update `bridge.rs` and `compute_driver.rs` to populate functional values**
+- [x] **Step 6: Run `cargo test --package clank_app --test gpu_types_test` to verify 100% pass**
+- [x] **Step 7: Git commit**
 
 ---
 
@@ -99,16 +99,16 @@
 - Consumes: `GpuComputeDriver`, `GpuSimParams`, `GpuTelemetry`
 - Produces: `driver.update_params(&params)`, `driver.readback_telemetry()`, `driver.is_initialized()`
 
-- [ ] **Step 1: Write test in `tests/gpu_persistence_test.rs` verifying multi-frame simulation without full re-upload**
-- [ ] **Step 2: Run test to verify failure**
-- [ ] **Step 3: Implement `update_params` in `compute_driver.rs` to write only `sim_params_buf`**
-- [ ] **Step 4: Refactor `sim_step_system` in `sim.rs` to persist state on GPU across frames**
+- [x] **Step 1: Write test in `tests/gpu_persistence_test.rs` verifying multi-frame simulation without full re-upload**
+- [x] **Step 2: Run test to verify failure**
+- [x] **Step 3: Implement `update_params` in `compute_driver.rs` to write only `sim_params_buf`**
+- [x] **Step 4: Refactor `sim_step_system` in `sim.rs` to persist state on GPU across frames**
   - On switch to GPU or first frame: call `upload_state` once.
   - On normal ticks: call `driver.update_params(&params)` and `driver.dispatch_sub_ticks(steps, &params)`.
   - Read back ONLY `telemetry` (128 bytes) + active audio events.
   - Eliminate per-frame calls to `readback_agent_states`, `readback_agent_genomes`, `readback_atomics`, `readback_soil`, and `sync_rust_to_gpu`.
-- [ ] **Step 5: Run test to verify `gpu_persistence_test.rs` passes**
-- [ ] **Step 6: Git commit**
+- [x] **Step 5: Run test to verify `gpu_persistence_test.rs` passes**
+- [x] **Step 6: Git commit**
 
 ---
 
@@ -122,12 +122,12 @@
 - Consumes: `spatial_keys: array<vec2u>`, `agent_states: array<GpuAgentState>`, camera viewport
 - Produces: `visible_instances_buf: array<u32>`, `visible_count: u32`
 
-- [ ] **Step 1: Write test in `tests/gpu_culling_test.rs` verifying GPU frustum culling outputs visible living slot indices**
-- [ ] **Step 2: Run test to verify failure**
-- [ ] **Step 3: Add visible instances indirection buffer to `compute_driver.rs`**
-- [ ] **Step 4: Implement frustum culling entry point in `spatial_query.wgsl` writing visible slot indices**
-- [ ] **Step 5: Run test to verify `gpu_culling_test.rs` passes**
-- [ ] **Step 6: Git commit**
+- [x] **Step 1: Write test in `tests/gpu_culling_test.rs` verifying GPU frustum culling outputs visible living slot indices**
+- [x] **Step 2: Run test to verify failure**
+- [x] **Step 3: Add visible instances indirection buffer to `compute_driver.rs`**
+- [x] **Step 4: Implement frustum culling entry point in `spatial_query.wgsl` writing visible slot indices**
+- [x] **Step 5: Run test to verify `gpu_culling_test.rs` passes**
+- [x] **Step 6: Git commit**
 
 ---
 
@@ -141,13 +141,13 @@
 - Consumes: `agent_states_buf`, `visible_instances_buf`
 - Produces: Direct GPU instanced dart rendering, zero CPU vertex generation
 
-- [ ] **Step 1: Write test in `tests/instanced_rendering_test.rs` verifying GPU instance stream feeds template mesh**
-- [ ] **Step 2: Run test to verify failure**
-- [ ] **Step 3: Connect `dart_instanced.wgsl` to render agents directly from `agent_states_buf`**
+- [x] **Step 1: Write test in `tests/instanced_rendering_test.rs` verifying GPU instance stream feeds template mesh**
+- [x] **Step 2: Run test to verify failure**
+- [x] **Step 3: Connect `dart_instanced.wgsl` to render agents directly from `agent_states_buf`**
   - Draw 1 base dart template instanced across visible agents.
   - Zero CPU vertex generation (eliminate `generate_dart_mesh_from_gpu_states` and `generate_outline_mesh_from_gpu_states`).
-- [ ] **Step 4: Run test to verify `instanced_rendering_test.rs` passes**
-- [ ] **Step 5: Git commit**
+- [x] **Step 4: Run test to verify `instanced_rendering_test.rs` passes**
+- [x] **Step 5: Git commit**
 
 ---
 
@@ -161,12 +161,12 @@
 - Consumes: `soil_display` storage texture from `soil_step.wgsl`
 - Produces: Zero-copy direct arena background texture
 
-- [ ] **Step 1: Write test in `tests/soil_rendering_test.rs` verifying `soil_display` texture output**
-- [ ] **Step 2: Run test to verify failure**
-- [ ] **Step 3: Bind `soil_display` directly to the `SoilSprite` background quad**
+- [x] **Step 1: Write test in `tests/soil_rendering_test.rs` verifying `soil_display` texture output**
+- [x] **Step 2: Run test to verify failure**
+- [x] **Step 3: Bind `soil_display` directly to the `SoilSprite` background quad**
   - Eliminate CPU `generate_soil_rgba`.
-- [ ] **Step 4: Run test to verify passes**
-- [ ] **Step 5: Git commit**
+- [x] **Step 4: Run test to verify passes**
+- [x] **Step 5: Git commit**
 
 ---
 
@@ -181,13 +181,13 @@
 - Consumes: `telemetry.population`
 - Produces: `driver.seed_spores_gpu(&[(x, y)])`, `flush_gpu_to_rust(&mut sim)`
 
-- [ ] **Step 1: Write test in `tests/gpu_spore_test.rs` verifying spores spawn directly in GPU buffers**
-- [ ] **Step 2: Implement `seed_spores_gpu` in `compute_driver.rs`**
+- [x] **Step 1: Write test in `tests/gpu_spore_test.rs` verifying spores spawn directly in GPU buffers**
+- [x] **Step 2: Implement `seed_spores_gpu` in `compute_driver.rs`**
   - Writes new `GpuAgentState` and `GpuAgentGenome` directly to VRAM buffers via `queue.write_buffer`.
-- [ ] **Step 3: Implement `flush_gpu_to_rust` with queue barrier and full 4-buffer readback**
-- [ ] **Step 4: Connect `flush_gpu_to_rust` to engine switch toggle, `/persist`, and `/reset`**
-- [ ] **Step 5: Run test to verify `gpu_spore_test.rs` passes**
-- [ ] **Step 6: Git commit**
+- [x] **Step 3: Implement `flush_gpu_to_rust` with queue barrier and full 4-buffer readback**
+- [x] **Step 4: Connect `flush_gpu_to_rust` to engine switch toggle, `/persist`, and `/reset`**
+- [x] **Step 5: Run test to verify `gpu_spore_test.rs` passes**
+- [x] **Step 6: Git commit**
 
 ---
 
@@ -198,9 +198,9 @@
 - Artifact: `artifacts/gpu_performance_benchmark.md`
 - Screenshot: `artifacts/live_render_gpu_optimized_fps.png`
 
-- [ ] **Step 1: Run full workspace test suite (`cargo test --workspace`) and verify 100% pass**
-- [ ] **Step 2: Launch release build and benchmark 10,000 and 20,000 agents in GPU mode**
-- [ ] **Step 3: Verify framerate exceeds 60 FPS smoothly with zero CPU stalls**
-- [ ] **Step 4: Test bidirectional engine hot-swapping preserves population, kills, and specimen data**
-- [ ] **Step 5: Capture screenshot and generate performance comparison report**
-- [ ] **Step 6: Git commit and summarize results**
+- [x] **Step 1: Run full workspace test suite (`cargo test --workspace`) and verify 100% pass**
+- [x] **Step 2: Launch release build and benchmark 10,000 and 20,000 agents in GPU mode**
+- [x] **Step 3: Verify framerate exceeds 60 FPS smoothly with zero CPU stalls**
+- [x] **Step 4: Test bidirectional engine hot-swapping preserves population, kills, and specimen data**
+- [x] **Step 5: Capture screenshot and generate performance comparison report**
+- [x] **Step 6: Git commit and summarize results**
