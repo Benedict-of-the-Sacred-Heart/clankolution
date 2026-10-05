@@ -11,7 +11,7 @@
 4. Enforce strict carrying capacity (`max_capacity`) across `GpuSimParams`, `agent_step.wgsl`, `birth_step.wgsl`, `bridge.rs`, `sim.rs`, and `clank_core::seed_life_at`.
 5. Add automated bit-parity tests validating Rust vs. GPU brain execution within $10^{-4}$ tolerance.
 
-**Tech Stack:** Rust, Bevy 0.16, WebGPU / wgpu 24.0, WGSL shaders, bytemuck.
+**Tech Stack:** Rust, Bevy 0.19.1, WebGPU / wgpu 29.0, WGSL shaders, bytemuck.
 
 **Spec:** Bit-for-bit equivalence against `clankolution.html` (lines 570-630, 815-940, 1140-1230, 1300-1455) and `crates/clank_core/src/world.rs`.
 
