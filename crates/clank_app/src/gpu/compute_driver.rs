@@ -649,6 +649,7 @@ impl GpuComputeDriver {
 
         for step in 0..sub_ticks {
             cur_params.sub_tick = step;
+            cur_params.tick = params.tick + 1 + step;
             self.queue.write_buffer(&self.sim_params_buf, 0, bytemuck::bytes_of(&cur_params));
 
             let mut encoder = self.device.create_command_encoder(&wgpu::CommandEncoderDescriptor {

@@ -22,6 +22,63 @@ pub fn unpack4x8snorm(word: u32) -> [f32; 4] {
     ]
 }
 
+/// Extracts a signed 8-bit weight from a packed genome by gene index p in [0, 325].
+#[inline]
+pub fn get_gene(genome: &GpuAgentGenome, p: usize) -> f32 {
+    let word = genome.packed_genes[p >> 2];
+    let shift = (p & 3) << 3;
+    let byte_val = ((word >> shift) & 0xFF) as u8 as i8;
+    byte_val as f32
+}
+
+/// Evaluates the canonical 326-weight Elman RNN matching clank_core::World::brain and clankolution.html.
+pub fn forward_pass_canonical(
+    genome: &GpuAgentGenome,
+    ins_sensory: &[f32; 15],
+    prev_h: &[f32; 10],
+) -> ([f32; 10], [f32; 6]) {
+    let scale_h = 0.61 / 127.0;
+    let scale_o = 0.66 / 127.0;
+
+    // Recurrent Hidden Layer (Q = 10, N = 15)
+    let mut p = 0;
+    let mut new_h = [0.0f32; 10];
+    for j in 0..10 {
+        let mut s = 0.0f32;
+        // 15 sensory inputs
+        for k in 0..15 {
+            s += get_gene(genome, p) * ins_sensory[k];
+            p += 1;
+        }
+        // 10 recurrent units
+        for k in 0..10 {
+            s += get_gene(genome, p) * prev_h[k];
+            p += 1;
+        }
+        // Bias
+        s += get_gene(genome, p);
+        p += 1;
+        new_h[j] = (s * scale_h).tanh();
+    }
+
+    // Output Actuator Layer (O = 6, Q = 10)
+    let mut out = [0.0f32; 6];
+    for j in 0..6 {
+        let mut s = 0.0f32;
+        // 10 hidden units
+        for k in 0..10 {
+            s += get_gene(genome, p) * new_h[k];
+            p += 1;
+        }
+        // Bias
+        s += get_gene(genome, p);
+        p += 1;
+        out[j] = (s * scale_o).tanh();
+    }
+
+    (new_h, out)
+}
+
 /// Evaluates 88-word packed neural RNN forward pass matching `agent_step.wgsl`.
 pub fn forward_pass_packed(
     genome: &GpuAgentGenome,

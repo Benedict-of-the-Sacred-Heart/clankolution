@@ -141,6 +141,13 @@ fn sample_soil_probe(p: vec2f) -> vec4f {
     return textureSampleLevel(soil_data, soil_sampler, uv, 0.0);
 }
 
+fn get_gene(agent_idx: u32, p: u32) -> f32 {
+    let word = agent_genomes[agent_idx].packed_genes[p >> 2u];
+    let shift = (p & 3u) << 3u;
+    let b = (i32(word >> shift) << 24) >> 24;
+    return f32(b);
+}
+
 fn pcg_hash(id: u32, stream: u32, tick: u32) -> u32 {
     let state = id * 747796405u + stream * 2891336453u + tick * 1013904223u;
     let word = ((state >> ((state >> 28u) + 4u)) ^ state) * 277803737u;
@@ -214,13 +221,16 @@ fn agent_main(@builtin(global_invocation_id) id: vec3u) {
     let a_gen = agent_states[agent_idx].age_gen >> 16u;
 
     // Antennae feelers
-    let fwd_reach = vec2f(cos(angle), sin(angle)) * (14.0 + 8.0 * tr0);
-    let left_offset = vec2f(-sin(angle), cos(angle)) * (9.0 + 5.0 * tr0);
+    // HTML: reach = 19 + 38 * tr2 (sight trait)
+    let reach = 19.0 + 38.0 * tr2;
+    let fwd_term = vec2f(cos(angle), sin(angle)) * reach;
 
     let probe_here    = sample_soil_probe(pos);
-    let probe_forward = sample_soil_probe(pos + fwd_reach);
-    let probe_left    = sample_soil_probe(pos + fwd_reach * 0.7 + left_offset);
-    let probe_right   = sample_soil_probe(pos + fwd_reach * 0.7 - left_offset);
+    let probe_forward = sample_soil_probe(pos + fwd_term);
+    let mid_antennae  = pos + fwd_term * 0.7;
+    let off_antennae  = vec2f(-fwd_term.y, fwd_term.x) * 0.6;
+    let probe_left    = sample_soil_probe(mid_antennae + off_antennae);
+    let probe_right   = sample_soil_probe(mid_antennae - off_antennae);
 
     let here_food    = probe_here.r;
     let forward_food = probe_forward.r;
@@ -229,13 +239,12 @@ fn agent_main(@builtin(global_invocation_id) id: vec3u) {
     let here_taint   = probe_here.g;
     let scent_diff   = probe_forward.b - probe_here.b;
 
-    // LBVH Nearest Neighbor Search
+    // LBVH Nearest Neighbor & Local Density Search
     var best_dist = 999999.0;
     var best_neighbor = 0xFFFFFFFFu;
-    var sensory_bearing = 0.0;
-    var sensory_dist = 0.0;
+    var density = 0.0;
 
-    let sight_radius = 120.0 + 80.0 * tr2;
+    let sight_radius = 100.0 + 70.0 * tr2;
 
     if (params.agent_count > 1u) {
         var stack: array<u32, 32>;
@@ -250,7 +259,7 @@ fn agent_main(@builtin(global_invocation_id) id: vec3u) {
             let node = lbvh_nodes[node_idx];
 
             let box_d = distance_to_aabb(pos, node.aabb_min, node.aabb_max);
-            if (box_d > search_r) { continue; }
+            if (box_d > search_r && box_d > 100.0) { continue; }
 
             if (node.leaf_idx != 0xFFFFFFFFu) {
                 let other_idx = node.leaf_idx;
@@ -259,6 +268,9 @@ fn agent_main(@builtin(global_invocation_id) id: vec3u) {
                     if ((other_meta & (1u << 13u)) == 0u) {
                         let other_pos = agent_states[other_idx].pos_vel.xy;
                         let d = toroidal_dist(pos, other_pos);
+                        if (d <= 100.0) {
+                            density += 1.0;
+                        }
                         if (d < best_dist && d <= search_r) {
                             best_dist = d;
                             best_neighbor = other_idx;
@@ -279,93 +291,97 @@ fn agent_main(@builtin(global_invocation_id) id: vec3u) {
                 }
             }
         }
-
-        if (best_neighbor != 0xFFFFFFFFu) {
-            let neighbor_pos = agent_states[best_neighbor].pos_vel.xy;
-            var dx = neighbor_pos.x - pos.x;
-            if (dx > params.world_size.x * 0.5) { dx -= params.world_size.x; }
-            else if (dx < -params.world_size.x * 0.5) { dx += params.world_size.x; }
-
-            var dy = neighbor_pos.y - pos.y;
-            if (dy > params.world_size.y * 0.5) { dy -= params.world_size.y; }
-            else if (dy < -params.world_size.y * 0.5) { dy += params.world_size.y; }
-
-            let angle_to_neighbor = atan2(dy, dx);
-            var bearing = angle_to_neighbor - angle;
-            let pi = 3.14159265;
-            if (bearing > pi) { bearing -= 2.0 * pi; }
-            else if (bearing < -pi) { bearing += 2.0 * pi; }
-
-            sensory_bearing = clamp(bearing / pi, -1.0, 1.0);
-            sensory_dist = clamp(1.0 - best_dist / sight_radius, 0.0, 1.0);
-        }
     }
 
-    // Vectorized RNN Forward Pass
-    var ins_hidden: array<vec4f, 7>;
-    ins_hidden[0] = vec4f(here_food, clamp(forward_food - left_food, -1.0, 1.0), clamp(forward_food - right_food, -1.0, 1.0), clamp(forward_food - here_food, -1.0, 1.0));
-    ins_hidden[1] = vec4f(clamp(here_taint, 0.0, 1.0), clamp(scent_diff, -1.0, 1.0), sensory_bearing, sensory_dist);
-    ins_hidden[2] = vec4f(vel.x * 0.2, vel.y * 0.2, clamp(a_energy * 0.01, 0.0, 1.0), sin(f32(params.tick) * 0.05));
+    // 15 Canonical Sensory Inputs (matching clankolution.html lines 1334-1362)
+    var sensory_inputs: array<f32, 15>;
+    sensory_inputs[0] = clamp(a_energy / 75.0 - 1.0, -1.0, 1.0);
+    sensory_inputs[1] = clamp(here_food - 1.0, -1.0, 1.0);
+    sensory_inputs[2] = clamp(forward_food - left_food, -1.0, 1.0);
+    sensory_inputs[3] = clamp(forward_food - right_food, -1.0, 1.0);
+    sensory_inputs[4] = clamp(forward_food - here_food, -1.0, 1.0);
+    sensory_inputs[5] = clamp(here_taint, 0.0, 1.0);
+    sensory_inputs[6] = clamp(scent_diff, -1.0, 1.0);
 
-    ins_hidden[3] = agent_states[agent_idx].hidden[0];
-    ins_hidden[4] = agent_states[agent_idx].hidden[1];
-    ins_hidden[5] = vec4f(agent_states[agent_idx].hidden_tail.x, agent_states[agent_idx].hidden_tail.y, 0.0, 0.0);
-    if (ENABLE_EXPANDED_CORTEX) {
-        let grad_x = forward_food - here_food;
-        let grad_y = left_food - right_food;
-        ins_hidden[6] = vec4f(clamp(grad_x * 2.0, -1.0, 1.0), clamp(grad_y * 2.0, -1.0, 1.0), sensory_bearing, 1.0);
+    if (best_neighbor != 0xFFFFFFFFu) {
+        let neighbor_pos = agent_states[best_neighbor].pos_vel.xy;
+        var dx = neighbor_pos.x - pos.x;
+        if (dx > params.world_size.x * 0.5) { dx -= params.world_size.x; }
+        else if (dx < -params.world_size.x * 0.5) { dx += params.world_size.x; }
+
+        var dy = neighbor_pos.y - pos.y;
+        if (dy > params.world_size.y * 0.5) { dy -= params.world_size.y; }
+        else if (dy < -params.world_size.y * 0.5) { dy += params.world_size.y; }
+
+        let angle_to_neighbor = atan2(dy, dx);
+        let bearing = angle_to_neighbor - angle;
+
+        sensory_inputs[7] = sin(bearing);
+        sensory_inputs[8] = cos(bearing);
+        sensory_inputs[9] = clamp(1.0 - best_dist / (100.0 + 70.0 * tr2), -1.0, 1.0);
+        sensory_inputs[14] = clamp(agent_states[best_neighbor].angle_energy[1] / 70.0 - 1.0, -1.0, 1.0);
     } else {
-        ins_hidden[6] = vec4f(0.0, 0.0, 0.0, 0.0);
+        sensory_inputs[7] = 0.0;
+        sensory_inputs[8] = 1.0;
+        sensory_inputs[9] = -1.0;
+        sensory_inputs[14] = 0.0;
     }
 
+    sensory_inputs[10] = clamp(density / 9.0, 0.0, 1.0);
+    sensory_inputs[11] = clamp(f32(a_age) / 600.0, 0.0, 1.0);
+    sensory_inputs[12] = sin(f32(params.tick) * 0.08 + f32(agent_states[agent_idx].id));
+    sensory_inputs[13] = clamp(vel.x * cos(angle) + vel.y * sin(angle), -1.0, 1.0);
+
+    // Canonical 326-Weight Elman RNN Forward Pass
+    let h_prev = array<f32, 10>(
+        agent_states[agent_idx].hidden[0].x, agent_states[agent_idx].hidden[0].y,
+        agent_states[agent_idx].hidden[0].z, agent_states[agent_idx].hidden[0].w,
+        agent_states[agent_idx].hidden[1].x, agent_states[agent_idx].hidden[1].y,
+        agent_states[agent_idx].hidden[1].z, agent_states[agent_idx].hidden[1].w,
+        agent_states[agent_idx].hidden_tail.x, agent_states[agent_idx].hidden_tail.y
+    );
+
+    let scale_h = 0.61 / 127.0;
+    let scale_o = 0.66 / 127.0;
+
+    var p = 0u;
     var new_h: array<f32, 10>;
     for (var j = 0u; j < 10u; j += 1u) {
         var s = 0.0;
-        let base_w = j * 7u;
-        for (var k = 0u; k < 7u; k += 1u) {
-            s += dot(unpack4x8snorm(agent_genomes[agent_idx].packed_genes[base_w + k]), ins_hidden[k]);
+        for (var k = 0u; k < 15u; k += 1u) {
+            s += get_gene(agent_idx, p) * sensory_inputs[k];
+            p += 1u;
         }
-        new_h[j] = tanh(s * 0.61);
+        for (var k = 0u; k < 10u; k += 1u) {
+            s += get_gene(agent_idx, p) * h_prev[k];
+            p += 1u;
+        }
+        s += get_gene(agent_idx, p); // bias
+        p += 1u;
+        new_h[j] = tanh(s * scale_h);
     }
-
-    var ins_output: array<vec4f, 3>;
-    ins_output[0] = vec4f(new_h[0], new_h[1], new_h[2], new_h[3]);
-    ins_output[1] = vec4f(new_h[4], new_h[5], new_h[6], new_h[7]);
-    ins_output[2] = vec4f(new_h[8], new_h[9], 0.0, 0.0);
 
     var out: array<f32, 6>;
     for (var j = 0u; j < 6u; j += 1u) {
         var s = 0.0;
-        let base_w = 70u + j * 3u;
-        for (var k = 0u; k < 3u; k += 1u) {
-            s += dot(unpack4x8snorm(agent_genomes[agent_idx].packed_genes[base_w + k]), ins_output[k]);
+        for (var k = 0u; k < 10u; k += 1u) {
+            s += get_gene(agent_idx, p) * new_h[k];
+            p += 1u;
         }
-        out[j] = tanh(s * 0.66);
+        s += get_gene(agent_idx, p); // bias
+        p += 1u;
+        out[j] = tanh(s * scale_o);
     }
 
-    // Kinematics & steering
-    let steer = out[0] * 0.22;
-    let thrust = clamp(out[1] * 0.5 + 0.5, 0.0, 1.0);
-    angle += steer;
+    // Actuator 0: Steering (HTML: a.angle += o[0] * (0.11 + 0.09 * tr1))
+    angle += out[0] * (0.11 + 0.09 * tr1);
 
-    let fwd_vec = vec2f(cos(angle), sin(angle));
-    let thrust_force = fwd_vec * (thrust * (0.8 + 0.4 * tr1));
-    var new_vel = (vel + thrust_force) * 0.88;
-
-    if (ENABLE_BARNES_HUT && params.agent_count > 10u) {
-        let root_node = lbvh_nodes[0];
-        let macro_center = root_node.center_of_mass;
-        var m_dx = macro_center.x - pos.x;
-        if (m_dx > params.world_size.x * 0.5) { m_dx -= params.world_size.x; }
-        else if (m_dx < -params.world_size.x * 0.5) { m_dx += params.world_size.x; }
-        var m_dy = macro_center.y - pos.y;
-        if (m_dy > params.world_size.y * 0.5) { m_dy -= params.world_size.y; }
-        else if (m_dy < -params.world_size.y * 0.5) { m_dy += params.world_size.y; }
-        let m_dist = max(length(vec2f(m_dx, m_dy)), 1.0);
-        let macro_force = vec2f(m_dx, m_dy) / m_dist * 0.03;
-        new_vel = (vel + thrust_force + macro_force) * 0.88;
-    }
-
+    // Actuator 1: Thrust & Kinematics (HTML: thrust = (o[1] + 1) * 0.5; mot = 0.45 + 1.1 * tr1)
+    let thrust = (out[1] + 1.0) * 0.5;
+    let mot = 0.45 + 1.1 * tr1;
+    let fwd_dir = vec2f(cos(angle), sin(angle));
+    let thrust_force = fwd_dir * (thrust * mot * 0.22);
+    let new_vel = (vel + thrust_force) * 0.89;
     var new_pos = wrap_coords(pos + new_vel);
 
     a_feed = clamp(out[2] * 0.5 + 0.5, 0.0, 1.0);
