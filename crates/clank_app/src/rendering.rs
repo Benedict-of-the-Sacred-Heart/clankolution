@@ -341,6 +341,7 @@ pub fn setup_soil_rendering(
 
 pub fn update_soil_texture_system(
     sim: Option<Res<SimWorld>>,
+    gpu_driver: Option<Res<crate::sim::GpuDriverResource>>,
     soil_handle: Option<Res<SoilTextureHandle>>,
     mut images: ResMut<Assets<Image>>,
     mut query: Query<(&mut Sprite, &mut Transform), (With<SoilSprite>, Without<VignetteSprite>)>,
@@ -374,7 +375,22 @@ pub fn update_soil_texture_system(
     }
 
     if let Some(ref mut data) = image.data {
-        generate_soil_rgba(&sim.world.soil, data);
+        if sim.active_engine == crate::sim::ActiveEngine::Gpu {
+            let mut copied = false;
+            if let Some(gpu) = gpu_driver.as_ref() {
+                if let Some(ref driver) = gpu.driver {
+                    if driver.is_initialized() {
+                        driver.copy_soil_display_rgba(data);
+                        copied = true;
+                    }
+                }
+            }
+            if !copied {
+                generate_soil_rgba(&sim.world.soil, data);
+            }
+        } else {
+            generate_soil_rgba(&sim.world.soil, data);
+        }
     }
 
     let w = sim.world_width as f32;

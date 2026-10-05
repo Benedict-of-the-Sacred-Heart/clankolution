@@ -44,6 +44,7 @@ pub struct GpuComputeDriver {
     pub cull_output_buf: wgpu::Buffer,
     pub dart_instances_buf: wgpu::Buffer,
     pub dart_template_buf: wgpu::Buffer,
+    pub soil_display_tex: wgpu::Texture,
 
     // Uniform Buffers
     pub sim_params_buf: wgpu::Buffer,
@@ -55,6 +56,7 @@ pub struct GpuComputeDriver {
     pub staging_agent_states: wgpu::Buffer,
     pub staging_genomes: wgpu::Buffer,
     pub staging_soil: wgpu::Buffer,
+    pub staging_soil_display: wgpu::Buffer,
     pub staging_atomics: wgpu::Buffer,
     pub staging_cull_buf: wgpu::Buffer,
     pub staging_visible_instances: wgpu::Buffer,
@@ -261,6 +263,18 @@ impl GpuComputeDriver {
         let staging_soil = device.create_buffer(&wgpu::BufferDescriptor {
             label: Some("staging_soil"),
             size: soil_size,
+            usage: BufferUsages::MAP_READ | BufferUsages::COPY_DST,
+            mapped_at_creation: false,
+        });
+
+        let unpadded_bytes_per_row = soil_cols * 8;
+        let align = wgpu::COPY_BYTES_PER_ROW_ALIGNMENT;
+        let padded_bytes_per_row = ((unpadded_bytes_per_row + align - 1) / align) * align;
+        let staging_soil_display_size = (padded_bytes_per_row * soil_rows) as u64;
+
+        let staging_soil_display = device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("staging_soil_display"),
+            size: staging_soil_display_size,
             usage: BufferUsages::MAP_READ | BufferUsages::COPY_DST,
             mapped_at_creation: false,
         });
@@ -799,6 +813,7 @@ impl GpuComputeDriver {
             cull_output_buf,
             dart_instances_buf,
             dart_template_buf,
+            soil_display_tex,
             sim_params_buf,
             soil_params_buf,
             view_uniform_buf,
@@ -806,6 +821,7 @@ impl GpuComputeDriver {
             staging_agent_states,
             staging_genomes,
             staging_soil,
+            staging_soil_display,
             staging_atomics,
             staging_cull_buf,
             staging_visible_instances,
@@ -1090,6 +1106,83 @@ impl GpuComputeDriver {
         self.staging_soil.unmap();
 
         soil
+    }
+
+    pub fn copy_soil_display_rgba(&self, out: &mut [u8]) {
+        let expected_len = (self.soil_cols * self.soil_rows * 4) as usize;
+        assert!(out.len() >= expected_len, "out buffer too small");
+
+        let unpadded_bytes_per_row = self.soil_cols * 8;
+        let align = wgpu::COPY_BYTES_PER_ROW_ALIGNMENT;
+        let padded_bytes_per_row = ((unpadded_bytes_per_row + align - 1) / align) * align;
+        let total_bytes = (padded_bytes_per_row * self.soil_rows) as u64;
+
+        let mut encoder = self.device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
+            label: Some("readback_soil_display_encoder"),
+        });
+
+        encoder.copy_texture_to_buffer(
+            wgpu::TexelCopyTextureInfo {
+                texture: &self.soil_display_tex,
+                mip_level: 0,
+                origin: wgpu::Origin3d::ZERO,
+                aspect: wgpu::TextureAspect::All,
+            },
+            wgpu::TexelCopyBufferInfo {
+                buffer: &self.staging_soil_display,
+                layout: wgpu::TexelCopyBufferLayout {
+                    offset: 0,
+                    bytes_per_row: Some(padded_bytes_per_row),
+                    rows_per_image: Some(self.soil_rows),
+                },
+            },
+            wgpu::Extent3d {
+                width: self.soil_cols,
+                height: self.soil_rows,
+                depth_or_array_layers: 1,
+            },
+        );
+
+        self.queue.submit([encoder.finish()]);
+
+        let slice = self.staging_soil_display.slice(0..total_bytes);
+        let (sender, receiver) = std::sync::mpsc::channel();
+        slice.map_async(wgpu::MapMode::Read, move |res| {
+            let _ = sender.send(res);
+        });
+        self.device.poll(wgpu::PollType::wait_indefinitely()).unwrap();
+        receiver.recv().unwrap().unwrap();
+
+        let data = slice.get_mapped_range();
+        for y in 0..self.soil_rows {
+            let row_offset = (y * padded_bytes_per_row) as usize;
+            for x in 0..self.soil_cols {
+                let px_offset = row_offset + (x * 8) as usize;
+                let r_bits = u16::from_le_bytes([data[px_offset], data[px_offset + 1]]);
+                let g_bits = u16::from_le_bytes([data[px_offset + 2], data[px_offset + 3]]);
+                let b_bits = u16::from_le_bytes([data[px_offset + 4], data[px_offset + 5]]);
+                let a_bits = u16::from_le_bytes([data[px_offset + 6], data[px_offset + 7]]);
+
+                let r = half::f16::from_bits(r_bits).to_f32();
+                let g = half::f16::from_bits(g_bits).to_f32();
+                let b = half::f16::from_bits(b_bits).to_f32();
+                let a = half::f16::from_bits(a_bits).to_f32();
+
+                let out_idx = ((y * self.soil_cols + x) * 4) as usize;
+                out[out_idx] = (r.clamp(0.0, 1.0) * 255.0).round() as u8;
+                out[out_idx + 1] = (g.clamp(0.0, 1.0) * 255.0).round() as u8;
+                out[out_idx + 2] = (b.clamp(0.0, 1.0) * 255.0).round() as u8;
+                out[out_idx + 3] = (a.clamp(0.0, 1.0) * 255.0).round() as u8;
+            }
+        }
+        drop(data);
+        self.staging_soil_display.unmap();
+    }
+
+    pub fn readback_soil_display_rgba(&self) -> Vec<u8> {
+        let mut out = vec![0u8; (self.soil_cols * self.soil_rows * 4) as usize];
+        self.copy_soil_display_rgba(&mut out);
+        out
     }
 
     pub fn readback_atomics(&self, count: usize) -> Vec<GpuAgentAtomic> {

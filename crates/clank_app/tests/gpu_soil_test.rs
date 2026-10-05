@@ -9,7 +9,7 @@ fn test_soil_atomic_buffer_and_texture_bounds() {
     assert_eq!(initial_cell.food_milli, 1234);
     assert_eq!(initial_cell.taint_milli, 567);
     assert_eq!(initial_cell.scent_milli, 891);
-    assert_eq!(initial_cell.pad, 0);
+    assert_eq!(initial_cell.fertility_milli, 1000);
 
     let (f, t, s) = GpuSoilPipeline::to_physics(&initial_cell);
     assert!((f - 1.234).abs() < 1e-4);

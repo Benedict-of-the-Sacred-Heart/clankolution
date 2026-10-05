@@ -14,6 +14,7 @@ image = { version = "0.25", default-features = false, features = ["png"] }
 rfd = "0.15"
 bytemuck = { version = "1.21", features = ["derive"] }
 wgpu = { version = "29.0", default-features = false }
+half = "2.7"
 
 [[bench]]
 name = "gpu_microbench"
