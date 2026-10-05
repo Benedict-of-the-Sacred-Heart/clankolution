@@ -2,7 +2,7 @@
 
 **Date:** 2026-10-05  
 **Branch:** `feature/bevy-gpu`  
-**Status:** In Review  
+**Status:** Hardened & Ready for Implementation Planning  
 
 ---
 
@@ -29,9 +29,52 @@ This specification defines the architecture, data structures, shader modificatio
 
 ---
 
-## 2. Memory Architecture & VRAM Budget (340,000 Agents)
+## 2. Hardening & Edge-Case Safeguards
 
-All structures maintain 16-byte std140/std430 alignment. Modern native WGPU on Apple Silicon Metal, Vulkan, and DirectX 12 supports buffer allocations up to 1-2 GB; our total allocation is $\sim 230\text{ MB}$, well within system limits.
+1. **Preamble Clear Concurrent Reset Bounds:**
+   - The cell offset table expands from 54 cells to **7,125 cells** ($95 \times 75$).
+   - In `preamble_clear.wgsl`, the clear condition is updated to:
+     ```wgsl
+     let total_cells = params.spatial_grid.x * params.spatial_grid.y;
+     if (id.x < total_cells) {
+         atomicStore(&cell_offsets[id.x], 0xFFFFFFFFu);
+     }
+     ```
+   - Because workgroups are dispatched covering `params.max_agents` (340,000 threads), the first 7,125 threads reset the entire offset table concurrently in a single GPU cycle.
+
+2. **Spatial Grid Modulo & Float Boundary Clamping:**
+   - `agent_step.wgsl` uses dynamic cell dimensions and grid counts from `params`.
+   - To guard against floating-point edge rounding right on $x = 9500.0$ or $y = 7470.0$, clamp cell coordinates strictly within `[0, grid - 1]`:
+     ```wgsl
+     let gx = i32(min(u32(max(0.0, pos.x) / params.spatial_cell_size.x), params.spatial_grid.x - 1u));
+     let gy = i32(min(u32(max(0.0, pos.y) / params.spatial_cell_size.y), params.spatial_grid.y - 1u));
+     ```
+
+3. **Native Adapter Limit Unlocking:**
+   - Default WebGPU limits cap `max_storage_buffer_binding_size` at 128 MB.
+   - At 340,000 agents, `agent_genomes_buf` is $340,000 \times 352 = 119.68\text{ MB}$ (89% of 128 MB).
+   - In `compute_driver.rs`, initialize the device with `required_limits: adapter.limits()`, unlocking 1 GB – 2 GB per-buffer limits on Metal, Vulkan, and DirectX 12.
+
+4. **Frustum Culling Instance Clamping:**
+   - `spatial_query.wgsl` frustum culling strictly clamps the visible instance counter to prevent buffer overruns if all 340,000 agents are visible simultaneously:
+     ```wgsl
+     let slot = atomicAdd(&cull_output.count, 1u);
+     if (slot < params.max_capacity) {
+         cull_output.visible_instances[slot] = agent_idx;
+     }
+     ```
+
+5. **Camera Zoom-to-Cursor Under High-DPI Scaling:**
+   - Cursor screen coordinates must be scaled by `window.scale_factor()` and transformed through the camera's viewport offset and orthographic projection to guarantee pixel-accurate zooming into the cursor up to 50x magnification.
+
+6. **Minimap Cluster Decoupling:**
+   - UI radar minimap reads LBVH root and macro cluster nodes ($N \approx 64 - 256$ clusters) rather than looping over 340,000 individual agents on the CPU.
+
+---
+
+## 3. Memory Architecture & VRAM Budget (340,000 Agents)
+
+All structures maintain 16-byte std140/std430 alignment and 4-byte divisibility. Total allocation is $\sim 233.27\text{ MB}$, well within system memory limits.
 
 | Buffer Name | Element Type | Count | Element Size | Total Buffer Size | Usage |
 |-------------|--------------|-------|--------------|-------------------|-------|
@@ -49,37 +92,78 @@ All structures maintain 16-byte std140/std430 alignment. Modern native WGPU on A
 | `dart_instances_buf`| `GpuDartInstance` | 340,000 | 32 B | 10.88 MB | Storage/Vertex |
 | **Total VRAM** | | | | **~233.27 MB** | |
 
-### Consolidated Queue Sizing
-- `telemetry`: 128 bytes
-- `births`: 262,144 entries $\times$ 16 bytes = 4.19 MB
-- `audio`: 512 entries $\times$ 16 bytes = 8 KB
+### Buffer Splitting Analysis: Unified vs Layer-Split Genomes
+- **Option 1 (Unified Genome Buffer - 119.68 MB - Selected):**
+  - Keeps `agent_genomes` as 1 buffer.
+  - Consumes only 6 storage buffer bindings (WebGPU limit is 8 per stage).
+  - $119.68\text{ MB} < 128\text{ MB}$ strict WebGPU limit and $< 2\text{ GB}$ native limit.
+- **Option 2 (Neural Layer Split - Migration Path for > 360k Agents):**
+  - Split into `hidden_weights_buf` (280 B/agent = 95.2 MB) and `output_weights_buf` (72 B/agent = 24.48 MB).
+  - Uses 7 storage buffer bindings. Documented as the scaling path if capacity exceeds 360,000 agents.
 
 ---
 
-## 3. Spatial Partitioning & Grid Scaling
+## 4. Struct Padding & Parameter Layout (`GpuSimParams`)
 
-### Current vs. Expanded Grid
-- **Current Arena:** $950 \times 747$ px $\implies$ $9 \times 6 = 54$ cells ($105.5 \times 124.5$ px/cell).
-- **Expanded Arena:** $9,500 \times 7,470$ px $\implies$ **$95 \times 75 = 7,125$ cells** ($100.0 \times 99.6$ px/cell).
+`GpuSimParams` is expanded to exactly **112 bytes** (7 chunks of 16 bytes). Every single 4-byte slot is functional with zero dead padding:
 
-### Uniform Configuration (`GpuSimParams`)
-Add dynamic spatial grid dimensions to `GpuSimParams` (divisible by 4 and 16-byte aligned):
 ```rust
+#[repr(C, align(16))]
+#[derive(Clone, Copy, Debug, PartialEq, Default, bytemuck::Pod, bytemuck::Zeroable)]
 pub struct GpuSimParams {
-    ...
-    pub spatial_grid: [u32; 2],     // [95, 75] spatial grid cell counts (nx, ny)
-    pub spatial_cell_size: [f32; 2],// [100.0, 99.6] physical cell dimensions
-    ...
+    // Chunk 0 (16B): Simulation Physics & Capacity Bounds
+    pub tick: u32,                  // 4 bytes  (0..4)
+    pub agent_count: u32,           // 4 bytes  (4..8)
+    pub max_agents: u32,            // 4 bytes  (8..12)
+    pub max_capacity: u32,          // 4 bytes  (12..16)
+
+    // Chunk 1 (16B): Environmental Chemistry & Rates
+    pub hostility: f32,             // 4 bytes  (16..20)
+    pub mut_rate: f32,              // 4 bytes  (20..24)
+    pub speed: f32,                 // 4 bytes  (24..28)
+    pub renewal: f32,               // 4 bytes  (28..32)
+
+    // Chunk 2 (16B): Multi-Tick Batching & Interactive Tools
+    pub sub_tick: u32,              // 4 bytes  (32..36)
+    pub sub_ticks_per_frame: u32,   // 4 bytes  (36..40)
+    pub tool_type: u32,             // 4 bytes  (40..44)
+    pub tool_radius: f32,           // 4 bytes  (44..48)
+
+    // Chunk 3 (16B): Tool & Camera Positions
+    pub tool_pos: [f32; 2],         // 8 bytes  (48..56)
+    pub camera_pos: [f32; 2],       // 8 bytes  (56..64)
+
+    // Chunk 4 (16B): Camera Viewport & Arena Bounds
+    pub camera_size: [f32; 2],      // 8 bytes  (64..72)
+    pub world_size: [f32; 2],       // 8 bytes  (72..80) ([9500.0, 7470.0])
+
+    // Chunk 5 (16B): Soil Grid & Simulation State
+    pub soil_grid: [u32; 2],        // 8 bytes  (80..88) ([800, 630])
+    pub eclipse: u32,               // 4 bytes  (88..92)
+    pub epoch: u32,                 // 4 bytes  (92..96)
+
+    // Chunk 6 (16B): Dynamic Spatial Neighborhood Grid
+    pub spatial_grid: [u32; 2],     // 8 bytes  (96..104) ([95, 75])
+    pub spatial_cell_size: [f32; 2],// 8 bytes  (104..112) ([100.0, 99.6])
 }
 ```
 
-### WGSL Neighbor Query in `agent_step.wgsl`
-The hardcoded $9 \times 6$ modulo arithmetic is updated to dynamic dimensions:
+---
+
+## 5. Spatial Partitioning & Grid Scaling
+
+### Dynamic Cell Dimensions
+- **Arena Dimensions:** $9,500.0 \times 7,470.0$ px.
+- **Cell Counts:** $nx = 95$, $ny = 75$ ($7,125$ total cells).
+- **Physical Cell Size:** $cell\_w = 9500.0 / 95 = 100.0\text{ px}$, $cell\_h = 7470.0 / 75 = 99.6\text{ px}$.
+- **Average Density:** $340,000 / 7,125 \approx 47.7\text{ agents/cell}$. An unrolled 9-cell Moore search loops over $\le 128$ candidates per cell, guaranteeing complete neighbor visibility without queue truncation.
+
+### WGSL Implementation (`agent_step.wgsl`)
 ```wgsl
-let nx = params.spatial_grid.x;
-let ny = params.spatial_grid.y;
 let cell_w = params.spatial_cell_size.x;
 let cell_h = params.spatial_cell_size.y;
+let nx = params.spatial_grid.x;
+let ny = params.spatial_grid.y;
 
 let gx = i32(min(u32(max(0.0, pos.x) / cell_w), nx - 1u));
 let gy = i32(min(u32(max(0.0, pos.y) / cell_h), ny - 1u));
@@ -89,23 +173,21 @@ for (var dy = -1; dy <= 1; dy++) {
     for (var dx = -1; dx <= 1; dx++) {
         let n_gx = (gx + dx + i32(nx)) % i32(nx);
         let n_cell = u32(n_gy * i32(nx) + n_gx);
-        ...
+
+        var curr = atomicLoad(&cell_offsets[n_cell]);
+        var loop_count = 0u;
+        while (curr != 0xFFFFFFFFu && loop_count < 128u) {
+            ...
+            curr = spatial_keys[curr].x;
+            loop_count += 1u;
+        }
     }
 }
 ```
 
-### Morton Grid Normalization (`morton_grid.wgsl`)
-Morton code calculation computes normalized 16-bit coordinates:
-```wgsl
-let x_norm = u32(clamp(pos.x / params.world_size.x, 0.0, 1.0) * 65535.0);
-let y_norm = u32(clamp(pos.y / params.world_size.y, 0.0, 1.0) * 65535.0);
-let code = (expand_bits(x_norm) << 1u) | expand_bits(y_norm);
-```
-Because coordinates are normalized by `params.world_size`, 32-bit Morton codes cover the entire $9,500 \times 7,470$ arena with full spatial fidelity.
-
 ---
 
-## 4. Camera Controller & Navigation
+## 6. Camera Controller & Navigation
 
 ### Decoupled Simulation Arena
 `SimWorld` is initialized with constant world dimensions:
@@ -114,6 +196,8 @@ pub const WORLD_WIDTH: f64 = 9500.0;
 pub const WORLD_HEIGHT: f64 = 7470.0;
 pub const SOIL_COLS: usize = 800;
 pub const SOIL_ROWS: usize = 630;
+pub const SPATIAL_GRID_NX: usize = 95;
+pub const SPATIAL_GRID_NY: usize = 75;
 ```
 `camera_viewport_sync_system` no longer resizes the simulation world to the window size. Instead:
 - `sim.world_width = 9500.0`
@@ -140,14 +224,14 @@ ortho.scale = fit_scale;
 - **Max Zoom (Full-World):** `fit_scale * 1.1`, allowing comfortable macro overview of all biomes.
 - **Zoom to Cursor:** When scrolling the mouse wheel, zoom adjusts around the cursor's world-space position:
   $$\text{pos}_{\text{new}} = \text{cursor}_{\text{world}} + (\text{pos}_{\text{old}} - \text{cursor}_{\text{world}}) \times \frac{\text{scale}_{\text{new}}}{\text{scale}_{\text{old}}}$$
-- **Keyboard Navigation (WASD):** Smooth pan with configurable speed (scaled by current zoom level so movement feels natural at all scales).
+- **Keyboard Navigation (WASD):** Smooth pan with speed proportional to current zoom scale ($v = \text{speed} \times \text{scale} \times \Delta t$).
 - **Edge Panning:** When mouse cursor is within 25px of the viewport edge, camera pans automatically in that direction.
 - **Agent Tracking:** When an agent is selected in the UI, camera smoothly tracks target position:
   $$\text{pos} \leftarrow \text{pos} + (\text{agent\_pos} - \text{pos}) \times 0.1$$
 
 ---
 
-## 5. Frustum Culling & Rendering Optimization
+## 7. Frustum Culling & Rendering Optimization
 
 ### GPU Culling Pass (`spatial_query.wgsl`)
 1. Compute Pass reads `agent_states_buf`.
@@ -165,7 +249,7 @@ In `crates/clank_app/src/ui.rs`:
 
 ---
 
-## 6. Verification & Test Plan
+## 8. Verification & Test Plan
 
 1. **Unit & Integration Tests:**
    - `test_expanded_world_memory_allocations`: Verify all buffers for 340,000 agents and 800x630 soil initialize without error.
