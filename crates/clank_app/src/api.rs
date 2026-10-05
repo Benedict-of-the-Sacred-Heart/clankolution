@@ -598,7 +598,7 @@ pub fn api_dispatch_system(
                         };
                     }
                     if let Some(cap) = req.max_cap {
-                        sim.world.set_max_capacity(cap.clamp(50, 10_000) as u32);
+                        sim.world.set_max_capacity(cap.clamp(50, 65_536) as u32);
                     }
                     if let Some(agent_id) = req.selected_agent {
                         if agent_id == 0 {
@@ -648,7 +648,7 @@ pub fn api_dispatch_system(
                             }
                         }
                         "nourish" => {
-                            let repeat = req.count.unwrap_or(1).clamp(1, 10_000);
+                            let repeat = req.count.unwrap_or(1).clamp(1, 65_536);
                             let (w, h) = (sim.world.w, sim.world.h);
                             for _ in 0..repeat {
                                 let (nx, ny) = if repeat > 1 {
@@ -666,7 +666,7 @@ pub fn api_dispatch_system(
                             sim.world.blight_at(x, y);
                         }
                         "seed" | "seedlife" => {
-                            let repeat = req.count.unwrap_or(1).clamp(1, 10_000);
+                            let repeat = req.count.unwrap_or(1).clamp(1, 65_536);
                             let (w, h) = (sim.world.w, sim.world.h);
                             for _ in 0..repeat {
                                 let (sx, sy) = if repeat > 1 {

@@ -340,7 +340,7 @@ fn bench_soil_diffusion_and_grazing() {
     println!("| Component | Total Time | Per-Cell Latency | Throughput |");
     println!("| :--- | :--- | :--- | :--- |");
 
-    let mut cells = vec![GpuSoilCell { food_milli: 1000, taint_milli: 0, scent_milli: 0, pad: 0 }; 3750];
+    let mut cells = vec![GpuSoilCell { food_milli: 1000, taint_milli: 0, scent_milli: 0, fertility_milli: 1000 }; 3750];
     let bloom_table = vec![1.0f32; 3750];
     let iters = 5_000;
 

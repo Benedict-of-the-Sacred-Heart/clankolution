@@ -110,7 +110,7 @@ impl World {
     }
 
     pub fn set_max_capacity(&mut self, cap: u32) {
-        self.max_cap = (cap as usize).clamp(15, 10_000);
+        self.max_cap = (cap as usize).clamp(15, 65_536);
         if self.agents.len() > self.max_cap {
             self.agents.truncate(self.max_cap);
             self.pos_x.truncate(self.max_cap);
