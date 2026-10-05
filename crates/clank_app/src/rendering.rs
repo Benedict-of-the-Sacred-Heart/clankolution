@@ -626,6 +626,27 @@ pub fn update_agent_mesh_system(
     mut meshes: ResMut<Assets<Mesh>>,
 ) {
     let (Some(sim), Some(res)) = (sim, res) else { return };
+
+    if sim.active_engine == crate::sim::ActiveEngine::Gpu {
+        // Zero CPU vertex generation in GPU mode:
+        // Clear/collapse mesh to avoid 80,000 vertex CPU allocation and transfer
+        if let Some(mut mesh) = meshes.get_mut(&res.mesh_handle) {
+            if mesh.count_vertices() > 3 {
+                mesh.insert_attribute(Mesh::ATTRIBUTE_POSITION, vec![[0.0, 0.0, -100.0]; 3]);
+                mesh.insert_attribute(Mesh::ATTRIBUTE_COLOR, vec![[0.0, 0.0, 0.0, 0.0]; 3]);
+            }
+        }
+        if let Some(outline_res) = outline_res {
+            if let Some(mut mesh) = meshes.get_mut(&outline_res.mesh_handle) {
+                if mesh.count_vertices() > 2 {
+                    mesh.insert_attribute(Mesh::ATTRIBUTE_POSITION, vec![[0.0, 0.0, -100.0]; 2]);
+                    mesh.insert_attribute(Mesh::ATTRIBUTE_COLOR, vec![[0.0, 0.0, 0.0, 0.0]; 2]);
+                }
+            }
+        }
+        return;
+    }
+
     let (gpu_states, _, _, _, _) = crate::gpu::bridge::sync_rust_to_gpu(&sim);
 
     if let Some(mut mesh) = meshes.get_mut(&res.mesh_handle) {

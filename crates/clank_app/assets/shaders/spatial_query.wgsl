@@ -100,12 +100,20 @@ struct CullOutput {
     pad2: u32,
 }
 
+struct DartInstance {
+    pos_angle: vec3f,
+    pad0: f32,
+    vis_data: vec2u,
+    pad1: vec2u,
+}
+
 @group(0) @binding(0) var<storage, read_write> agent_states: array<GpuAgentState>;
 @group(0) @binding(1) var<storage, read> lbvh_nodes: array<GpuLbvhNode>;
 @group(0) @binding(2) var<storage, read_write> queue_buffer: ConsolidatedQueue;
 @group(0) @binding(3) var<uniform> params: GpuSimParams;
 @group(0) @binding(4) var<storage, read_write> visible_instances: array<u32>;
 @group(0) @binding(5) var<storage, read_write> cull_output: CullOutput;
+@group(0) @binding(6) var<storage, read_write> dart_instances: array<DartInstance>;
 
 fn toroidal_aabb_dist_1d(p: f32, b_min: f32, b_max: f32, w: f32) -> f32 {
     if (p >= b_min && p <= b_max) { return 0.0; }
@@ -284,6 +292,11 @@ fn frustum_cull_main(@builtin(global_invocation_id) id: vec3u) {
         let slot = atomicAdd(&cull_output.count, 1u);
         if (slot < params.max_capacity && slot < params.max_agents) {
             visible_instances[slot] = agent_idx;
+            let angle = state.angle_energy[0];
+            dart_instances[slot].pos_angle = vec3f(pos.x, pos.y, angle);
+            dart_instances[slot].pad0 = 0.0;
+            dart_instances[slot].vis_data = vec2u(state.packed_color, state.visual_cache);
+            dart_instances[slot].pad1 = vec2u(0u, 0u);
         }
     }
 }

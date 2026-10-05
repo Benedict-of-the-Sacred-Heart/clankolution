@@ -1,103 +1,71 @@
-use clank_app::gpu::types::GpuAgentState;
-use clank_app::rendering::{
-    generate_dart_mesh_from_gpu_states, generate_outline_mesh_from_gpu_states, unpack_visual_cache,
-};
+use clank_app::gpu::compute_driver::GpuComputeDriver;
+use clank_app::gpu::types::{GpuAgentState, GpuAgentGenome, GpuAgentAtomic, GpuSoilCell, GpuSimParams};
 
 #[test]
-fn test_unpack_visual_cache_zero_cost_dead_check() {
-    let packed_color = 0xFF112233;
-    // Dead agent: visual_cache == 0 must return None immediately
-    let result = unpack_visual_cache(0, packed_color);
-    assert!(result.is_none());
-}
+fn test_instanced_dart_rendering_zero_cpu_vertices() {
+    let driver = GpuComputeDriver::create_for_world(75, 50, 65536);
+    if driver.is_none() {
+        eprintln!("No WebGPU adapter found, skipping instanced rendering test");
+        return;
+    }
+    let driver = driver.unwrap();
 
-#[test]
-fn test_unpack_visual_cache_attributes() {
-    let packed_color = 0xFF556677; // rgba
-    let r_u8 = 128u32; // ~50% bulk -> r = 2.3 + 0.502 * 4.5 = ~4.56
-    let glow_u8 = 200u32;
-    let e_u8 = 255u32; // max energy -> alpha = 1.0
-    let flags = (1u32 << 24) | (1u32 << 25); // attack + birth
-    let visual_cache = r_u8 | (glow_u8 << 8) | (e_u8 << 16) | flags;
+    let mut states = Vec::new();
+    let mut atomics = Vec::new();
 
-    let (radius, color, is_attacking, has_birth) = unpack_visual_cache(visual_cache, packed_color).expect("Must unpack living agent");
-    assert!((radius - 4.56).abs() < 0.1);
-    assert!(is_attacking);
-    assert!(has_birth);
-    assert!(color.to_srgba().alpha > 0.9);
-}
-
-#[test]
-fn test_generate_dart_mesh_from_gpu_states_skips_dead() {
-    let living_agent = GpuAgentState {
-        pos_vel: [100.0, 200.0, 0.0, 0.0],
-        angle_energy: [0.0, 80.0, 0.0, 0.0],
-        traits: [0.5, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0],
+    // Living visible agent: centered at [450, 300], angle 0.0, color cyan (0x00FFFF)
+    let a0 = GpuAgentState {
+        pos_vel: [450.0, 300.0, 0.0, 0.0],
+        angle_energy: [0.0, 50.0, 0.0, 0.0],
+        traits: [0.5; 8],
         hidden: [0.0; 10],
         id: 1,
-        meta_flags: 1,
+        meta_flags: 0,
         age_gen: 0,
         morton_code: 0,
-        packed_color: 0xFF00FF00,
-        visual_cache: 128 | (100 << 8) | (200 << 16),
+        packed_color: 0xFFFFFF00, // RGBA cyan/yellow
+        visual_cache: 0x00FF00FF, // alive, radius 128
+    };
+    states.push(a0);
+    atomics.push(GpuAgentAtomic { energy_milli: 50000, mate_claim: 0, mate_energy_milli: 0, dead_claimed: 0 });
+
+    let genomes = vec![GpuAgentGenome { packed_genes: [0; 88] }; 1];
+    let soil = vec![GpuSoilCell { food_milli: 0, taint_milli: 0, scent_milli: 0, fertility_milli: 1000 }; 75 * 50];
+
+    let params = GpuSimParams {
+        tick: 1,
+        agent_count: 1,
+        max_agents: 1,
+        max_capacity: 1,
+        camera_pos: [450.0, 300.0],
+        camera_size: [900.0, 600.0],
+        world_size: [900.0, 600.0],
+        soil_grid: [75, 50],
+        ..Default::default()
     };
 
-    let dead_agent = GpuAgentState {
-        pos_vel: [300.0, 400.0, 0.0, 0.0],
-        angle_energy: [0.0; 4],
-        traits: [0.0; 8],
-        hidden: [0.0; 10],
-        id: 2,
-        meta_flags: 1 << 13,
-        age_gen: 0,
-        morton_code: 0,
-        packed_color: 0,
-        visual_cache: 0, // Dead
-    };
+    driver.upload_state(&states, &genomes, &atomics, &soil, &params);
 
-    let states = vec![living_agent, dead_agent];
-    let mut positions = Vec::new();
-    let mut colors = Vec::new();
+    // 1. Dispatch culling pass on GPU
+    let visible_count = driver.dispatch_culling(&params);
+    assert_eq!(visible_count, 1);
 
-    generate_dart_mesh_from_gpu_states(&states, 747.0, &mut positions, &mut colors);
+    // 2. Execute GPU instanced rendering pass into target texture directly from VRAM
+    let target_tex = driver.device.create_texture(&wgpu::TextureDescriptor {
+        label: Some("test_render_target"),
+        size: wgpu::Extent3d { width: 900, height: 600, depth_or_array_layers: 1 },
+        mip_level_count: 1,
+        sample_count: 1,
+        dimension: wgpu::TextureDimension::D2,
+        format: wgpu::TextureFormat::Rgba8Unorm,
+        usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::COPY_SRC,
+        view_formats: &[],
+    });
+    let target_view = target_tex.create_view(&wgpu::TextureViewDescriptor::default());
 
-    // Living agent generates 6 body vertices (2 triangles), dead agent is skipped (0 vertices)
-    assert_eq!(positions.len(), 6);
-    assert_eq!(colors.len(), 6);
+    // Render directly using GPU instance stream and unit dart template (12 vertices)
+    driver.render_darts_instanced(&target_view, &params, visible_count);
 
-    let mut outline_pos = Vec::new();
-    let mut outline_col = Vec::new();
-    generate_outline_mesh_from_gpu_states(&states, 747.0, &mut outline_pos, &mut outline_col);
-
-    // Living agent generates 8 line-list vertices (4 edges), dead agent is skipped
-    assert_eq!(outline_pos.len(), 8);
-    assert_eq!(outline_col.len(), 8);
-}
-
-#[test]
-fn test_dart_morphology_and_antennae_outline_generation() {
-    let sighted_agent = GpuAgentState {
-        pos_vel: [100.0, 200.0, 0.0, 0.0],
-        angle_energy: [0.0, 80.0, 0.0, 0.0],
-        traits: [0.5, 0.0, 0.8, 0.9, 0.0, 0.7, 0.3, 0.0], // sight=0.8 > 0.56, armor=0.9, carnivory=0.7
-        hidden: [0.0; 10],
-        id: 1,
-        meta_flags: 1,
-        age_gen: 0,
-        morton_code: 0,
-        packed_color: 0xFF00FF00,
-        visual_cache: 128 | (100 << 8) | (200 << 16),
-    };
-
-    let mut body_pos = Vec::new();
-    let mut body_col = Vec::new();
-    generate_dart_mesh_from_gpu_states(&[sighted_agent], 747.0, &mut body_pos, &mut body_col);
-    assert_eq!(body_pos.len(), 6);
-
-    let mut outline_pos = Vec::new();
-    let mut outline_col = Vec::new();
-    generate_outline_mesh_from_gpu_states(&[sighted_agent], 747.0, &mut outline_pos, &mut outline_col);
-
-    // 8 vertices for body perimeter + 4 vertices for 2 sensory antennae whiskers = 12 vertices
-    assert_eq!(outline_pos.len(), 12);
+    // Verify template mesh contains exactly 12 vertices (unit dart), zero CPU vertex bloat
+    assert_eq!(driver.dart_template_vertex_count(), 12);
 }

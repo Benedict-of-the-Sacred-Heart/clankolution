@@ -8,6 +8,22 @@ use crate::gpu::types::{
     GpuAgentAtomic, GpuAgentGenome, GpuAgentState, GpuSimParams, GpuSoilCell, GpuTelemetry,
 };
 
+#[repr(C, align(16))]
+#[derive(Clone, Copy, bytemuck::Pod, bytemuck::Zeroable)]
+pub struct DartVertex {
+    pub position: [f32; 2],
+    pub edge_flag: f32,
+    pub _pad: f32,
+}
+
+#[repr(C, align(16))]
+#[derive(Clone, Copy, bytemuck::Pod, bytemuck::Zeroable)]
+pub struct ViewUniform {
+    pub view_proj: [f32; 16],
+    pub world_size: [f32; 2],
+    pub _pad: [f32; 2],
+}
+
 pub struct GpuComputeDriver {
     pub device: Arc<wgpu::Device>,
     pub queue: Arc<wgpu::Queue>,
@@ -26,10 +42,13 @@ pub struct GpuComputeDriver {
     pub queue_buffer: wgpu::Buffer,
     pub visible_instances_buf: wgpu::Buffer,
     pub cull_output_buf: wgpu::Buffer,
+    pub dart_instances_buf: wgpu::Buffer,
+    pub dart_template_buf: wgpu::Buffer,
 
     // Uniform Buffers
     pub sim_params_buf: wgpu::Buffer,
     pub soil_params_buf: wgpu::Buffer,
+    pub view_uniform_buf: wgpu::Buffer,
 
     // Staging Buffers for readbacks
     pub staging_telemetry: wgpu::Buffer,
@@ -40,7 +59,7 @@ pub struct GpuComputeDriver {
     pub staging_cull_buf: wgpu::Buffer,
     pub staging_visible_instances: wgpu::Buffer,
 
-    // Compute Pipelines
+    // Pipelines
     pub soil_pipeline: wgpu::ComputePipeline,
     pub morton_clear_pipeline: wgpu::ComputePipeline,
     pub morton_encode_pipeline: wgpu::ComputePipeline,
@@ -51,6 +70,7 @@ pub struct GpuComputeDriver {
     pub spatial_query_pipeline: wgpu::ComputePipeline,
     pub cull_clear_pipeline: wgpu::ComputePipeline,
     pub cull_pipeline: wgpu::ComputePipeline,
+    pub dart_render_pipeline: wgpu::RenderPipeline,
 
     // Bind Groups
     pub soil_bind_group: wgpu::BindGroup,
@@ -61,6 +81,7 @@ pub struct GpuComputeDriver {
     pub birth_group0: wgpu::BindGroup,
     pub birth_group1: wgpu::BindGroup,
     pub spatial_query_bind_group: wgpu::BindGroup,
+    pub dart_render_bind_group: wgpu::BindGroup,
 
     pub max_agents: u32,
     pub soil_cols: u32,
@@ -277,6 +298,49 @@ impl GpuComputeDriver {
             label: Some("staging_visible_instances"),
             size: visible_instances_size,
             usage: BufferUsages::MAP_READ | BufferUsages::COPY_DST,
+            mapped_at_creation: false,
+        });
+
+        let dart_template: [DartVertex; 12] = [
+            // Body fill (2 triangles):
+            DartVertex { position: [0.0, 1.3], edge_flag: 0.0, _pad: 0.0 },
+            DartVertex { position: [-1.0, -1.0], edge_flag: 0.0, _pad: 0.0 },
+            DartVertex { position: [0.0, -0.4], edge_flag: 0.0, _pad: 0.0 },
+
+            DartVertex { position: [0.0, 1.3], edge_flag: 0.0, _pad: 0.0 },
+            DartVertex { position: [0.0, -0.4], edge_flag: 0.0, _pad: 0.0 },
+            DartVertex { position: [1.0, -1.0], edge_flag: 0.0, _pad: 0.0 },
+
+            // Outline border (2 triangles):
+            DartVertex { position: [0.0, 1.4], edge_flag: 1.0, _pad: 0.0 },
+            DartVertex { position: [-1.1, -1.1], edge_flag: 1.0, _pad: 0.0 },
+            DartVertex { position: [0.0, -0.5], edge_flag: 1.0, _pad: 0.0 },
+
+            DartVertex { position: [0.0, 1.4], edge_flag: 1.0, _pad: 0.0 },
+            DartVertex { position: [0.0, -0.5], edge_flag: 1.0, _pad: 0.0 },
+            DartVertex { position: [1.1, -1.1], edge_flag: 1.0, _pad: 0.0 },
+        ];
+
+        let dart_template_buf = device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("dart_template_buf"),
+            size: 12 * 16,
+            usage: BufferUsages::VERTEX | BufferUsages::COPY_DST,
+            mapped_at_creation: false,
+        });
+        queue.write_buffer(&dart_template_buf, 0, bytemuck::cast_slice(&dart_template));
+
+        let dart_instances_size = (max_agents as u64) * 32;
+        let dart_instances_buf = device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("dart_instances_buf"),
+            size: dart_instances_size,
+            usage: BufferUsages::STORAGE | BufferUsages::VERTEX | BufferUsages::COPY_SRC | BufferUsages::COPY_DST,
+            mapped_at_creation: false,
+        });
+
+        let view_uniform_buf = device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("view_uniform_buf"),
+            size: 80,
+            usage: BufferUsages::UNIFORM | BufferUsages::COPY_DST,
             mapped_at_creation: false,
         });
 
@@ -584,6 +648,7 @@ impl GpuComputeDriver {
                 wgpu::BindGroupLayoutEntry { binding: 3, visibility: wgpu::ShaderStages::COMPUTE, ty: wgpu::BindingType::Buffer { ty: wgpu::BufferBindingType::Uniform, has_dynamic_offset: false, min_binding_size: None }, count: None },
                 wgpu::BindGroupLayoutEntry { binding: 4, visibility: wgpu::ShaderStages::COMPUTE, ty: wgpu::BindingType::Buffer { ty: wgpu::BufferBindingType::Storage { read_only: false }, has_dynamic_offset: false, min_binding_size: None }, count: None },
                 wgpu::BindGroupLayoutEntry { binding: 5, visibility: wgpu::ShaderStages::COMPUTE, ty: wgpu::BindingType::Buffer { ty: wgpu::BufferBindingType::Storage { read_only: false }, has_dynamic_offset: false, min_binding_size: None }, count: None },
+                wgpu::BindGroupLayoutEntry { binding: 6, visibility: wgpu::ShaderStages::COMPUTE, ty: wgpu::BindingType::Buffer { ty: wgpu::BufferBindingType::Storage { read_only: false }, has_dynamic_offset: false, min_binding_size: None }, count: None },
             ],
         });
 
@@ -597,6 +662,7 @@ impl GpuComputeDriver {
                 wgpu::BindGroupEntry { binding: 3, resource: sim_params_buf.as_entire_binding() },
                 wgpu::BindGroupEntry { binding: 4, resource: visible_instances_buf.as_entire_binding() },
                 wgpu::BindGroupEntry { binding: 5, resource: cull_output_buf.as_entire_binding() },
+                wgpu::BindGroupEntry { binding: 6, resource: dart_instances_buf.as_entire_binding() },
             ],
         });
 
@@ -633,6 +699,88 @@ impl GpuComputeDriver {
             cache: None,
         });
 
+        let dart_sm = device.create_shader_module(wgpu::ShaderModuleDescriptor {
+            label: Some("dart_instanced_sm"),
+            source: wgpu::ShaderSource::Wgsl(std::borrow::Cow::Borrowed(include_str!("../../assets/shaders/dart_instanced.wgsl"))),
+        });
+
+        let dart_render_bgl = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+            label: Some("dart_render_bgl"),
+            entries: &[
+                wgpu::BindGroupLayoutEntry {
+                    binding: 0,
+                    visibility: wgpu::ShaderStages::VERTEX,
+                    ty: wgpu::BindingType::Buffer { ty: wgpu::BufferBindingType::Uniform, has_dynamic_offset: false, min_binding_size: None },
+                    count: None,
+                },
+            ],
+        });
+
+        let dart_render_bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some("dart_render_bg"),
+            layout: &dart_render_bgl,
+            entries: &[
+                wgpu::BindGroupEntry { binding: 0, resource: view_uniform_buf.as_entire_binding() },
+            ],
+        });
+
+        let dart_render_pl = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+            label: Some("dart_render_pl"),
+            bind_group_layouts: &[Some(&dart_render_bgl)],
+            immediate_size: 0,
+        });
+
+        let dart_render_pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+            label: Some("dart_render_pipeline"),
+            layout: Some(&dart_render_pl),
+            vertex: wgpu::VertexState {
+                module: &dart_sm,
+                entry_point: Some("vs_main"),
+                compilation_options: wgpu::PipelineCompilationOptions::default(),
+                buffers: &[
+                    wgpu::VertexBufferLayout {
+                        array_stride: 16,
+                        step_mode: wgpu::VertexStepMode::Vertex,
+                        attributes: &[
+                            wgpu::VertexAttribute { format: wgpu::VertexFormat::Float32x2, offset: 0, shader_location: 0 },
+                            wgpu::VertexAttribute { format: wgpu::VertexFormat::Float32, offset: 8, shader_location: 1 },
+                        ],
+                    },
+                    wgpu::VertexBufferLayout {
+                        array_stride: 32,
+                        step_mode: wgpu::VertexStepMode::Instance,
+                        attributes: &[
+                            wgpu::VertexAttribute { format: wgpu::VertexFormat::Float32x3, offset: 0, shader_location: 2 },
+                            wgpu::VertexAttribute { format: wgpu::VertexFormat::Uint32x2, offset: 16, shader_location: 3 },
+                        ],
+                    },
+                ],
+            },
+            fragment: Some(wgpu::FragmentState {
+                module: &dart_sm,
+                entry_point: Some("fs_main"),
+                compilation_options: wgpu::PipelineCompilationOptions::default(),
+                targets: &[Some(wgpu::ColorTargetState {
+                    format: wgpu::TextureFormat::Rgba8Unorm,
+                    blend: Some(wgpu::BlendState::ALPHA_BLENDING),
+                    write_mask: wgpu::ColorWrites::ALL,
+                })],
+            }),
+            primitive: wgpu::PrimitiveState {
+                topology: wgpu::PrimitiveTopology::TriangleList,
+                strip_index_format: None,
+                front_face: wgpu::FrontFace::Ccw,
+                cull_mode: None,
+                unclipped_depth: false,
+                polygon_mode: wgpu::PolygonMode::Fill,
+                conservative: false,
+            },
+            depth_stencil: None,
+            multisample: wgpu::MultisampleState::default(),
+            multiview_mask: None,
+            cache: None,
+        });
+
         Self {
             device,
             queue,
@@ -649,8 +797,11 @@ impl GpuComputeDriver {
             queue_buffer,
             visible_instances_buf,
             cull_output_buf,
+            dart_instances_buf,
+            dart_template_buf,
             sim_params_buf,
             soil_params_buf,
+            view_uniform_buf,
             staging_telemetry,
             staging_agent_states,
             staging_genomes,
@@ -668,6 +819,7 @@ impl GpuComputeDriver {
             spatial_query_pipeline,
             cull_clear_pipeline,
             cull_pipeline,
+            dart_render_pipeline,
             soil_bind_group,
             morton_bind_group,
             lbvh_bind_group,
@@ -676,6 +828,7 @@ impl GpuComputeDriver {
             birth_group0,
             birth_group1,
             spatial_query_bind_group,
+            dart_render_bind_group,
             max_agents,
             soil_cols,
             soil_rows,
@@ -1042,5 +1195,77 @@ impl GpuComputeDriver {
         };
         self.staging_visible_instances.unmap();
         result
+    }
+
+    pub fn render_darts_instanced(
+        &self,
+        target_view: &wgpu::TextureView,
+        params: &GpuSimParams,
+        visible_count: u32,
+    ) {
+        if visible_count == 0 {
+            return;
+        }
+
+        // Update view uniform with orthographic projection
+        let left = params.camera_pos[0] - params.camera_size[0] * 0.5;
+        let right = params.camera_pos[0] + params.camera_size[0] * 0.5;
+        let top = params.camera_pos[1] - params.camera_size[1] * 0.5;
+        let bottom = params.camera_pos[1] + params.camera_size[1] * 0.5;
+
+        let sx = 2.0 / (right - left);
+        let sy = 2.0 / (bottom - top);
+        let tx = -(right + left) / (right - left);
+        let ty = -(bottom + top) / (bottom - top);
+
+        let mut view_proj = [0.0f32; 16];
+        view_proj[0] = sx;
+        view_proj[5] = sy;
+        view_proj[10] = 0.5;
+        view_proj[12] = tx;
+        view_proj[13] = ty;
+        view_proj[15] = 1.0;
+
+        let vu = ViewUniform {
+            view_proj,
+            world_size: params.world_size,
+            _pad: [0.0; 2],
+        };
+        self.queue.write_buffer(&self.view_uniform_buf, 0, bytemuck::bytes_of(&vu));
+
+        let mut encoder = self.device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
+            label: Some("dart_render_encoder"),
+        });
+
+        {
+            let mut rpass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+                label: Some("dart_render_pass"),
+                color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                    view: target_view,
+                    resolve_target: None,
+                    depth_slice: None,
+                    ops: wgpu::Operations {
+                        load: wgpu::LoadOp::Load,
+                        store: wgpu::StoreOp::Store,
+                    },
+                })],
+                depth_stencil_attachment: None,
+                timestamp_writes: None,
+                occlusion_query_set: None,
+                multiview_mask: None,
+            });
+
+            rpass.set_pipeline(&self.dart_render_pipeline);
+            rpass.set_bind_group(0, &self.dart_render_bind_group, &[]);
+            rpass.set_vertex_buffer(0, self.dart_template_buf.slice(..));
+            rpass.set_vertex_buffer(1, self.dart_instances_buf.slice(..));
+            rpass.draw(0..12, 0..visible_count);
+        }
+
+        self.queue.submit([encoder.finish()]);
+    }
+
+    pub fn dart_template_vertex_count(&self) -> u32 {
+        12
     }
 }
