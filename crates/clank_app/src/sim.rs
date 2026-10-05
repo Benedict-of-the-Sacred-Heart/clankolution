@@ -115,6 +115,7 @@ pub fn sim_step_system(
 
                     let read_count = (states.len() + 512).min(driver.max_agents as usize).min(sim.world.max_cap);
                     let updated_states = driver.readback_agent_states(read_count);
+                    let updated_genomes = driver.readback_agent_genomes(read_count);
                     let updated_atomics = driver.readback_atomics(read_count);
                     let updated_soil = driver.readback_soil();
                     let mut updated_params = params;
@@ -125,7 +126,7 @@ pub fn sim_step_system(
 
                     crate::gpu::bridge::sync_gpu_to_rust(
                         &updated_states,
-                        &genomes,
+                        &updated_genomes,
                         &updated_atomics,
                         &updated_soil,
                         &updated_params,

@@ -32,6 +32,7 @@ pub struct GpuComputeDriver {
     // Staging Buffers for readbacks
     pub staging_telemetry: wgpu::Buffer,
     pub staging_agent_states: wgpu::Buffer,
+    pub staging_genomes: wgpu::Buffer,
     pub staging_soil: wgpu::Buffer,
     pub staging_atomics: wgpu::Buffer,
 
@@ -216,6 +217,13 @@ impl GpuComputeDriver {
         let staging_agent_states = device.create_buffer(&wgpu::BufferDescriptor {
             label: Some("staging_agent_states"),
             size: agent_states_size,
+            usage: BufferUsages::MAP_READ | BufferUsages::COPY_DST,
+            mapped_at_creation: false,
+        });
+
+        let staging_genomes = device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("staging_genomes"),
+            size: agent_genomes_size,
             usage: BufferUsages::MAP_READ | BufferUsages::COPY_DST,
             mapped_at_creation: false,
         });
@@ -542,6 +550,7 @@ impl GpuComputeDriver {
             soil_params_buf,
             staging_telemetry,
             staging_agent_states,
+            staging_genomes,
             staging_soil,
             staging_atomics,
             soil_pipeline,
@@ -747,6 +756,34 @@ impl GpuComputeDriver {
         self.staging_agent_states.unmap();
 
         states
+    }
+
+    pub fn readback_agent_genomes(&self, count: usize) -> Vec<GpuAgentGenome> {
+        let byte_len = (count * 352) as u64;
+        if byte_len == 0 {
+            return Vec::new();
+        }
+
+        let mut encoder = self.device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
+            label: Some("readback_genomes_encoder"),
+        });
+        encoder.copy_buffer_to_buffer(&self.agent_genomes_buf, 0, &self.staging_genomes, 0, byte_len);
+        self.queue.submit([encoder.finish()]);
+
+        let slice = self.staging_genomes.slice(0..byte_len);
+        let (sender, receiver) = std::sync::mpsc::channel();
+        slice.map_async(wgpu::MapMode::Read, move |res| {
+            let _ = sender.send(res);
+        });
+        self.device.poll(wgpu::PollType::wait_indefinitely()).unwrap();
+        receiver.recv().unwrap().unwrap();
+
+        let data = slice.get_mapped_range();
+        let genomes = bytemuck::cast_slice::<u8, GpuAgentGenome>(&data[0..byte_len as usize]).to_vec();
+        drop(data);
+        self.staging_genomes.unmap();
+
+        genomes
     }
 
     pub fn readback_soil(&self) -> Vec<GpuSoilCell> {

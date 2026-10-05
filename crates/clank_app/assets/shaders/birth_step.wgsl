@@ -128,6 +128,10 @@ fn wrap_coords(p: vec2f) -> vec2f {
 }
 
 fn mutate_gene_byte(val: i32, id: u32, stream: u32, tick: u32, mut_rate: f32) -> u32 {
+    let p_mut = pcg_float(id, stream + 500u, tick);
+    if (p_mut >= 0.11) {
+        return u32(val & 0xFF);
+    }
     let tri = pcg_triangular(id, stream, tick);
     let delta = i32(round(tri * 100.0 * mut_rate));
     let new_val = clamp(val + delta, -127, 127);
@@ -163,8 +167,13 @@ fn birth_main(@builtin(workgroup_id) wg_id: vec3u, @builtin(local_invocation_id)
     let child_idx = shared_child_slot;
     if (child_idx == 0xFFFFFFFFu || child_idx >= params.max_capacity) { return; } // Carrying capacity reached
 
-    // Parallel genome crossover & mutation across 88 words
+    // Parallel genome crossover & mutation across 88 words (exact 326 genes)
     for (var w = local_id.x; w < 88u; w += 32u) {
+        if (w >= 82u) {
+            agent_genomes[child_idx].packed_genes[w] = 0u;
+            continue;
+        }
+
         var word_a = agent_genomes[parent_a].packed_genes[w];
         var word_b = select(word_a, agent_genomes[parent_b].packed_genes[w], parent_b != 0xFFFFFFFFu);
         let p_cross = pcg_float(child_idx, w, params.tick);
@@ -176,23 +185,17 @@ fn birth_main(@builtin(workgroup_id) wg_id: vec3u, @builtin(local_invocation_id)
         let b2 = (i32(chosen << 8u) >> 24);
         let b3 = (i32(chosen) >> 24);
 
-        let m0 = mutate_gene_byte(b0, child_idx, w * 4u + 0u, params.tick, params.mut_rate);
-        let m1 = mutate_gene_byte(b1, child_idx, w * 4u + 1u, params.tick, params.mut_rate);
-        let m2 = mutate_gene_byte(b2, child_idx, w * 4u + 2u, params.tick, params.mut_rate);
-        let m3 = mutate_gene_byte(b3, child_idx, w * 4u + 3u, params.tick, params.mut_rate);
+        let g0 = w * 4u + 0u;
+        let g1 = w * 4u + 1u;
+        let g2 = w * 4u + 2u;
+        let g3 = w * 4u + 3u;
 
-        var mutated_word = m0 | (m1 << 8u) | (m2 << 16u) | (m3 << 24u);
+        let m0 = select(0u, mutate_gene_byte(b0, child_idx, g0, params.tick, params.mut_rate), g0 < 326u);
+        let m1 = select(0u, mutate_gene_byte(b1, child_idx, g1, params.tick, params.mut_rate), g1 < 326u);
+        let m2 = select(0u, mutate_gene_byte(b2, child_idx, g2, params.tick, params.mut_rate), g2 < 326u);
+        let m3 = select(0u, mutate_gene_byte(b3, child_idx, g3, params.tick, params.mut_rate), g3 < 326u);
 
-        // Mutate dummy clamped bytes in baseline
-        if (!ENABLE_EXPANDED_CORTEX) {
-            if (w < 70u && (w % 7u) == 6u) {
-                mutated_word = mutated_word & 0x0000FFFFu;
-            }
-            if (w >= 70u && ((w - 70u) % 3u) == 2u) {
-                mutated_word = mutated_word & 0x00FFFFFFu;
-            }
-        }
-        agent_genomes[child_idx].packed_genes[w] = mutated_word;
+        agent_genomes[child_idx].packed_genes[w] = m0 | (m1 << 8u) | (m2 << 16u) | (m3 << 24u);
     }
 
 

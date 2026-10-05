@@ -54,15 +54,6 @@ impl GpuSimBridge {
     }
 }
 
-/// Packs 4 signed i8 weights into a 32-bit word for GPU unpacked SIMD operations.
-#[inline]
-fn pack_weights(w: &[i8]) -> u32 {
-    let b0 = w.get(0).copied().unwrap_or(0) as u8 as u32;
-    let b1 = w.get(1).copied().unwrap_or(0) as u8 as u32;
-    let b2 = w.get(2).copied().unwrap_or(0) as u8 as u32;
-    let b3 = w.get(3).copied().unwrap_or(0) as u8 as u32;
-    b0 | (b1 << 8) | (b2 << 16) | (b3 << 24)
-}
 
 /// Transfers CPU Bevy SimWorld state to GPU compute storage buffers.
 pub fn sync_rust_to_gpu(
@@ -141,37 +132,12 @@ pub fn sync_rust_to_gpu(
         };
         states.push(state);
 
-        // Pack 88 words
-        let mut packed_genes = [0u32; 88];
-        let mut gene_idx = 0;
-        // 10 hidden neurons * 7 words
-        for h in 0..10 {
-            for w in 0..7 {
-                let slice = if gene_idx + 4 <= a.genes.len() {
-                    &a.genes[gene_idx..gene_idx + 4]
-                } else if gene_idx < a.genes.len() {
-                    &a.genes[gene_idx..]
-                } else {
-                    &[]
-                };
-                packed_genes[h * 7 + w] = pack_weights(slice);
-                gene_idx += 4;
-            }
+        // Pack exact 326 bytes into 88 words (352 bytes)
+        let mut bytes = [0u8; 352];
+        for (k, g) in a.genes.iter().enumerate() {
+            bytes[k] = *g as u8;
         }
-        // 6 output neurons * 3 words
-        for o in 0..6 {
-            for w in 0..3 {
-                let slice = if gene_idx + 4 <= a.genes.len() {
-                    &a.genes[gene_idx..gene_idx + 4]
-                } else if gene_idx < a.genes.len() {
-                    &a.genes[gene_idx..]
-                } else {
-                    &[]
-                };
-                packed_genes[70 + o * 3 + w] = pack_weights(slice);
-                gene_idx += 4;
-            }
-        }
+        let packed_genes: [u32; 88] = bytemuck::cast(bytes);
         genomes.push(GpuAgentGenome { packed_genes });
 
         atomics.push(GpuAgentAtomic {
@@ -224,7 +190,7 @@ pub fn sync_rust_to_gpu(
 /// Reads back GPU compute storage buffers into CPU Bevy SimWorld state.
 pub fn sync_gpu_to_rust(
     states: &[GpuAgentState],
-    _genomes: &[GpuAgentGenome],
+    genomes: &[GpuAgentGenome],
     atomics: &[GpuAgentAtomic],
     soil: &[GpuSoilCell],
     params: &GpuSimParams,
@@ -285,6 +251,13 @@ pub fn sync_gpu_to_rust(
 
         for (k, val) in state.hidden.iter().enumerate() {
             a.h[k] = *val;
+        }
+
+        if let Some(genome) = genomes.get(i) {
+            let bytes: [u8; 352] = bytemuck::cast(genome.packed_genes);
+            for k in 0..a.genes.len() {
+                a.genes[k] = bytes[k] as i8;
+            }
         }
 
         let meta = state.meta_flags;
