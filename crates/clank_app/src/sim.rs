@@ -118,6 +118,14 @@ pub fn sim_step_system(
 
     match sim.active_engine {
         ActiveEngine::Rust => {
+            if let Some(ref mut gpu) = gpu_res {
+                if let Some(ref driver) = gpu.driver {
+                    if driver.is_initialized() {
+                        flush_gpu_to_rust(&mut sim, driver);
+                        driver.set_initialized(false);
+                    }
+                }
+            }
             sim.step(steps);
         }
         ActiveEngine::Gpu => {
@@ -172,6 +180,21 @@ pub fn sim_step_system(
                     if telemetry.selected_agent_idx != 0xFFFFFFFF {
                         sim.selected_agent_id = Some(telemetry.selected_agent_id);
                     }
+
+                    // Spore replenishment if population collapses in GPU mode
+                    if telemetry.population < 15 && sim.world.tick % 45 == 0 {
+                        let n = (15 - telemetry.population).min(15) as usize;
+                        let mut spore_positions = Vec::with_capacity(n);
+                        let w = sim.world.w;
+                        let h = sim.world.h;
+                        for _ in 0..n {
+                            let x = sim.world.prng.rand(0.0, w) as f32;
+                            let y = sim.world.prng.rand(0.0, h) as f32;
+                            spore_positions.push((x, y));
+                        }
+                        driver.seed_spores_gpu(&spore_positions);
+                    }
+
                     return;
                 }
             }

@@ -60,6 +60,7 @@ pub struct GpuComputeDriver {
     pub staging_atomics: wgpu::Buffer,
     pub staging_cull_buf: wgpu::Buffer,
     pub staging_visible_instances: wgpu::Buffer,
+    pub staging_freelist: wgpu::Buffer,
 
     // Pipelines
     pub soil_pipeline: wgpu::ComputePipeline,
@@ -89,6 +90,8 @@ pub struct GpuComputeDriver {
     pub soil_cols: u32,
     pub soil_rows: u32,
     pub initialized: std::sync::atomic::AtomicBool,
+    pub next_spore_id: std::sync::atomic::AtomicU32,
+    pub next_spore_root: std::sync::atomic::AtomicU32,
 }
 
 impl GpuComputeDriver {
@@ -214,7 +217,7 @@ impl GpuComputeDriver {
         let freelist_buf = device.create_buffer(&wgpu::BufferDescriptor {
             label: Some("freelist_buf"),
             size: freelist_size,
-            usage: BufferUsages::STORAGE | BufferUsages::COPY_DST,
+            usage: BufferUsages::STORAGE | BufferUsages::COPY_SRC | BufferUsages::COPY_DST,
             mapped_at_creation: false,
         });
 
@@ -282,6 +285,13 @@ impl GpuComputeDriver {
         let staging_atomics = device.create_buffer(&wgpu::BufferDescriptor {
             label: Some("staging_atomics"),
             size: agent_atomics_size,
+            usage: BufferUsages::MAP_READ | BufferUsages::COPY_DST,
+            mapped_at_creation: false,
+        });
+
+        let staging_freelist = device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("staging_freelist"),
+            size: freelist_size,
             usage: BufferUsages::MAP_READ | BufferUsages::COPY_DST,
             mapped_at_creation: false,
         });
@@ -825,6 +835,7 @@ impl GpuComputeDriver {
             staging_atomics,
             staging_cull_buf,
             staging_visible_instances,
+            staging_freelist,
             soil_pipeline,
             morton_clear_pipeline,
             morton_encode_pipeline,
@@ -849,6 +860,8 @@ impl GpuComputeDriver {
             soil_cols,
             soil_rows,
             initialized: std::sync::atomic::AtomicBool::new(false),
+            next_spore_id: std::sync::atomic::AtomicU32::new(10000),
+            next_spore_root: std::sync::atomic::AtomicU32::new(0),
         }
     }
 
@@ -1360,5 +1373,115 @@ impl GpuComputeDriver {
 
     pub fn dart_template_vertex_count(&self) -> u32 {
         12
+    }
+
+    pub fn seed_spores_gpu(&self, spores: &[(f32, f32)]) -> Vec<u32> {
+        if spores.is_empty() {
+            return Vec::new();
+        }
+
+        // 1. Read back current telemetry to check available freelist slots
+        let telem = self.readback_telemetry();
+        let cur_freelist_top = telem.freelist_top;
+        if cur_freelist_top == 0 {
+            return Vec::new();
+        }
+
+        let count = spores.len().min(cur_freelist_top as usize);
+        if count == 0 {
+            return Vec::new();
+        }
+
+        // 2. Read back top `count` slots from freelist_buf
+        let start_slot = cur_freelist_top - count as u32;
+        let start_byte = (start_slot as u64) * 4;
+        let byte_len = (count as u64) * 4;
+
+        let mut encoder = self.device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
+            label: Some("readback_freelist_slots_encoder"),
+        });
+        encoder.copy_buffer_to_buffer(&self.freelist_buf, start_byte, &self.staging_freelist, 0, byte_len);
+        self.queue.submit([encoder.finish()]);
+
+        let slice = self.staging_freelist.slice(0..byte_len);
+        let (sender, receiver) = std::sync::mpsc::channel();
+        slice.map_async(wgpu::MapMode::Read, move |res| {
+            let _ = sender.send(res);
+        });
+        self.device.poll(wgpu::PollType::wait_indefinitely()).unwrap();
+        receiver.recv().unwrap().unwrap();
+
+        let data = slice.get_mapped_range();
+        let slots: Vec<u32> = bytemuck::cast_slice::<u8, u32>(&data[0..byte_len as usize]).to_vec();
+        drop(data);
+        self.staging_freelist.unmap();
+
+        let world_w = (self.soil_cols as f32) * 12.0;
+        let world_h = (self.soil_rows as f32) * 12.0;
+
+        // 3. For each slot, initialize spore agent directly in GPU VRAM
+        for (i, &slot) in slots.iter().enumerate() {
+            let (x, y) = spores[i];
+            let id = self.next_spore_id.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            let root = (self.next_spore_root.fetch_add(1, std::sync::atomic::Ordering::Relaxed) % 16) as u32;
+            let energy = 43.0f32;
+            let angle = ((i as f32) * 1.6180339) % (2.0 * std::f32::consts::PI);
+
+            let pal_color = crate::theme::PALETTE[(root as usize) % crate::theme::PALETTE.len()];
+            let packed_color = (pal_color.r() as u32)
+                | ((pal_color.g() as u32) << 8)
+                | ((pal_color.b() as u32) << 16)
+                | (0xFF << 24);
+
+            let r_u8 = 128u32; // tr[0] = 0.5
+            let e_u8 = ((energy / 100.0).clamp(0.0, 1.0) * 255.0) as u32;
+            let visual_cache = r_u8 | (e_u8 << 16);
+
+            let morton = crate::gpu::spatial_index::compute_morton_32_with_size(
+                [x, y],
+                [world_w, world_h],
+            );
+
+            let state = GpuAgentState {
+                pos_vel: [x, y, 0.0, 0.0],
+                angle_energy: [angle, energy, 0.0, 0.0],
+                traits: [0.5, 0.5, 0.5, 0.5, 0.5, 0.5, 0.0, 0.0],
+                hidden: [0.0; 10],
+                id,
+                meta_flags: root, // living: bit 13 is 0
+                age_gen: 0,
+                morton_code: morton,
+                packed_color,
+                visual_cache,
+            };
+
+            // Spore genome with pseudo-random weights
+            let mut packed_genes = [0u32; 88];
+            for g in 0..88 {
+                let w0 = (((i * 73 + g * 31) % 116) as i32 - 58) as i8 as u8;
+                let w1 = (((i * 97 + g * 47) % 116) as i32 - 58) as i8 as u8;
+                let w2 = (((i * 113 + g * 59) % 116) as i32 - 58) as i8 as u8;
+                let w3 = (((i * 127 + g * 71) % 116) as i32 - 58) as i8 as u8;
+                packed_genes[g] = (w0 as u32) | ((w1 as u32) << 8) | ((w2 as u32) << 16) | ((w3 as u32) << 24);
+            }
+            let genome = GpuAgentGenome { packed_genes };
+
+            let atomic = GpuAgentAtomic {
+                energy_milli: (energy * 1000.0) as i32,
+                mate_claim: 0,
+                mate_energy_milli: 0,
+                dead_claimed: 0,
+            };
+
+            self.queue.write_buffer(&self.agent_states_buf, (slot as u64) * 128, bytemuck::bytes_of(&state));
+            self.queue.write_buffer(&self.agent_genomes_buf, (slot as u64) * 352, bytemuck::bytes_of(&genome));
+            self.queue.write_buffer(&self.agent_atomics_buf, (slot as u64) * 16, bytemuck::bytes_of(&atomic));
+        }
+
+        // 4. Update freelist_top in queue_buffer
+        let new_freelist_top = start_slot;
+        self.queue.write_buffer(&self.queue_buffer, 28, bytemuck::bytes_of(&new_freelist_top));
+
+        slots
     }
 }

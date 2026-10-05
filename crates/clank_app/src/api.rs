@@ -542,6 +542,7 @@ pub fn api_dispatch_system(
     rx_res: Option<Res<ApiReceiverResource>>,
     mut sim_res: Option<ResMut<SimWorld>>,
     mut ui_res: Option<ResMut<UiState>>,
+    mut gpu_res: Option<ResMut<crate::sim::GpuDriverResource>>,
 ) {
     let Some(rx_res) = rx_res else { return; };
     let rx = match rx_res.0.lock() {
@@ -694,6 +695,11 @@ pub fn api_dispatch_system(
             }
             ApiCommand::Reset { seed } => {
                 if let Some(ref mut sim) = sim_res {
+                    if let Some(ref mut gpu) = gpu_res {
+                        if let Some(ref d) = gpu.driver {
+                            d.set_initialized(false);
+                        }
+                    }
                     sim.world = clank_core::world::World::new(seed as u32);
                     sim.selected_agent_id = None;
                     if let Some(ref mut ui) = ui_res {
@@ -702,7 +708,16 @@ pub fn api_dispatch_system(
                 }
             }
             ApiCommand::PersistSave { path, response_tx } => {
-                if let Some(ref sim) = sim_res {
+                if let Some(ref mut sim) = sim_res {
+                    if sim.active_engine == crate::sim::ActiveEngine::Gpu {
+                        if let Some(ref gpu) = gpu_res {
+                            if let Some(ref driver) = gpu.driver {
+                                if driver.is_initialized() {
+                                    crate::sim::flush_gpu_to_rust(sim, driver);
+                                }
+                            }
+                        }
+                    }
                     let res = save_clank_file(sim, &path).map_err(|e| e.to_string());
                     let _ = response_tx.send(res);
                 } else {
@@ -713,6 +728,11 @@ pub fn api_dispatch_system(
                 if let Some(ref mut sim) = sim_res {
                     let res = load_clank_file(sim, &path).map_err(|e| e.to_string());
                     if res.is_ok() {
+                        if let Some(ref mut gpu) = gpu_res {
+                            if let Some(ref d) = gpu.driver {
+                                d.set_initialized(false);
+                            }
+                        }
                         if let Some(ref mut ui) = ui_res {
                             ui.add_chronicle(format!("{:05}  A world returns from its .clank record.", sim.world.tick));
                         }
