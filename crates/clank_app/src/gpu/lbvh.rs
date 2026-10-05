@@ -286,6 +286,9 @@ impl LbvhTree {
         stack.push(self.root_index());
 
         while let Some(node_idx) = stack.pop() {
+            if (node_idx as usize) >= self.nodes.len() {
+                continue;
+            }
             let node = &self.nodes[node_idx as usize];
             let box_dist = distance_to_aabb(cursor, node.aabb_min, node.aabb_max);
             if box_dist > search_r {
@@ -341,6 +344,9 @@ impl LbvhTree {
         stack.push(0u32);
 
         while let Some(node_idx) = stack.pop() {
+            if (node_idx as usize) >= self.nodes.len() {
+                continue;
+            }
             let node = &self.nodes[node_idx as usize];
             let box_dist = distance_to_aabb(tool_pos, node.aabb_min, node.aabb_max);
             if box_dist > tool_radius {
@@ -439,6 +445,9 @@ impl LbvhTree {
         stack.push((self.root_index(), 0usize)); // (node_idx, current_depth)
 
         while let Some((node_idx, depth)) = stack.pop() {
+            if (node_idx as usize) >= self.nodes.len() {
+                continue;
+            }
             let node = &self.nodes[node_idx as usize];
             if depth == target_depth || node.leaf_idx != 0xFFFFFFFF {
                 if node.count > 0 {
