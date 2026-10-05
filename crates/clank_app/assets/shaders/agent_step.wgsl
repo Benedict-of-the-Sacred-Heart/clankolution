@@ -13,18 +13,26 @@ struct GpuSimParams {
     tick: u32,
     agent_count: u32,
     max_agents: u32,
+    max_capacity: u32,
+
     hostility: f32,
     mut_rate: f32,
     speed: f32,
     renewal: f32,
+
     sub_tick: u32,
     sub_ticks_per_frame: u32,
     tool_type: u32,
+    _pad0: u32,
+
     tool_pos: vec2f,
     camera_pos: vec2f,
+
     camera_size: vec2f,
     world_size: vec2f,
+
     soil_grid: vec2u,
+    _pad1: vec2u,
 }
 
 struct GpuAgentState {
@@ -423,40 +431,34 @@ fn agent_main(@builtin(global_invocation_id) id: vec3u) {
         }
     }
 
-    // Sexual Selection Mating Proposal (Symmetry Breaking: partner ID > my ID)
-    var sexual_success = false;
-    var mate_partner = 0xFFFFFFFFu;
-    if (best_neighbor != 0xFFFFFFFFu && best_dist < contact_dist && a_energy > 80.0 && a_cooldown == 0u && a_birth == 0u) {
-        let partner_idx = best_neighbor;
-        if (ENABLE_SEXUAL_SELECTION) {
-            let my_energy_milli = u32(max(0.0, a_energy) * 1000.0);
-            let prev_bid = atomicMax(&agent_atomics[partner_idx].mate_energy_milli, my_energy_milli);
-            if (my_energy_milli > prev_bid) {
+    // Reproduction (sexual crossover if viable partner nearby, otherwise asexual)
+    // HTML: a.energy > 58 + 12 * tr0 && a.age > 65 && a.birth === 0 && o[5] > -0.15 && agents.length < CAP
+    let can_reproduce = (params.agent_count < params.max_capacity)
+        && (out[5] > -0.15)
+        && (a_energy > (58.0 + 12.0 * tr0))
+        && (a_age > 65u)
+        && (a_birth == 0u);
+
+    if (can_reproduce) {
+        var mate_partner = 0xFFFFFFFFu;
+        if (best_neighbor != 0xFFFFFFFFu && best_dist < 18.0) {
+            let partner_idx = best_neighbor;
+            let partner_energy = agent_states[partner_idx].angle_energy[1];
+            let partner_root = agent_states[partner_idx].meta_flags & 0x0Fu;
+            let p_mate = pcg_float(agent_idx, 99u, params.tick);
+            if (partner_energy > 42.0 && partner_root != a_root && p_mate < 0.15) {
                 let claim = atomicCompareExchangeWeak(&agent_atomics[partner_idx].mate_claim, 0u, agent_idx + 1u);
                 if (claim.exchanged) {
                     mate_partner = partner_idx;
-                    sexual_success = true;
-                }
-            }
-        } else {
-            if (agent_states[partner_idx].id > agent_states[agent_idx].id) {
-                let claim = atomicCompareExchangeWeak(&agent_atomics[partner_idx].mate_claim, 0u, agent_idx + 1u);
-                if (claim.exchanged) {
-                    mate_partner = partner_idx;
-                    sexual_success = true;
                 }
             }
         }
-    }
 
-    // Reproduction: sexual success OR asexual budding
-    let can_reproduce = sexual_success || (a_energy > (58.0 + 12.0 * tr0) && a_age > 65u && a_cooldown == 0u && a_birth == 0u);
-    if (can_reproduce) {
         let queue_idx = atomicAdd(&queue_buffer.telemetry.birth_count, 1u);
         if (queue_idx < 65536u) {
             atomicSub(&agent_atomics[agent_idx].energy_milli, 24000);
             a_energy = max(0.0, a_energy - 24.0);
-            if (sexual_success && mate_partner != 0xFFFFFFFFu) {
+            if (mate_partner != 0xFFFFFFFFu) {
                 atomicSub(&agent_atomics[mate_partner].energy_milli, 6000);
             }
             a_birth = 95u;

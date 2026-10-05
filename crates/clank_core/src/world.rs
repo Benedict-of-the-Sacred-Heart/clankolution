@@ -111,6 +111,11 @@ impl World {
 
     pub fn set_max_capacity(&mut self, cap: u32) {
         self.max_cap = (cap as usize).clamp(15, 10_000);
+        if self.agents.len() > self.max_cap {
+            self.agents.truncate(self.max_cap);
+            self.pos_x.truncate(self.max_cap);
+            self.pos_y.truncate(self.max_cap);
+        }
         self.agents.reserve(self.max_cap);
         self.pos_x.reserve(self.max_cap);
         self.pos_y.reserve(self.max_cap);
@@ -323,12 +328,16 @@ impl World {
     }
 
     pub fn seed_life_at(&mut self, x: f64, y: f64) {
-        let living_count = self.agents.iter().filter(|a| a.dead == 0).count();
+        let mut living_count = self.agents.iter().filter(|a| a.dead == 0).count();
         if living_count < self.max_cap {
             for _ in 0..2 {
+                if living_count >= self.max_cap {
+                    break;
+                }
                 let jx = self.prng.rand(-11.0, 11.0);
                 let jy = self.prng.rand(-11.0, 11.0);
                 self.create_agent(x + jx, y + jy, None, None);
+                living_count += 1;
             }
             self.spark_prng(5);
             if self.spark_events.len() < 512 {

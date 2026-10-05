@@ -604,12 +604,15 @@ impl GpuComputeDriver {
         }
         self.queue.write_buffer(&self.sim_params_buf, 0, bytemuck::bytes_of(params));
 
-        // Initialize tombstone freelist with all dead/unused slots (lowest slots on top of stack)
-        let mut free_slots: Vec<u32> = Vec::with_capacity(self.max_agents as usize);
-        for i in (states.len()..self.max_agents as usize).rev() {
-            free_slots.push(i as u32);
+        // Initialize tombstone freelist strictly up to params.max_capacity (lowest slots on top of stack)
+        let cap = (params.max_capacity as usize).min(self.max_agents as usize);
+        let mut free_slots: Vec<u32> = Vec::with_capacity(cap);
+        if cap > states.len() {
+            for i in (states.len()..cap).rev() {
+                free_slots.push(i as u32);
+            }
         }
-        for (i, s) in states.iter().enumerate().rev() {
+        for (i, s) in states.iter().take(cap).enumerate().rev() {
             if (s.meta_flags & (1 << 13)) != 0 {
                 free_slots.push(i as u32);
             }

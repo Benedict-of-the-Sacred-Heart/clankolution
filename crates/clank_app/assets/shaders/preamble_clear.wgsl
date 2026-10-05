@@ -8,18 +8,26 @@ struct GpuSimParams {
     tick: u32,
     agent_count: u32,
     max_agents: u32,
+    max_capacity: u32,
+
     hostility: f32,
     mut_rate: f32,
     speed: f32,
     renewal: f32,
+
     sub_tick: u32,
     sub_ticks_per_frame: u32,
     tool_type: u32,
+    _pad0: u32,
+
     tool_pos: vec2f,
     camera_pos: vec2f,
+
     camera_size: vec2f,
     world_size: vec2f,
+
     soil_grid: vec2u,
+    _pad1: vec2u,
 }
 
 struct GpuAgentAtomic {

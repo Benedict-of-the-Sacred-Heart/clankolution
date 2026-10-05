@@ -200,7 +200,8 @@ pub fn sync_rust_to_gpu(
     let params = GpuSimParams {
         tick: sim.world.tick,
         agent_count: living_count,
-        max_agents: sim.world.agents.len() as u32,
+        max_agents: states.len() as u32,
+        max_capacity: sim.world.max_cap as u32,
         hostility: (sim.world.hostility / 100.0) as f32,
         mut_rate: (sim.world.mutation / 100.0) as f32,
         speed: sim.speed as f32,
@@ -208,11 +209,13 @@ pub fn sync_rust_to_gpu(
         sub_tick: 0,
         sub_ticks_per_frame: 1,
         tool_type: 0xFFFFFFFF,
+        _pad0: 0,
         tool_pos: [0.0, 0.0],
         camera_pos: [(sim.world_width * 0.5) as f32, (sim.world_height * 0.5) as f32],
         camera_size: [sim.world_width as f32, sim.world_height as f32],
         world_size: [sim.world_width as f32, sim.world_height as f32],
         soil_grid: [sim.world.soil.cols as u32, sim.world.soil.rows as u32],
+        _pad1: [0, 0],
     };
 
     (states, genomes, atomics, soil, params)
@@ -250,6 +253,9 @@ pub fn sync_gpu_to_rust(
             &mut sim.world.agents[i]
         } else {
             if is_dead {
+                continue;
+            }
+            if sim.world.agents.iter().filter(|ag| ag.dead == 0).count() >= sim.world.max_cap {
                 continue;
             }
             sim.world.agents.push(AgentData::default());
@@ -294,6 +300,9 @@ pub fn sync_gpu_to_rust(
 
     // Filter dead agents in-place (matching CPU World::evolve stable compaction)
     sim.world.agents.retain(|a| a.dead == 0 && a.id != 0);
+    if sim.world.agents.len() > sim.world.max_cap {
+        sim.world.agents.truncate(sim.world.max_cap);
+    }
     sim.world.sync_pos_cache();
 
     // Synchronize soil

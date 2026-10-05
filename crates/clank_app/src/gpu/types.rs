@@ -40,30 +40,35 @@ pub struct GpuAgentAtomic {
 #[repr(C, align(16))]
 #[derive(Clone, Copy, Debug, PartialEq, Default, bytemuck::Pod, bytemuck::Zeroable)]
 pub struct GpuSimParams {
-    // Simulation Physics & Rates (16B)
+    // Chunk 0: Simulation Physics & Capacity Bounds (16B)
     pub tick: u32,                  // 4 bytes  (0..4)
     pub agent_count: u32,           // 4 bytes  (4..8)
     pub max_agents: u32,            // 4 bytes  (8..12)
-    pub hostility: f32,             // 4 bytes  (12..16) -> Total 16B
+    pub max_capacity: u32,          // 4 bytes  (12..16)
 
-    // Environmental Chemistry & Pacing (16B)
-    pub mut_rate: f32,              // 4 bytes  (16..20)
-    pub speed: f32,                 // 4 bytes  (20..24)
-    pub renewal: f32,               // 4 bytes  (24..28)
-    pub sub_tick: u32,              // 4 bytes  (28..32)
+    // Chunk 1: Environmental Chemistry & Rates (16B)
+    pub hostility: f32,             // 4 bytes  (16..20)
+    pub mut_rate: f32,              // 4 bytes  (20..24)
+    pub speed: f32,                 // 4 bytes  (24..28)
+    pub renewal: f32,               // 4 bytes  (28..32)
 
-    // Multi-Tick Batching & Interactive Tools (16B)
-    pub sub_ticks_per_frame: u32,   // 4 bytes  (32..36)
-    pub tool_type: u32,             // 4 bytes  (36..40) - 0xFFFFFFFF = none, 0 = inspect/pick, 1..5 = AoE tools
-    pub tool_pos: [f32; 2],         // 8 bytes  (40..48)
+    // Chunk 2: Multi-Tick Batching & Interactive Tools (16B)
+    pub sub_tick: u32,              // 4 bytes  (32..36)
+    pub sub_ticks_per_frame: u32,   // 4 bytes  (36..40)
+    pub tool_type: u32,             // 4 bytes  (40..44)
+    pub _pad0: u32,                 // 4 bytes  (44..48)
 
-    // Camera Viewport (16B)
-    pub camera_pos: [f32; 2],       // 8 bytes  (48..56)
-    pub camera_size: [f32; 2],      // 8 bytes  (56..64)
+    // Chunk 3: Tool & Camera Positions (16B)
+    pub tool_pos: [f32; 2],         // 8 bytes  (48..56)
+    pub camera_pos: [f32; 2],       // 8 bytes  (56..64)
 
-    // World Arena Bounds & Soil Layout (16B)
-    pub world_size: [f32; 2],       // 8 bytes  (64..72)
-    pub soil_grid: [u32; 2],        // 8 bytes  (72..80) -> cols, rows
+    // Chunk 4: Camera Viewport & Arena Bounds (16B)
+    pub camera_size: [f32; 2],      // 8 bytes  (64..72)
+    pub world_size: [f32; 2],       // 8 bytes  (72..80)
+
+    // Chunk 5: Soil Grid & Alignment Padding (16B)
+    pub soil_grid: [u32; 2],        // 8 bytes  (80..88)
+    pub _pad1: [u32; 2],            // 8 bytes  (88..96)
 }
 
 #[repr(C, align(16))]
