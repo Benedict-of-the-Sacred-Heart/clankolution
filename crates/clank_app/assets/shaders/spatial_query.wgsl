@@ -15,6 +15,8 @@ struct GpuSimParams {
     tool_pos: vec2f,
     camera_pos: vec2f,
     camera_size: vec2f,
+    world_size: vec2f,
+    soil_grid: vec2u,
 }
 
 struct GpuLbvhNode {
@@ -92,24 +94,25 @@ fn toroidal_aabb_dist_1d(p: f32, b_min: f32, b_max: f32, w: f32) -> f32 {
 }
 
 fn distance_to_aabb(pos: vec2f, aabb_min: vec2f, aabb_max: vec2f) -> f32 {
-    let dx = toroidal_aabb_dist_1d(pos.x, aabb_min.x, aabb_max.x, 900.0);
-    let dy = toroidal_aabb_dist_1d(pos.y, aabb_min.y, aabb_max.y, 600.0);
+    let dx = toroidal_aabb_dist_1d(pos.x, aabb_min.x, aabb_max.x, params.world_size.x);
+    let dy = toroidal_aabb_dist_1d(pos.y, aabb_min.y, aabb_max.y, params.world_size.y);
     return sqrt(dx * dx + dy * dy);
 }
 
 fn toroidal_dist(p1: vec2f, p2: vec2f) -> f32 {
     let dx = abs(p1.x - p2.x);
-    let x_dist = min(dx, 900.0 - dx);
+    let x_dist = min(dx, params.world_size.x - dx);
     let dy = abs(p1.y - p2.y);
-    let y_dist = min(dy, 600.0 - dy);
+    let y_dist = min(dy, params.world_size.y - dy);
     return sqrt(x_dist * x_dist + y_dist * y_dist);
 }
 
 @compute @workgroup_size(64)
 fn spatial_query_main(@builtin(global_invocation_id) id: vec3u) {
+    let w = params.world_size;
     let tool_pos = vec2f(
-        params.tool_pos[0] - 900.0 * floor(params.tool_pos[0] / 900.0),
-        params.tool_pos[1] - 600.0 * floor(params.tool_pos[1] / 600.0)
+        params.tool_pos[0] - w.x * floor(params.tool_pos[0] / w.x),
+        params.tool_pos[1] - w.y * floor(params.tool_pos[1] / w.y)
     );
 
     if (params.tool_type == 0u /* inspect/pick */) {
@@ -121,7 +124,7 @@ fn spatial_query_main(@builtin(global_invocation_id) id: vec3u) {
             return;
         }
 
-        var search_r = clamp(16.0 * (params.camera_size[0] / 900.0), 4.0, 24.0);
+        var search_r = clamp(16.0 * (params.camera_size[0] / params.world_size.x), 4.0, 24.0);
 
         if (params.agent_count == 1u) {
             let slot = lbvh_nodes[0].leaf_idx;

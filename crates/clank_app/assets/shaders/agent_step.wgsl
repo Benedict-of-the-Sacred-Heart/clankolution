@@ -23,6 +23,8 @@ struct GpuSimParams {
     tool_pos: vec2f,
     camera_pos: vec2f,
     camera_size: vec2f,
+    world_size: vec2f,
+    soil_grid: vec2u,
 }
 
 struct GpuAgentState {
@@ -109,7 +111,7 @@ struct ConsolidatedQueue {
 @group(0) @binding(0) var<storage, read_write> agent_states: array<GpuAgentState>;
 @group(0) @binding(1) var<storage, read> agent_genomes: array<GpuAgentGenome>;
 @group(0) @binding(2) var<storage, read_write> agent_atomics: array<GpuAgentAtomic>;
-@group(0) @binding(3) var<storage, read_write> soil_buffer: array<SoilCell, 3750>;
+@group(0) @binding(3) var<storage, read_write> soil_buffer: array<SoilCell>;
 @group(0) @binding(4) var<storage, read> spatial_keys: array<vec2u>;
 @group(0) @binding(5) var<storage, read> lbvh_nodes: array<GpuLbvhNode>;
 @group(0) @binding(6) var<storage, read_write> freelist: array<u32>;
@@ -121,13 +123,13 @@ struct ConsolidatedQueue {
 
 fn wrap_coords(p: vec2f) -> vec2f {
     return vec2f(
-        p.x - 900.0 * floor(p.x / 900.0),
-        p.y - 600.0 * floor(p.y / 600.0)
+        p.x - params.world_size.x * floor(p.x / params.world_size.x),
+        p.y - params.world_size.y * floor(p.y / params.world_size.y)
     );
 }
 
 fn sample_soil_probe(p: vec2f) -> vec4f {
-    let uv = p / vec2f(900.0, 600.0);
+    let uv = p / params.world_size;
     return textureSampleLevel(soil_data, soil_sampler, uv, 0.0);
 }
 
@@ -149,16 +151,16 @@ fn toroidal_aabb_dist_1d(p: f32, b_min: f32, b_max: f32, w: f32) -> f32 {
 }
 
 fn distance_to_aabb(pos: vec2f, aabb_min: vec2f, aabb_max: vec2f) -> f32 {
-    let dx = toroidal_aabb_dist_1d(pos.x, aabb_min.x, aabb_max.x, 900.0);
-    let dy = toroidal_aabb_dist_1d(pos.y, aabb_min.y, aabb_max.y, 600.0);
+    let dx = toroidal_aabb_dist_1d(pos.x, aabb_min.x, aabb_max.x, params.world_size.x);
+    let dy = toroidal_aabb_dist_1d(pos.y, aabb_min.y, aabb_max.y, params.world_size.y);
     return sqrt(dx * dx + dy * dy);
 }
 
 fn toroidal_dist(p1: vec2f, p2: vec2f) -> f32 {
     let dx = abs(p1.x - p2.x);
-    let x_dist = min(dx, 900.0 - dx);
+    let x_dist = min(dx, params.world_size.x - dx);
     let dy = abs(p1.y - p2.y);
-    let y_dist = min(dy, 600.0 - dy);
+    let y_dist = min(dy, params.world_size.y - dy);
     return sqrt(x_dist * x_dist + y_dist * y_dist);
 }
 
@@ -198,7 +200,7 @@ fn agent_main(@builtin(global_invocation_id) id: vec3u) {
     let a_root = m_flags & 0x0Fu;
     var a_cooldown = (m_flags >> 4u) & 0x03u;
     var a_birth = (m_flags >> 6u) & 0x7Fu;
-    let a_kills = (m_flags >> 14u) & 0x3FFFFu;
+    var a_kills = (m_flags >> 14u) & 0x3FFFFu;
 
     var a_age = agent_states[agent_idx].age_gen & 0xFFFFu;
     let a_gen = agent_states[agent_idx].age_gen >> 16u;
@@ -273,12 +275,12 @@ fn agent_main(@builtin(global_invocation_id) id: vec3u) {
         if (best_neighbor != 0xFFFFFFFFu) {
             let neighbor_pos = agent_states[best_neighbor].pos_vel.xy;
             var dx = neighbor_pos.x - pos.x;
-            if (dx > 450.0) { dx -= 900.0; }
-            else if (dx < -450.0) { dx += 900.0; }
+            if (dx > params.world_size.x * 0.5) { dx -= params.world_size.x; }
+            else if (dx < -params.world_size.x * 0.5) { dx += params.world_size.x; }
 
             var dy = neighbor_pos.y - pos.y;
-            if (dy > 300.0) { dy -= 600.0; }
-            else if (dy < -300.0) { dy += 600.0; }
+            if (dy > params.world_size.y * 0.5) { dy -= params.world_size.y; }
+            else if (dy < -params.world_size.y * 0.5) { dy += params.world_size.y; }
 
             let angle_to_neighbor = atan2(dy, dx);
             var bearing = angle_to_neighbor - angle;
@@ -346,11 +348,11 @@ fn agent_main(@builtin(global_invocation_id) id: vec3u) {
         let root_node = lbvh_nodes[0];
         let macro_center = root_node.center_of_mass;
         var m_dx = macro_center.x - pos.x;
-        if (m_dx > 450.0) { m_dx -= 900.0; }
-        else if (m_dx < -450.0) { m_dx += 900.0; }
+        if (m_dx > params.world_size.x * 0.5) { m_dx -= params.world_size.x; }
+        else if (m_dx < -params.world_size.x * 0.5) { m_dx += params.world_size.x; }
         var m_dy = macro_center.y - pos.y;
-        if (m_dy > 300.0) { m_dy -= 600.0; }
-        else if (m_dy < -300.0) { m_dy += 600.0; }
+        if (m_dy > params.world_size.y * 0.5) { m_dy -= params.world_size.y; }
+        else if (m_dy < -params.world_size.y * 0.5) { m_dy += params.world_size.y; }
         let m_dist = max(length(vec2f(m_dx, m_dy)), 1.0);
         let macro_force = vec2f(m_dx, m_dy) / m_dist * 0.03;
         new_vel = (vel + thrust_force + macro_force) * 0.88;
@@ -363,10 +365,13 @@ fn agent_main(@builtin(global_invocation_id) id: vec3u) {
 
 
     // Soil Grazing
-    let cx = min(u32(max(0.0, new_pos.x) / 12.0), 74u);
-    let cy = min(u32(max(0.0, new_pos.y) / 12.0), 49u);
-    let cell_idx = cy * 75u + cx;
-    let eaten_float = a_feed * min(here_food, 0.6) * (1.1 - 0.7 * tr5);
+    let cell_w = params.world_size.x / f32(params.soil_grid.x);
+    let cell_h = params.world_size.y / f32(params.soil_grid.y);
+    let cx = min(u32(max(0.0, new_pos.x) / cell_w), params.soil_grid.x - 1u);
+    let cy = min(u32(max(0.0, new_pos.y) / cell_h), params.soil_grid.y - 1u);
+    let cell_idx = cy * params.soil_grid.x + cx;
+    let intake_cap = (0.016 + 0.064 * a_feed) * (0.7 + tr4);
+    let eaten_float = min(intake_cap, max(0.0, here_food));
     let eaten_milli = i32(eaten_float * 1000.0);
     atomicSub(&soil_buffer[cell_idx].food_milli, eaten_milli);
     atomicAdd(&queue_buffer.telemetry.food_grazed_milli, u32(max(0, eaten_milli)));
@@ -381,24 +386,24 @@ fn agent_main(@builtin(global_invocation_id) id: vec3u) {
         let old_energy_milli = atomicSub(&agent_atomics[victim_idx].energy_milli, damage_milli);
 
         a_cooldown = 3u;
-        a_energy += damage * (0.1 + 0.55 * tr5);
+        let combat_gain = damage * (0.1 + 0.55 * tr5);
+        atomicAdd(&agent_atomics[agent_idx].energy_milli, i32(combat_gain * 1000.0));
 
         // Decisive killer attribution:
         if (old_energy_milli > 0 && old_energy_milli <= damage_milli) {
-            let cur_meta = agent_states[agent_idx].meta_flags;
-            let kills = (cur_meta >> 14u) + 1u;
-            agent_states[agent_idx].meta_flags = (cur_meta & 0x00003FFFu) | (kills << 14u);
+            a_kills += 1u;
             atomicAdd(&queue_buffer.telemetry.kills, 1u);
-            a_energy += min(9.0, 8.0 * tr5);
+            let kill_bonus = min(9.0, 8.0 * tr5);
+            atomicAdd(&agent_atomics[agent_idx].energy_milli, i32(kill_bonus * 1000.0));
 
             // Frustum-culled stochastic audio emission:
             let dx = abs(pos.x - params.camera_pos.x);
-            let dist_x = min(dx, 900.0 - dx);
+            let dist_x = min(dx, params.world_size.x - dx);
             let dy = abs(pos.y - params.camera_pos.y);
-            let dist_y = min(dy, 600.0 - dy);
+            let dist_y = min(dy, params.world_size.y - dy);
             let in_view = (dist_x <= params.camera_size.x * 0.5 && dist_y <= params.camera_size.y * 0.5);
             if (in_view) {
-                let zoom_factor = clamp(1.0 - (params.camera_size.x - 150.0) / (900.0 - 150.0), 0.0, 1.0);
+                let zoom_factor = clamp(1.0 - (params.camera_size.x - 150.0) / (params.world_size.x - 150.0), 0.0, 1.0);
                 let kill_volume = mix(0.08, 1.0, zoom_factor);
                 let density_filter = select(1u, 4u, params.agent_count > 10000u);
                 if (pcg_hash(agent_idx, victim_idx, params.tick) % density_filter == 0u) {
@@ -444,8 +449,8 @@ fn agent_main(@builtin(global_invocation_id) id: vec3u) {
         }
     }
 
-    // Reproduction: sexual success OR asexual budding when energy is high (> 120)
-    let can_reproduce = sexual_success || (a_energy > 120.0 && a_cooldown == 0u && a_birth == 0u);
+    // Reproduction: sexual success OR asexual budding
+    let can_reproduce = sexual_success || (a_energy > (58.0 + 12.0 * tr0) && a_age > 65u && a_cooldown == 0u && a_birth == 0u);
     if (can_reproduce) {
         let queue_idx = atomicAdd(&queue_buffer.telemetry.birth_count, 1u);
         if (queue_idx < 65536u) {
@@ -460,13 +465,13 @@ fn agent_main(@builtin(global_invocation_id) id: vec3u) {
 
             // Frustum-culled birth audio voice
             let dx = abs(pos.x - params.camera_pos.x);
-            let dist_x = min(dx, 900.0 - dx);
+            let dist_x = min(dx, params.world_size.x - dx);
             let dy = abs(pos.y - params.camera_pos.y);
-            let dist_y = min(dy, 600.0 - dy);
+            let dist_y = min(dy, params.world_size.y - dy);
             let in_view = (dist_x <= params.camera_size.x * 0.5 && dist_y <= params.camera_size.y * 0.5);
             if (in_view) {
-                let zoom_factor = clamp(1.0 - (params.camera_size.x - 150.0) / (900.0 - 150.0), 0.0, 1.0);
-                let birth_volume = mix(0.06, 0.8, zoom_factor);
+                let zoom_factor = clamp(1.0 - (params.camera_size.x - 150.0) / (params.world_size.x - 150.0), 0.0, 1.0);
+                let birth_volume = mix(0.08, 0.7, zoom_factor);
                 let voice_slot = atomicAdd(&queue_buffer.telemetry.audio_voice_count, 1u);
                 if (voice_slot < 256u) {
                     queue_buffer.audio[voice_slot] = AudioVoice(pos, 2u /* EVENT_BIRTH */, birth_volume);
@@ -476,10 +481,12 @@ fn agent_main(@builtin(global_invocation_id) id: vec3u) {
     }
 
 
-    // Basal and thrust metabolic cost
-    let basal_cost = 0.02 + 0.015 * tr0 + 0.01 * tr3;
-    let thrust_cost = thrust * 0.04 * (1.0 + 0.5 * tr0);
-    let internal_delta_milli = i32((eaten_float - basal_cost - thrust_cost) * 1000.0);
+    // Energy Gain and Basal/Thrust/Taint metabolic cost
+    let energy_gain = eaten_float * (9.0 + 9.0 * tr4);
+    let basal_cost = 0.10 + 0.12 * tr0 + 0.07 * tr1 + 0.035 * tr2 + 0.055 * tr3 + 0.035 * a_attack;
+    let thrust_cost = thrust * 0.06;
+    let taint_cost = here_taint * (0.10 + 0.18 * (1.0 - tr3));
+    let internal_delta_milli = i32((energy_gain - basal_cost - thrust_cost - taint_cost) * 1000.0);
     atomicAdd(&agent_atomics[agent_idx].energy_milli, internal_delta_milli);
 
 

@@ -60,6 +60,10 @@ pub struct GpuSimParams {
     // Camera Viewport (16B)
     pub camera_pos: [f32; 2],       // 8 bytes  (48..56)
     pub camera_size: [f32; 2],      // 8 bytes  (56..64)
+
+    // World Arena Bounds & Soil Layout (16B)
+    pub world_size: [f32; 2],       // 8 bytes  (64..72)
+    pub soil_grid: [u32; 2],        // 8 bytes  (72..80) -> cols, rows
 }
 
 #[repr(C, align(16))]

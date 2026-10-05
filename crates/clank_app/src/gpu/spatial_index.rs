@@ -20,12 +20,18 @@ pub fn expand_bits(mut v: u32) -> u32 {
     v
 }
 
+/// Computes a 32-bit Morton code (Z-order curve) by interleaving X and Y coordinates with dynamic world bounds.
+#[inline]
+pub fn compute_morton_32_with_size(pos: [f32; 2], world_size: [f32; 2]) -> u32 {
+    let x_norm = ((pos[0] / world_size[0]).clamp(0.0, 1.0) * 65535.0).round() as u32;
+    let y_norm = ((pos[1] / world_size[1]).clamp(0.0, 1.0) * 65535.0).round() as u32;
+    expand_bits(x_norm) | (expand_bits(y_norm) << 1)
+}
+
 /// Computes a 32-bit Morton code (Z-order curve) by interleaving X and Y coordinates.
 #[inline]
 pub fn compute_morton_32(pos: [f32; 2]) -> u32 {
-    let x_norm = ((pos[0] / 900.0).clamp(0.0, 1.0) * 65535.0).round() as u32;
-    let y_norm = ((pos[1] / 600.0).clamp(0.0, 1.0) * 65535.0).round() as u32;
-    expand_bits(x_norm) | (expand_bits(y_norm) << 1)
+    compute_morton_32_with_size(pos, [950.0, 747.0])
 }
 
 /// Maps arena position [x, y] to clamped cell ID 0..53 ($9 \times 6$ grid).

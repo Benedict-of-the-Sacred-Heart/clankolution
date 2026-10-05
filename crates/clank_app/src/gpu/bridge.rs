@@ -5,7 +5,6 @@
 //! [ENGINE: RUST] and [ENGINE: GPU] without losing lineages or resetting the timeline.
 
 use clank_core::agent::AgentData;
-use crate::gpu::spatial_index::compute_morton_32;
 use crate::gpu::types::{
     GpuAgentAtomic, GpuAgentGenome, GpuAgentState, GpuSimParams, GpuSoilCell,
 };
@@ -88,7 +87,10 @@ pub fn sync_rust_to_gpu(
         }
 
         let pos = [a.x as f32, a.y as f32];
-        let morton = compute_morton_32(pos);
+        let morton = crate::gpu::spatial_index::compute_morton_32_with_size(
+            pos,
+            [sim.world_width as f32, sim.world_height as f32],
+        );
         let pal_color = PALETTE[(a.root as usize) % PALETTE.len()];
         let packed_color = (pal_color.r() as u32)
             | ((pal_color.g() as u32) << 8)
@@ -181,11 +183,12 @@ pub fn sync_rust_to_gpu(
     }
 
     // Convert soil
-    let mut soil = Vec::with_capacity(3750);
-    for i in 0..3750 {
-        let f = sim.world.soil.food.get(i).copied().unwrap_or(0.0);
-        let t = sim.world.soil.taint.get(i).copied().unwrap_or(0.0);
-        let s = sim.world.soil.scent.get(i).copied().unwrap_or(0.0);
+    let grid_size = sim.world.soil.grid_size;
+    let mut soil = Vec::with_capacity(grid_size);
+    for i in 0..grid_size {
+        let f = sim.world.soil.food[i];
+        let t = sim.world.soil.taint[i];
+        let s = sim.world.soil.scent[i];
         soil.push(GpuSoilCell {
             food_milli: (f * 1000.0).round() as i32,
             taint_milli: (t * 1000.0).round() as i32,
@@ -198,16 +201,18 @@ pub fn sync_rust_to_gpu(
         tick: sim.world.tick,
         agent_count: living_count,
         max_agents: sim.world.agents.len() as u32,
-        hostility: sim.world.hostility as f32,
-        mut_rate: sim.world.mutation as f32,
+        hostility: (sim.world.hostility / 100.0) as f32,
+        mut_rate: (sim.world.mutation / 100.0) as f32,
         speed: sim.speed as f32,
-        renewal: sim.world.growth as f32,
+        renewal: (sim.world.growth / 100.0) as f32,
         sub_tick: 0,
         sub_ticks_per_frame: 1,
         tool_type: 0xFFFFFFFF,
         tool_pos: [0.0, 0.0],
-        camera_pos: [450.0, 300.0],
-        camera_size: [900.0, 600.0],
+        camera_pos: [(sim.world_width * 0.5) as f32, (sim.world_height * 0.5) as f32],
+        camera_size: [sim.world_width as f32, sim.world_height as f32],
+        world_size: [sim.world_width as f32, sim.world_height as f32],
+        soil_grid: [sim.world.soil.cols as u32, sim.world.soil.rows as u32],
     };
 
     (states, genomes, atomics, soil, params)

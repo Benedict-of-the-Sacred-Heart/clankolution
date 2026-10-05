@@ -54,10 +54,16 @@ pub struct GpuComputeDriver {
     pub birth_group1: wgpu::BindGroup,
 
     pub max_agents: u32,
+    pub soil_cols: u32,
+    pub soil_rows: u32,
 }
 
 impl GpuComputeDriver {
     pub fn create_default() -> Option<Self> {
+        Self::create_for_world(80, 63, 65536)
+    }
+
+    pub fn create_for_world(soil_cols: u32, soil_rows: u32, max_agents: u32) -> Option<Self> {
         let instance = wgpu::Instance::default();
         let adapter = bevy::tasks::block_on(instance.request_adapter(&wgpu::RequestAdapterOptions {
             power_preference: wgpu::PowerPreference::HighPerformance,
@@ -70,17 +76,28 @@ impl GpuComputeDriver {
             ..Default::default()
         })).ok()?;
 
-        Some(Self::new(Arc::new(device), Arc::new(queue), 65536))
+        Some(Self::new_with_grid(Arc::new(device), Arc::new(queue), max_agents, soil_cols, soil_rows))
     }
 
     pub fn new(device: Arc<wgpu::Device>, queue: Arc<wgpu::Queue>, max_agents: u32) -> Self {
+        Self::new_with_grid(device, queue, max_agents, 80, 63)
+    }
+
+    pub fn new_with_grid(
+        device: Arc<wgpu::Device>,
+        queue: Arc<wgpu::Queue>,
+        max_agents: u32,
+        soil_cols: u32,
+        soil_rows: u32,
+    ) -> Self {
         use wgpu::BufferUsages;
 
+        let total_soil_cells = (soil_cols * soil_rows) as u64;
         let agent_states_size = (max_agents as u64) * 128;
         let agent_genomes_size = (max_agents as u64) * 352;
         let agent_atomics_size = (max_agents as u64) * 16;
-        let soil_size = 3750 * 16;
-        let bloom_size = 3750 * 4;
+        let soil_size = total_soil_cells * 16;
+        let bloom_size = total_soil_cells * 4;
         let spatial_keys_size = (max_agents as u64) * 8;
         let lbvh_nodes_size = (max_agents as u64) * 2 * 48;
         let node_flags_size = (max_agents as u64) * 4;
@@ -122,12 +139,12 @@ impl GpuComputeDriver {
             usage: BufferUsages::STORAGE | BufferUsages::COPY_DST,
             mapped_at_creation: false,
         });
-        let mut bloom_table = vec![0.0f32; 3750];
-        for y in 0..50 {
+        let mut bloom_table = vec![0.0f32; total_soil_cells as usize];
+        for y in 0..soil_rows {
             let y_f = y as f32;
-            for x in 0..75 {
+            for x in 0..soil_cols {
                 let x_f = x as f32;
-                let i = y * 75 + x;
+                let i = (y * soil_cols + x) as usize;
                 bloom_table[i] = 0.0008 + 0.0022 * (0.5 + 0.5 * (x_f * 0.13 + (y_f * 0.19).sin()).sin() * (y_f * 0.11).cos());
             }
         }
@@ -177,7 +194,7 @@ impl GpuComputeDriver {
 
         let sim_params_buf = device.create_buffer(&wgpu::BufferDescriptor {
             label: Some("sim_params_buf"),
-            size: 64,
+            size: std::mem::size_of::<GpuSimParams>() as u64,
             usage: BufferUsages::UNIFORM | BufferUsages::COPY_DST,
             mapped_at_creation: false,
         });
@@ -220,7 +237,7 @@ impl GpuComputeDriver {
         // Soil Textures
         let soil_data_tex = device.create_texture(&wgpu::TextureDescriptor {
             label: Some("soil_data_tex"),
-            size: wgpu::Extent3d { width: 75, height: 50, depth_or_array_layers: 1 },
+            size: wgpu::Extent3d { width: soil_cols, height: soil_rows, depth_or_array_layers: 1 },
             mip_level_count: 1,
             sample_count: 1,
             dimension: wgpu::TextureDimension::D2,
@@ -232,7 +249,7 @@ impl GpuComputeDriver {
 
         let soil_display_tex = device.create_texture(&wgpu::TextureDescriptor {
             label: Some("soil_display_tex"),
-            size: wgpu::Extent3d { width: 75, height: 50, depth_or_array_layers: 1 },
+            size: wgpu::Extent3d { width: soil_cols, height: soil_rows, depth_or_array_layers: 1 },
             mip_level_count: 1,
             sample_count: 1,
             dimension: wgpu::TextureDimension::D2,
@@ -542,6 +559,8 @@ impl GpuComputeDriver {
             birth_group0,
             birth_group1,
             max_agents,
+            soil_cols,
+            soil_rows,
         }
     }
 
@@ -609,7 +628,7 @@ impl GpuComputeDriver {
             height: u32,
             pad: u32,
         }
-        let sp = SoilParams { renewal: params.renewal, width: 75, height: 50, pad: 0 };
+        let sp = SoilParams { renewal: params.renewal, width: self.soil_cols, height: self.soil_rows, pad: 0 };
         self.queue.write_buffer(&self.soil_params_buf, 0, bytemuck::bytes_of(&sp));
     }
 
@@ -633,7 +652,7 @@ impl GpuComputeDriver {
                 // 1. Soil decay and diffusion
                 cpass.set_pipeline(&self.soil_pipeline);
                 cpass.set_bind_group(0, &self.soil_bind_group, &[]);
-                cpass.dispatch_workgroups((75 + 7) / 8, (50 + 7) / 8, 1);
+                cpass.dispatch_workgroups((self.soil_cols + 7) / 8, (self.soil_rows + 7) / 8, 1);
 
                 // 2. Morton grid spatial hashing
                 let active_slots = cur_params.max_agents.max(cur_params.agent_count);
@@ -728,7 +747,8 @@ impl GpuComputeDriver {
     }
 
     pub fn readback_soil(&self) -> Vec<GpuSoilCell> {
-        let byte_len = 3750 * 16;
+        let total_cells = (self.soil_cols * self.soil_rows) as usize;
+        let byte_len = (total_cells * 16) as u64;
         let mut encoder = self.device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
             label: Some("readback_soil_encoder"),
         });

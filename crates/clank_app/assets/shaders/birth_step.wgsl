@@ -21,6 +21,8 @@ struct GpuSimParams {
     tool_pos: vec2f,
     camera_pos: vec2f,
     camera_size: vec2f,
+    world_size: vec2f,
+    soil_grid: vec2u,
 }
 
 struct GpuAgentState {
@@ -110,9 +112,10 @@ fn pcg_triangular(id: u32, stream: u32, tick: u32) -> f32 {
 }
 
 fn wrap_coords(p: vec2f) -> vec2f {
+    let w = params.world_size;
     return vec2f(
-        p.x - 900.0 * floor(p.x / 900.0),
-        p.y - 600.0 * floor(p.y / 600.0)
+        p.x - w.x * floor(p.x / w.x),
+        p.y - w.y * floor(p.y / w.y)
     );
 }
 

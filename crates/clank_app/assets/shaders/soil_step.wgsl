@@ -19,10 +19,10 @@ struct SoilParams {
     pad: u32,
 }
 
-@group(0) @binding(0) var<storage, read_write> soil_buffer: array<SoilCell, 3750>;
+@group(0) @binding(0) var<storage, read_write> soil_buffer: array<SoilCell>;
 @group(0) @binding(1) var soil_data: texture_storage_2d<rgba16float, write>;      // Raw physics [food, taint, scent, 1.0]
 @group(0) @binding(2) var soil_display: texture_storage_2d<rgba16float, write>;   // Colormap display
-@group(0) @binding(3) var<storage, read> bloom_table: array<f32, 3750>;
+@group(0) @binding(3) var<storage, read> bloom_table: array<f32>;
 @group(0) @binding(4) var<uniform> params: SoilParams;
 
 fn evaluate_soil_color(f: f32, t: f32, s: f32, coord: vec2u) -> vec4f {
@@ -56,8 +56,8 @@ fn evaluate_soil_color(f: f32, t: f32, s: f32, coord: vec2u) -> vec4f {
 
 @compute @workgroup_size(8, 8)
 fn soil_main(@builtin(global_invocation_id) id: vec3u) {
-    if (id.x >= 75u || id.y >= 50u) { return; }
-    let k = id.y * 75u + id.x;
+    if (id.x >= params.width || id.y >= params.height) { return; }
+    let k = id.y * params.width + id.x;
 
     var f = f32(atomicLoad(&soil_buffer[k].food_milli)) * 0.001;
     var t = f32(atomicLoad(&soil_buffer[k].taint_milli)) * 0.001;

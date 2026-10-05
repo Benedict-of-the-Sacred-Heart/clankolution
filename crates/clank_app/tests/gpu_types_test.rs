@@ -10,7 +10,7 @@ fn test_gpu_struct_alignments() {
     assert_eq!(std::mem::size_of::<GpuAgentGenome>() % 16, 0);
     assert_eq!(std::mem::size_of::<GpuAgentGenome>(), 352);
     assert_eq!(std::mem::size_of::<GpuSimParams>() % 16, 0);
-    assert_eq!(std::mem::size_of::<GpuSimParams>(), 64);
+    assert_eq!(std::mem::size_of::<GpuSimParams>(), 80);
     assert_eq!(std::mem::size_of::<GpuLbvhNode>() % 16, 0);
     assert_eq!(std::mem::size_of::<GpuLbvhNode>(), 48);
     assert_eq!(std::mem::size_of::<GpuAgentAtomic>() % 16, 0);

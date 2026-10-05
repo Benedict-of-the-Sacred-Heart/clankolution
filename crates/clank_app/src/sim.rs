@@ -98,8 +98,15 @@ pub fn sim_step_system(
         }
         ActiveEngine::Gpu => {
             if let Some(ref mut gpu) = gpu_res {
+                if let Some(ref d) = gpu.driver {
+                    if d.soil_cols != sim.world.soil.cols as u32 || d.soil_rows != sim.world.soil.rows as u32 {
+                        gpu.driver = None;
+                    }
+                }
                 if gpu.driver.is_none() {
-                    gpu.driver = crate::gpu::compute_driver::GpuComputeDriver::create_default();
+                    let cols = sim.world.soil.cols as u32;
+                    let rows = sim.world.soil.rows as u32;
+                    gpu.driver = crate::gpu::compute_driver::GpuComputeDriver::create_for_world(cols, rows, 65536);
                 }
                 if let Some(ref mut driver) = gpu.driver {
                     let (states, genomes, atomics, soil, params) = crate::gpu::bridge::sync_rust_to_gpu(&sim);
@@ -112,6 +119,9 @@ pub fn sim_step_system(
                     let updated_soil = driver.readback_soil();
                     let mut updated_params = params;
                     updated_params.tick += steps;
+
+                    let telemetry = driver.readback_telemetry();
+                    sim.world.kills += telemetry.kills;
 
                     crate::gpu::bridge::sync_gpu_to_rust(
                         &updated_states,

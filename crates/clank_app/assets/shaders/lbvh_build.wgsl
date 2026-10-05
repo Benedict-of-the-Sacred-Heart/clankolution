@@ -15,6 +15,8 @@ struct GpuSimParams {
     tool_pos: vec2f,
     camera_pos: vec2f,
     camera_size: vec2f,
+    world_size: vec2f,
+    soil_grid: vec2u,
 }
 
 struct GpuLbvhNode {

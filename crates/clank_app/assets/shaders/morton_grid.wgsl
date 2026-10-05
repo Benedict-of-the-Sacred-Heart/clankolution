@@ -15,6 +15,8 @@ struct GpuSimParams {
     tool_pos: vec2f,
     camera_pos: vec2f,
     camera_size: vec2f,
+    world_size: vec2f,
+    soil_grid: vec2u,
 }
 
 struct GpuAgentState {
@@ -46,8 +48,8 @@ fn expand_bits(v_in: u32) -> u32 {
 }
 
 fn compute_morton_32(pos: vec2f) -> u32 {
-    let x_norm = u32(clamp(pos.x / 900.0, 0.0, 1.0) * 65535.0);
-    let y_norm = u32(clamp(pos.y / 600.0, 0.0, 1.0) * 65535.0);
+    let x_norm = u32(clamp(pos.x / params.world_size.x, 0.0, 1.0) * 65535.0);
+    let y_norm = u32(clamp(pos.y / params.world_size.y, 0.0, 1.0) * 65535.0);
     return expand_bits(x_norm) | (expand_bits(y_norm) << 1u);
 }
 
@@ -73,8 +75,10 @@ fn morton_encode(@builtin(global_invocation_id) id: vec3u) {
 }
 
 fn get_cell_id(pos: vec2f) -> u32 {
-    let gx = min(u32(max(0.0, pos.x) / 100.0), 8u);
-    let gy = min(u32(max(0.0, pos.y) / 100.0), 5u);
+    let cell_w = params.world_size.x / 9.0;
+    let cell_h = params.world_size.y / 6.0;
+    let gx = min(u32(max(0.0, pos.x) / cell_w), 8u);
+    let gy = min(u32(max(0.0, pos.y) / cell_h), 5u);
     return gy * 9u + gx;
 }
 

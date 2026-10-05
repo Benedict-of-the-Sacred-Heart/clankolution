@@ -17,7 +17,7 @@ fn test_dual_engine_live_hotswap_parity() {
     assert_eq!(states.len(), sim.world.agents.len());
     assert_eq!(genomes.len(), sim.world.agents.len());
     assert_eq!(atomics.len(), sim.world.agents.len());
-    assert_eq!(soil.len(), 3750);
+    assert_eq!(soil.len(), sim.world.soil.grid_size);
 
     // Verify visual_cache synthesized correctly for living agents
     for (i, a) in sim.world.agents.iter().enumerate() {
