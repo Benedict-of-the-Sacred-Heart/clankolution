@@ -162,16 +162,22 @@ impl LbvhTree {
             let last = i.max(j);
             let delta_node = common_prefix_length(first, last, keys);
 
-            // Binary search split point
-            let mut s = 0;
-            let mut step_s = (last - first + 1) / 2;
-            while step_s > 0 {
-                if common_prefix_length(first, first + s + step_s, keys) > delta_node {
-                    s += step_s;
+            // Binary search split point (Karras 2012)
+            let mut split = first;
+            let mut step = last - first;
+            loop {
+                step = (step + 1) / 2;
+                let new_split = split + step;
+                if new_split < last {
+                    if common_prefix_length(first, new_split, keys) > delta_node {
+                        split = new_split;
+                    }
                 }
-                step_s /= 2;
+                if step <= 1 {
+                    break;
+                }
             }
-            let gamma = first + s;
+            let gamma = split;
 
             let left = if gamma == first {
                 num_internal as u32 + gamma as u32
@@ -237,6 +243,19 @@ impl LbvhTree {
         Self { nodes }
     }
 
+    /// Returns the index of the root node (the node with parent == 0xFFFFFFFF).
+    pub fn root_index(&self) -> u32 {
+        if self.nodes.is_empty() || self.nodes.len() == 1 {
+            return 0;
+        }
+        for (i, node) in self.nodes.iter().enumerate() {
+            if node.leaf_idx == 0xFFFFFFFF && node.parent == 0xFFFFFFFF {
+                return i as u32;
+            }
+        }
+        0
+    }
+
     /// Evaluates mouse picking query matching `spatial_query.wgsl`.
     /// Returns (selected_agent_idx, selected_agent_id).
     pub fn pick_agent(
@@ -264,7 +283,7 @@ impl LbvhTree {
         let mut best_dist = search_r;
 
         let mut stack = Vec::with_capacity(64);
-        stack.push(0u32); // Root
+        stack.push(self.root_index());
 
         while let Some(node_idx) = stack.pop() {
             let node = &self.nodes[node_idx as usize];
@@ -370,7 +389,7 @@ impl LbvhTree {
         }
 
         let mut stack = Vec::with_capacity(64);
-        stack.push(0u32);
+        stack.push(self.root_index());
 
         while let Some(node_idx) = stack.pop() {
             let node = &self.nodes[node_idx as usize];
@@ -417,7 +436,7 @@ impl LbvhTree {
         }
 
         let mut stack = Vec::new();
-        stack.push((0u32, 0usize)); // (node_idx, current_depth)
+        stack.push((self.root_index(), 0usize)); // (node_idx, current_depth)
 
         while let Some((node_idx, depth)) = stack.pop() {
             let node = &self.nodes[node_idx as usize];

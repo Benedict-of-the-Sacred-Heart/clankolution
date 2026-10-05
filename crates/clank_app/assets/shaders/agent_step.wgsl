@@ -121,7 +121,7 @@ struct ConsolidatedQueue {
 @group(0) @binding(2) var<storage, read_write> agent_atomics: array<GpuAgentAtomic>;
 @group(0) @binding(3) var<storage, read_write> soil_buffer: array<SoilCell>;
 @group(0) @binding(4) var<storage, read> spatial_keys: array<vec2u>;
-@group(0) @binding(5) var<storage, read> lbvh_nodes: array<GpuLbvhNode>;
+@group(0) @binding(5) var<storage, read_write> cell_offsets: array<atomic<u32>>;
 @group(0) @binding(6) var<storage, read_write> freelist: array<u32>;
 @group(0) @binding(7) var<storage, read_write> queue_buffer: ConsolidatedQueue;
 
@@ -239,7 +239,7 @@ fn agent_main(@builtin(global_invocation_id) id: vec3u) {
     let here_taint   = probe_here.g;
     let scent_diff   = probe_forward.b - probe_here.b;
 
-    // LBVH Nearest Neighbor & Local Density Search
+    // Spatial Grid 9-Cell Moore Neighborhood Query (Exact match to clank_core & HTML near())
     var best_dist = 999999.0;
     var best_neighbor = 0xFFFFFFFFu;
     var density = 0.0;
@@ -247,47 +247,36 @@ fn agent_main(@builtin(global_invocation_id) id: vec3u) {
     let sight_radius = 100.0 + 70.0 * tr2;
 
     if (params.agent_count > 1u) {
-        var stack: array<u32, 32>;
-        var stack_ptr = 0u;
-        stack[0] = 0u; // Root
-        stack_ptr = 1u;
-        var search_r = sight_radius;
+        let cell_w = params.world_size.x / 9.0;
+        let cell_h = params.world_size.y / 6.0;
+        let gx = i32(min(u32(max(0.0, pos.x) / cell_w), 8u));
+        let gy = i32(min(u32(max(0.0, pos.y) / cell_h), 5u));
 
-        while (stack_ptr > 0u) {
-            stack_ptr -= 1u;
-            let node_idx = stack[stack_ptr];
-            let node = lbvh_nodes[node_idx];
+        for (var dy = -1; dy <= 1; dy++) {
+            let n_gy = (gy + dy + 6) % 6;
+            for (var dx = -1; dx <= 1; dx++) {
+                let n_gx = (gx + dx + 9) % 9;
+                let n_cell = u32(n_gy * 9 + n_gx);
 
-            let box_d = distance_to_aabb(pos, node.aabb_min, node.aabb_max);
-            if (box_d > search_r && box_d > 100.0) { continue; }
-
-            if (node.leaf_idx != 0xFFFFFFFFu) {
-                let other_idx = node.leaf_idx;
-                if (other_idx != agent_idx) {
-                    let other_meta = agent_states[other_idx].meta_flags;
-                    if ((other_meta & (1u << 13u)) == 0u) {
-                        let other_pos = agent_states[other_idx].pos_vel.xy;
-                        let d = toroidal_dist(pos, other_pos);
-                        if (d <= 100.0) {
-                            density += 1.0;
-                        }
-                        if (d < best_dist && d <= search_r) {
-                            best_dist = d;
-                            best_neighbor = other_idx;
-                            search_r = d; // Dynamic radius shrinking
+                var curr = atomicLoad(&cell_offsets[n_cell]);
+                var loop_count = 0u;
+                while (curr != 0xFFFFFFFFu && loop_count < 128u) {
+                    if (curr != agent_idx) {
+                        let other_meta = agent_states[curr].meta_flags;
+                        if ((other_meta & (1u << 13u)) == 0u) {
+                            let other_pos = agent_states[curr].pos_vel.xy;
+                            let d = toroidal_dist(pos, other_pos);
+                            if (d <= 100.0) {
+                                density += 1.0;
+                            }
+                            if (d < best_dist && d <= sight_radius) {
+                                best_dist = d;
+                                best_neighbor = curr;
+                            }
                         }
                     }
-                }
-            } else {
-                if (stack_ptr < 30u) {
-                    if (node.right_child != 0xFFFFFFFFu) {
-                        stack[stack_ptr] = node.right_child;
-                        stack_ptr += 1u;
-                    }
-                    if (node.left_child != 0xFFFFFFFFu) {
-                        stack[stack_ptr] = node.left_child;
-                        stack_ptr += 1u;
-                    }
+                    curr = spatial_keys[curr].x;
+                    loop_count += 1u;
                 }
             }
         }
@@ -384,9 +373,10 @@ fn agent_main(@builtin(global_invocation_id) id: vec3u) {
     let new_vel = (vel + thrust_force) * 0.89;
     var new_pos = wrap_coords(pos + new_vel);
 
-    a_feed = clamp(out[2] * 0.5 + 0.5, 0.0, 1.0);
-    a_attack = clamp(out[3] * 0.5 + 0.5, 0.0, 1.0);
-
+    a_feed = max(0.0, out[2]);
+    a_attack = max(0.0, out[3]);
+    let a_signal = max(0.0, out[4]);
+    var a_last_victim = u32(agent_states[agent_idx].traits[1][3]);
 
     // Soil Grazing
     let cell_w = params.world_size.x / f32(params.soil_grid.x);
@@ -400,6 +390,12 @@ fn agent_main(@builtin(global_invocation_id) id: vec3u) {
     atomicSub(&soil_buffer[cell_idx].food_milli, eaten_milli);
     atomicAdd(&queue_buffer.telemetry.food_grazed_milli, u32(max(0, eaten_milli)));
 
+    // Scent emission (HTML line 1394)
+    if (a_signal > 0.4) {
+        let scent_milli = i32((a_signal - 0.4) * 0.035 * 1000.0);
+        atomicAdd(&soil_buffer[cell_idx].scent_milli, scent_milli);
+    }
+
     // Combat Resolution & Decisive Killer Attribution
     let contact_dist = 14.0 + 10.0 * tr0;
     if (best_neighbor != 0xFFFFFFFFu && best_dist < contact_dist && a_attack > 0.25 && a_cooldown == 0u) {
@@ -410,6 +406,7 @@ fn agent_main(@builtin(global_invocation_id) id: vec3u) {
         let old_energy_milli = atomicSub(&agent_atomics[victim_idx].energy_milli, damage_milli);
 
         a_cooldown = 3u;
+        a_last_victim = agent_states[victim_idx].id;
         let combat_gain = damage * (0.1 + 0.55 * tr5);
         atomicAdd(&agent_atomics[agent_idx].energy_milli, i32(combat_gain * 1000.0));
 
@@ -443,6 +440,14 @@ fn agent_main(@builtin(global_invocation_id) id: vec3u) {
             if (claim_death.exchanged) {
                 let free_slot = atomicAdd(&queue_buffer.telemetry.freelist_top, 1u);
                 freelist[free_slot] = victim_idx;
+
+                // Corpse deposition from victim
+                let vpos = agent_states[victim_idx].pos_vel.xy;
+                let vcx = min(u32(max(0.0, vpos.x) / cell_w), params.soil_grid.x - 1u);
+                let vcy = min(u32(max(0.0, vpos.y) / cell_h), params.soil_grid.y - 1u);
+                let v_cell = vcy * params.soil_grid.x + vcx;
+                atomicAdd(&soil_buffer[v_cell].food_milli, 600);
+                atomicAdd(&soil_buffer[v_cell].taint_milli, 100);
             }
         }
     }
@@ -501,24 +506,29 @@ fn agent_main(@builtin(global_invocation_id) id: vec3u) {
 
     // Energy Gain and Basal/Thrust/Taint metabolic cost
     let energy_gain = eaten_float * (9.0 + 9.0 * tr4);
-    let basal_cost = 0.10 + 0.12 * tr0 + 0.07 * tr1 + 0.035 * tr2 + 0.055 * tr3 + 0.035 * a_attack;
+    let basal_cost = 0.10 + 0.12 * tr0 + 0.07 * tr1 + 0.035 * tr2 + 0.055 * tr3 + 0.035 * a_attack + 0.014 * a_signal;
     let thrust_cost = thrust * 0.06;
     let taint_cost = here_taint * (0.10 + 0.18 * (1.0 - tr3));
     let internal_delta_milli = i32((energy_gain - basal_cost - thrust_cost - taint_cost) * 1000.0);
     atomicAdd(&agent_atomics[agent_idx].energy_milli, internal_delta_milli);
 
 
-    // Strict Single-Writer Death Check
+    // Strict Single-Writer Death Check (Energy depletion or Senescence at age > 2100)
     let already_claimed = atomicLoad(&agent_atomics[agent_idx].dead_claimed);
     let current_energy_milli = atomicLoad(&agent_atomics[agent_idx].energy_milli);
 
-    if (already_claimed != 0u || current_energy_milli <= 0) {
+    if (already_claimed != 0u || current_energy_milli <= 0 || a_age > 2100u) {
         if (already_claimed == 0u) {
             let claim_death = atomicCompareExchangeWeak(&agent_atomics[agent_idx].dead_claimed, 0u, 1u);
             if (claim_death.exchanged) {
                 atomicAdd(&queue_buffer.telemetry.starvations, 1u);
                 let free_slot = atomicAdd(&queue_buffer.telemetry.freelist_top, 1u);
                 freelist[free_slot] = agent_idx;
+
+                // Corpse deposition into soil
+                let corpse_food = clamp(f32(max(0, current_energy_milli)) * 0.000016 + 0.6, 0.3, 2.0);
+                atomicAdd(&soil_buffer[cell_idx].food_milli, i32(corpse_food * 1000.0));
+                atomicAdd(&soil_buffer[cell_idx].taint_milli, 100);
             }
         }
         agent_states[agent_idx].meta_flags |= (1u << 13u);
@@ -527,7 +537,8 @@ fn agent_main(@builtin(global_invocation_id) id: vec3u) {
         return;
     }
 
-    a_energy = max(0.0, f32(current_energy_milli) * 0.001);
+    a_energy = clamp(f32(current_energy_milli) * 0.001, 0.0, 110.0);
+    atomicStore(&agent_atomics[agent_idx].energy_milli, i32(a_energy * 1000.0));
     atomicMax(&queue_buffer.telemetry.apex_record_milli, u32(a_energy * 1000.0));
 
     // Telemetry instantaneous population census on final sub-tick
@@ -544,6 +555,7 @@ fn agent_main(@builtin(global_invocation_id) id: vec3u) {
     // Commit state
     agent_states[agent_idx].pos_vel = vec4f(new_pos.x, new_pos.y, new_vel.x, new_vel.y);
     agent_states[agent_idx].angle_energy = vec4f(angle, a_energy, a_feed, a_attack);
+    agent_states[agent_idx].traits[1] = vec4f(tr4, tr5, a_signal, f32(a_last_victim));
     agent_states[agent_idx].hidden[0] = vec4f(new_h[0], new_h[1], new_h[2], new_h[3]);
     agent_states[agent_idx].hidden[1] = vec4f(new_h[4], new_h[5], new_h[6], new_h[7]);
     agent_states[agent_idx].hidden_tail = vec2f(new_h[8], new_h[9]);

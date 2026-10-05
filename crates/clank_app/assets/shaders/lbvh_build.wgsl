@@ -104,15 +104,21 @@ fn build_lbvh_hierarchy(@builtin(global_invocation_id) id: vec3u) {
     let last = max(i, j);
     let delta_node = common_prefix_length(first, last, n);
 
-    var s = 0;
-    var step_s = (last - first + 1) / 2;
-    while (step_s > 0) {
-        if (common_prefix_length(first, first + s + step_s, n) > delta_node) {
-            s += step_s;
+    var split = first;
+    step = last - first;
+    loop {
+        step = (step + 1) / 2;
+        let new_split = split + step;
+        if (new_split < last) {
+            if (common_prefix_length(first, new_split, n) > delta_node) {
+                split = new_split;
+            }
         }
-        step_s /= 2;
+        if (step <= 1) {
+            break;
+        }
     }
-    let gamma = first + s;
+    let gamma = split;
 
     let num_internal = n - 1u;
     let left = select(u32(gamma), num_internal + u32(gamma), gamma == first);
@@ -120,6 +126,7 @@ fn build_lbvh_hierarchy(@builtin(global_invocation_id) id: vec3u) {
 
     lbvh_nodes[id.x].left_child = left;
     lbvh_nodes[id.x].right_child = right;
+    lbvh_nodes[id.x].leaf_idx = 0xFFFFFFFFu;
     lbvh_nodes[left].parent = id.x;
     lbvh_nodes[right].parent = id.x;
 }

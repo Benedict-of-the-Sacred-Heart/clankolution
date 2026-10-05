@@ -42,8 +42,8 @@ struct GpuAgentState {
 }
 
 @group(0) @binding(0) var<storage, read_write> agent_states: array<GpuAgentState>;
-@group(0) @binding(1) var<storage, read_write> spatial_keys: array<vec2u>; // (morton_key, agent_id)
-@group(0) @binding(2) var<storage, read_write> cell_offsets: array<vec2u, 54>;
+@group(0) @binding(1) var<storage, read_write> spatial_keys: array<vec2u>; // (grid_next, cell_id)
+@group(0) @binding(2) var<storage, read_write> cell_offsets: array<atomic<u32>>;
 @group(0) @binding(3) var<uniform> params: GpuSimParams;
 
 fn expand_bits(v_in: u32) -> u32 {
@@ -64,21 +64,7 @@ fn compute_morton_32(pos: vec2f) -> u32 {
 @compute @workgroup_size(64)
 fn clear_cell_offsets(@builtin(global_invocation_id) id: vec3u) {
     if (id.x < 54u) {
-        cell_offsets[id.x] = vec2u(0xFFFFFFFFu, 0xFFFFFFFFu);
-    }
-}
-
-@compute @workgroup_size(64)
-fn morton_encode(@builtin(global_invocation_id) id: vec3u) {
-    if (id.x >= params.max_agents) { return; }
-    let is_dead = (agent_states[id.x].meta_flags & (1u << 13u)) != 0u;
-    if (is_dead) {
-        // Dead Agent Partitioning: Assign sentinel so tombstones sort to array tail
-        spatial_keys[id.x] = vec2u(0xFFFFFFFFu, id.x);
-    } else {
-        let code = compute_morton_32(agent_states[id.x].pos_vel.xy);
-        agent_states[id.x].morton_code = code;
-        spatial_keys[id.x] = vec2u(code, id.x);
+        atomicStore(&cell_offsets[id.x], 0xFFFFFFFFu);
     }
 }
 
@@ -91,31 +77,26 @@ fn get_cell_id(pos: vec2f) -> u32 {
 }
 
 @compute @workgroup_size(64)
-fn populate_cell_offsets(@builtin(global_invocation_id) id: vec3u) {
-    let n = params.agent_count;
-    if (id.x >= n) { return; }
+fn morton_encode(@builtin(global_invocation_id) id: vec3u) {
+    let agent_idx = id.x;
+    if (agent_idx >= params.max_agents) { return; }
+    let is_dead = (agent_states[agent_idx].meta_flags & (1u << 13u)) != 0u;
+    if (is_dead) {
+        spatial_keys[agent_idx] = vec2u(0xFFFFFFFFu, 0xFFFFFFFFu);
+        return;
+    }
 
-    let slot = spatial_keys[id.x].y;
-    let m_flags = agent_states[slot].meta_flags;
-    if ((m_flags & (1u << 13u)) != 0u) { return; }
+    let pos = agent_states[agent_idx].pos_vel.xy;
+    let code = compute_morton_32(pos);
+    agent_states[agent_idx].morton_code = code;
 
-    let pos = agent_states[slot].pos_vel.xy;
     let cell_id = get_cell_id(pos);
+    let old_head = atomicExchange(&cell_offsets[cell_id], agent_idx);
+    spatial_keys[agent_idx] = vec2u(old_head, cell_id);
+}
 
-    if (id.x == 0u) {
-        cell_offsets[cell_id].x = id.x;
-    } else {
-        let prev_slot = spatial_keys[id.x - 1u].y;
-        let prev_pos = agent_states[prev_slot].pos_vel.xy;
-        let prev_cell = get_cell_id(prev_pos);
-        if (prev_cell != cell_id) {
-            cell_offsets[cell_id].x = id.x;
-            cell_offsets[prev_cell].y = id.x;
-        }
-    }
-
-    if (id.x == n - 1u) {
-        cell_offsets[cell_id].y = n;
-    }
+@compute @workgroup_size(64)
+fn populate_cell_offsets(@builtin(global_invocation_id) id: vec3u) {
+    // Spatial grid linked list populated atomically in morton_encode
 }
 
