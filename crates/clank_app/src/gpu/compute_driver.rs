@@ -1007,6 +1007,12 @@ impl GpuComputeDriver {
         }
         self.queue.write_buffer(&self.queue_buffer, 28, bytemuck::bytes_of(&freelist_top));
 
+        // Initialize unique creature ID counter in queue_buffer offset 24 (apex_agent_id)
+        let max_incoming_id = states.iter().map(|s| s.id).max().unwrap_or(0);
+        let next_id = (max_incoming_id + 1).max(self.next_agent_id.load(std::sync::atomic::Ordering::Relaxed)).max(1000);
+        self.next_agent_id.store(next_id, std::sync::atomic::Ordering::Relaxed);
+        self.queue.write_buffer(&self.queue_buffer, 24, bytemuck::bytes_of(&next_id));
+
         let sp = crate::gpu::soil_pipeline::SoilParams {
             renewal: params.renewal,
             width: self.soil_cols,
@@ -1599,9 +1605,11 @@ impl GpuComputeDriver {
             run_start = run_end;
         }
 
-        // 4. Update freelist_top in queue_buffer
+        // 4. Update freelist_top and apex_agent_id in queue_buffer
         let new_freelist_top = start_slot;
         self.queue.write_buffer(&self.queue_buffer, 28, bytemuck::bytes_of(&new_freelist_top));
+        let next_id = self.next_agent_id.load(std::sync::atomic::Ordering::Relaxed);
+        self.queue.write_buffer(&self.queue_buffer, 24, bytemuck::bytes_of(&next_id));
 
         slots
     }

@@ -179,7 +179,10 @@ fn birth_main(@builtin(workgroup_id) wg_id: vec3u, @builtin(local_invocation_id)
         }
 
         var word_a = agent_genomes[parent_a].packed_genes[w];
-        var word_b = select(word_a, agent_genomes[parent_b].packed_genes[w], parent_b != 0xFFFFFFFFu);
+        var word_b = word_a;
+        if (parent_b != 0xFFFFFFFFu && parent_b < params.max_agents) {
+            word_b = agent_genomes[parent_b].packed_genes[w];
+        }
         let p_cross = pcg_float(child_idx, w, params.tick);
         var chosen = select(word_b, word_a, p_cross < 0.48);
 
@@ -219,10 +222,18 @@ fn birth_main(@builtin(workgroup_id) wg_id: vec3u, @builtin(local_invocation_id)
         atomicStore(&agent_atomics[child_idx].mate_claim, 0u);
         atomicStore(&agent_atomics[child_idx].mate_energy_milli, 0u);
 
-        // Inherit traits with mutation
+        // Inherit traits with crossover (45% parent B) and mutation
         let mut_rate = params.mut_rate;
         for (var t = 0u; t < 2u; t += 1u) {
             var tr_vec = agent_states[parent_a].traits[t];
+            if (parent_b != 0xFFFFFFFFu && parent_b < params.max_agents) {
+                let tr_b = agent_states[parent_b].traits[t];
+                for (var c = 0u; c < 4u; c += 1u) {
+                    if (pcg_float(child_idx, 200u + t * 4u + c, params.tick) < 0.45) {
+                        tr_vec[c] = tr_b[c];
+                    }
+                }
+            }
             for (var c = 0u; c < 4u; c += 1u) {
                 let delta = pcg_triangular(child_idx, 10u + t * 4u + c, params.tick) * mut_rate * 0.6;
                 tr_vec[c] = clamp(tr_vec[c] + delta, 0.03, 0.98);
@@ -235,7 +246,12 @@ fn birth_main(@builtin(workgroup_id) wg_id: vec3u, @builtin(local_invocation_id)
         agent_states[child_idx].meta_flags = (child_root & 0x0Fu) | (95u << 6u); // root, birth = 95, dead = 0
 
         let parent_gen = agent_states[parent_a].age_gen >> 16u;
-        let child_gen = parent_gen + 1u;
+        var max_parent_gen = parent_gen;
+        if (parent_b != 0xFFFFFFFFu && parent_b < params.max_agents) {
+            let gen_b = agent_states[parent_b].age_gen >> 16u;
+            max_parent_gen = max(parent_gen, gen_b);
+        }
+        let child_gen = max_parent_gen + 1u;
         atomicMax(&queue_buffer.telemetry.max_generation, child_gen);
         agent_states[child_idx].age_gen = (child_gen & 0xFFFFu) << 16u;
         agent_states[child_idx].id = atomicAdd(&queue_buffer.telemetry.apex_agent_id, 1u);

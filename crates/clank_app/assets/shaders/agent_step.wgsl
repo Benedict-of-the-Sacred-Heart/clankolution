@@ -473,11 +473,23 @@ fn agent_main(@builtin(global_invocation_id) id: vec3u) {
             let partner_idx = best_neighbor;
             let partner_energy = agent_states[partner_idx].angle_energy[1];
             let partner_root = agent_states[partner_idx].meta_flags & 0x0Fu;
-            let p_mate = pcg_float(agent_idx, 99u, params.tick);
-            if (partner_energy > 42.0 && partner_root != a_root && p_mate < 0.15) {
-                let claim = atomicCompareExchangeWeak(&agent_atomics[partner_idx].mate_claim, 0u, agent_idx + 1u);
-                if (claim.exchanged) {
+            if (partner_energy > 42.0 && partner_root != a_root) {
+                if (ENABLE_SEXUAL_SELECTION) {
+                    let my_energy_milli = u32(max(0.0, a_energy) * 1000.0);
+                    let prev_bid = atomicMax(&agent_atomics[partner_idx].mate_energy_milli, my_energy_milli);
+                    if (my_energy_milli > prev_bid) {
+                        atomicStore(&agent_atomics[partner_idx].mate_claim, agent_idx + 1u);
+                    }
                     mate_partner = partner_idx;
+                } else if (pcg_float(agent_idx, 99u, params.tick) < 0.15) {
+                    let partner_id = agent_states[partner_idx].id;
+                    let my_id = agent_states[agent_idx].id;
+                    if (partner_id > my_id) {
+                        let claim = atomicCompareExchangeWeak(&agent_atomics[partner_idx].mate_claim, 0u, agent_idx + 1u);
+                        if (claim.exchanged) {
+                            mate_partner = partner_idx;
+                        }
+                    }
                 }
             }
         }

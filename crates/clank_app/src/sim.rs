@@ -197,6 +197,11 @@ pub fn sim_step_system(
                     sim.world.births += telemetry.total_births.max(telemetry.birth_count);
                     sim.gpu_population = telemetry.population;
 
+                    if telemetry.apex_agent_id > 0 {
+                        driver.next_agent_id.fetch_max(telemetry.apex_agent_id, std::sync::atomic::Ordering::Relaxed);
+                        sim.world.next_id = sim.world.next_id.max(telemetry.apex_agent_id);
+                    }
+
                     if telemetry.selected_agent_idx != 0xFFFFFFFF {
                         sim.selected_agent_id = Some(telemetry.selected_agent_id);
                     }

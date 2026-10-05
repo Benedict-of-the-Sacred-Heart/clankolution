@@ -79,7 +79,7 @@ struct ConsolidatedQueue {
 
 @group(0) @binding(0) var<storage, read_write> agent_atomics: array<GpuAgentAtomic>;
 @group(0) @binding(1) var<storage, read_write> queue_buffer: ConsolidatedQueue;
-@group(0) @binding(2) var<storage, read_write> cell_offsets: array<vec2u, 54>;
+@group(0) @binding(2) var<storage, read_write> cell_offsets: array<atomic<u32>>;
 @group(1) @binding(0) var<uniform> params: GpuSimParams;
 
 @compute @workgroup_size(64)
@@ -119,6 +119,6 @@ fn preamble_main(@builtin(global_invocation_id) id: vec3u) {
     }
 
     if (id.x < 54u) {
-        cell_offsets[id.x] = vec2u(0xFFFFFFFFu, 0xFFFFFFFFu);
+        atomicStore(&cell_offsets[id.x], 0xFFFFFFFFu);
     }
 }

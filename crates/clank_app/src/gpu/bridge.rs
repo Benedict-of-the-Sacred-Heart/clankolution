@@ -166,7 +166,7 @@ pub fn sync_rust_to_gpu(
     let params = GpuSimParams {
         tick: sim.world.tick,
         agent_count: living_count,
-        max_agents: states.len() as u32,
+        max_agents: (sim.world.max_cap as u32).max(states.len() as u32),
         max_capacity: sim.world.max_cap as u32,
         hostility: (sim.world.hostility / 100.0) as f32,
         mut_rate: (sim.world.mutation / 100.0) as f32,
@@ -209,7 +209,7 @@ pub fn sync_gpu_to_rust(
         let is_dead = (state.meta_flags & (1 << 13)) != 0;
         let atomic_energy = atomics.get(i).map(|at| at.energy_milli as f64 * 0.001).unwrap_or(state.angle_energy[1] as f64);
 
-        if is_dead && atomic_energy <= 0.0 {
+        if is_dead {
             if i < sim.world.agents.len() {
                 sim.world.agents[i].dead = 1;
             }
@@ -278,6 +278,10 @@ pub fn sync_gpu_to_rust(
         sim.world.agents.truncate(sim.world.max_cap);
     }
     sim.world.sync_pos_cache();
+
+    // Ensure CPU next_id stays strictly ahead of all live agents
+    let max_agent_id = sim.world.agents.iter().map(|a| a.id).max().unwrap_or(0);
+    sim.world.next_id = sim.world.next_id.max(max_agent_id + 1);
 
     // Synchronize soil
     for (i, cell) in soil.iter().enumerate() {
