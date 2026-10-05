@@ -1125,14 +1125,54 @@ pub fn agent_picking_system(
     match active_tool {
         crate::ui::ActiveTool::Observe => {
             if mouse_buttons.just_pressed(MouseButton::Left) {
-                sim.selected_agent_id = find_agent_at_position(&sim, sim_pos, 25.0);
+                if sim.active_engine == crate::sim::ActiveEngine::Gpu {
+                    sim.pending_tool = Some(crate::sim::PendingTool {
+                        tool_type: 0,
+                        tool_pos: [sim_pos.x, sim_pos.y],
+                        tool_radius: 25.0,
+                    });
+                } else {
+                    sim.selected_agent_id = find_agent_at_position(&sim, sim_pos, 25.0);
+                }
             }
         }
         crate::ui::ActiveTool::Nourish => {
             sim.world.nourish_at(sim_pos.x as f64, sim_pos.y as f64);
+            if sim.active_engine == crate::sim::ActiveEngine::Gpu {
+                sim.pending_tool = Some(crate::sim::PendingTool {
+                    tool_type: 1,
+                    tool_pos: [sim_pos.x, sim_pos.y],
+                    tool_radius: 45.0,
+                });
+                if let Some(ref gpu) = gpu_driver {
+                    if let Some(ref driver) = gpu.driver {
+                        if driver.is_initialized() {
+                            let cx = (sim_pos.x / 12.0).floor() as i32;
+                            let cy = (sim_pos.y / 12.0).floor() as i32;
+                            driver.sync_soil_cells_gpu(&sim.world.soil, cx, cy, 3);
+                        }
+                    }
+                }
+            }
         }
         crate::ui::ActiveTool::Blight => {
             sim.world.blight_at(sim_pos.x as f64, sim_pos.y as f64);
+            if sim.active_engine == crate::sim::ActiveEngine::Gpu {
+                sim.pending_tool = Some(crate::sim::PendingTool {
+                    tool_type: 2,
+                    tool_pos: [sim_pos.x, sim_pos.y],
+                    tool_radius: 45.0,
+                });
+                if let Some(ref gpu) = gpu_driver {
+                    if let Some(ref driver) = gpu.driver {
+                        if driver.is_initialized() {
+                            let cx = (sim_pos.x / 12.0).floor() as i32;
+                            let cy = (sim_pos.y / 12.0).floor() as i32;
+                            driver.sync_soil_cells_gpu(&sim.world.soil, cx, cy, 3);
+                        }
+                    }
+                }
+            }
         }
         crate::ui::ActiveTool::SeedLife => {
             if mouse_buttons.just_pressed(MouseButton::Left) || (sim.world.tick % 8 == 0) {
@@ -1150,6 +1190,13 @@ pub fn agent_picking_system(
         }
         crate::ui::ActiveTool::Extinguish => {
             sim.world.extinguish_at(sim_pos.x as f64, sim_pos.y as f64, 23.0);
+            if sim.active_engine == crate::sim::ActiveEngine::Gpu {
+                sim.pending_tool = Some(crate::sim::PendingTool {
+                    tool_type: 3,
+                    tool_pos: [sim_pos.x, sim_pos.y],
+                    tool_radius: 35.0,
+                });
+            }
         }
         crate::ui::ActiveTool::Eclipse => {}
     }

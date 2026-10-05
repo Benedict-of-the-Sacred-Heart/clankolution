@@ -62,14 +62,14 @@ struct GpuAgentState {
 
 fn common_prefix_length(i: i32, j: i32, n: u32) -> i32 {
     if (j < 0 || j >= i32(n)) { return -1; }
-    let key_i = spatial_keys[i].x;
-    let key_j = spatial_keys[j].x;
+    let key_i = agent_states[i].morton_code;
+    let key_j = agent_states[j].morton_code;
     if (key_i != key_j) {
         return i32(countLeadingZeros(key_i ^ key_j));
     }
     // Tie-break with unique agent slot id:
-    let id_i = spatial_keys[i].y;
-    let id_j = spatial_keys[j].y;
+    let id_i = agent_states[i].id;
+    let id_j = agent_states[j].id;
     return 32 + i32(countLeadingZeros(id_i ^ id_j));
 }
 
@@ -77,6 +77,10 @@ fn common_prefix_length(i: i32, j: i32, n: u32) -> i32 {
 fn build_lbvh_hierarchy(@builtin(global_invocation_id) id: vec3u) {
     let n = params.agent_count;
     if (n < 2u || id.x >= n - 1u) { return; } // Guard N <= 1
+
+    if (id.x == 0u) {
+        lbvh_nodes[0].parent = 0xFFFFFFFFu;
+    }
 
     let i = i32(id.x);
     atomicStore(&node_flags[id.x], 0u);
@@ -87,8 +91,10 @@ fn build_lbvh_hierarchy(@builtin(global_invocation_id) id: vec3u) {
     let delta_min = common_prefix_length(i, i - d, n);
 
     var l_max = 2;
-    while (common_prefix_length(i, i + l_max * d, n) > delta_min) {
+    var bound_steps = 0u;
+    while (common_prefix_length(i, i + l_max * d, n) > delta_min && bound_steps < 32u) {
         l_max *= 2;
+        bound_steps += 1u;
     }
 
     var l = 0;

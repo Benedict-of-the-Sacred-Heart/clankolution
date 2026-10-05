@@ -5,7 +5,7 @@
 
 use std::sync::Arc;
 use crate::gpu::types::{
-    GpuAgentAtomic, GpuAgentGenome, GpuAgentState, GpuSimParams, GpuSoilCell, GpuTelemetry,
+    AudioVoice, GpuAgentAtomic, GpuAgentGenome, GpuAgentState, GpuLbvhNode, GpuSimParams, GpuSoilCell, GpuTelemetry,
 };
 
 #[repr(C, align(16))]
@@ -62,6 +62,8 @@ pub struct GpuComputeDriver {
     pub staging_visible_instances: wgpu::Buffer,
     pub staging_dart_instances: wgpu::Buffer,
     pub staging_freelist: wgpu::Buffer,
+    pub staging_audio: wgpu::Buffer,
+    pub staging_lbvh: wgpu::Buffer,
 
     // Pipelines
     pub soil_pipeline: wgpu::ComputePipeline,
@@ -70,8 +72,11 @@ pub struct GpuComputeDriver {
     pub morton_encode_pipeline: wgpu::ComputePipeline,
     pub morton_offsets_pipeline: wgpu::ComputePipeline,
     pub lbvh_pipeline: wgpu::ComputePipeline,
+    pub lbvh_aabb_pipeline: wgpu::ComputePipeline,
     pub agent_pipeline: wgpu::ComputePipeline,
+    pub agent_pipelines: [wgpu::ComputePipeline; 8],
     pub birth_pipeline: wgpu::ComputePipeline,
+    pub birth_pipelines: [wgpu::ComputePipeline; 2],
     pub spatial_query_pipeline: wgpu::ComputePipeline,
     pub cull_clear_pipeline: wgpu::ComputePipeline,
     pub cull_pipeline: wgpu::ComputePipeline,
@@ -296,6 +301,20 @@ impl GpuComputeDriver {
         let staging_freelist = device.create_buffer(&wgpu::BufferDescriptor {
             label: Some("staging_freelist"),
             size: freelist_size,
+            usage: BufferUsages::MAP_READ | BufferUsages::COPY_DST,
+            mapped_at_creation: false,
+        });
+
+        let staging_audio = device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("staging_audio"),
+            size: 4096, // 256 AudioVoice * 16 bytes
+            usage: BufferUsages::MAP_READ | BufferUsages::COPY_DST,
+            mapped_at_creation: false,
+        });
+
+        let staging_lbvh = device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("staging_lbvh"),
+            size: (64 * std::mem::size_of::<crate::gpu::types::GpuLbvhNode>()) as u64,
             usage: BufferUsages::MAP_READ | BufferUsages::COPY_DST,
             mapped_at_creation: false,
         });
@@ -557,6 +576,19 @@ impl GpuComputeDriver {
             cache: None,
         });
 
+        let lbvh_aabb_sm = device.create_shader_module(wgpu::ShaderModuleDescriptor {
+            label: Some("lbvh_aabb_sm"),
+            source: wgpu::ShaderSource::Wgsl(include_str!("../../assets/shaders/lbvh_aabb.wgsl").into()),
+        });
+        let lbvh_aabb_pipeline = device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
+            label: Some("lbvh_aabb_pipeline"),
+            layout: Some(&lbvh_pl),
+            module: &lbvh_aabb_sm,
+            entry_point: Some("fit_lbvh_aabbs"),
+            compilation_options: wgpu::PipelineCompilationOptions::default(),
+            cache: None,
+        });
+
         // 4. Agent Pipeline & Bind Groups (Group 0: 8 storage buffers; Group 1: uniform + texture + sampler)
         let agent_bgl0 = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
             label: Some("agent_bgl0"),
@@ -618,6 +650,28 @@ impl GpuComputeDriver {
             cache: None,
         });
 
+        let agent_pipelines: [wgpu::ComputePipeline; 8] = core::array::from_fn(|i| {
+            let bh = (i & 1) != 0;
+            let cortex = (i & 2) != 0;
+            let sex = (i & 4) != 0;
+            let label = format!("agent_pipeline_mod_{}", i);
+            device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
+                label: Some(&label),
+                layout: Some(&agent_pl),
+                module: &agent_sm,
+                entry_point: Some("agent_main"),
+                compilation_options: wgpu::PipelineCompilationOptions {
+                    constants: &[
+                        ("ENABLE_BARNES_HUT", if bh { 1.0 } else { 0.0 }),
+                        ("ENABLE_EXPANDED_CORTEX", if cortex { 1.0 } else { 0.0 }),
+                        ("ENABLE_SEXUAL_SELECTION", if sex { 1.0 } else { 0.0 }),
+                    ],
+                    zero_initialize_workgroup_memory: false,
+                },
+                cache: None,
+            })
+        });
+
         // 5. Birth Pipeline & Bind Groups
         let birth_bgl0 = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
             label: Some("birth_bgl0"),
@@ -669,6 +723,24 @@ impl GpuComputeDriver {
             cache: None,
         });
 
+        let birth_pipelines: [wgpu::ComputePipeline; 2] = core::array::from_fn(|i| {
+            let cortex = i == 1;
+            let label = format!("birth_pipeline_mod_{}", i);
+            device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
+                label: Some(&label),
+                layout: Some(&birth_pl),
+                module: &birth_sm,
+                entry_point: Some("birth_main"),
+                compilation_options: wgpu::PipelineCompilationOptions {
+                    constants: &[
+                        ("ENABLE_EXPANDED_CORTEX", if cortex { 1.0 } else { 0.0 }),
+                    ],
+                    zero_initialize_workgroup_memory: false,
+                },
+                cache: None,
+            })
+        });
+
         let spatial_query_sm = device.create_shader_module(wgpu::ShaderModuleDescriptor {
             label: Some("spatial_query_sm"),
             source: wgpu::ShaderSource::Wgsl(std::borrow::Cow::Borrowed(include_str!("../../assets/shaders/spatial_query.wgsl"))),
@@ -684,6 +756,7 @@ impl GpuComputeDriver {
                 wgpu::BindGroupLayoutEntry { binding: 4, visibility: wgpu::ShaderStages::COMPUTE, ty: wgpu::BindingType::Buffer { ty: wgpu::BufferBindingType::Storage { read_only: false }, has_dynamic_offset: false, min_binding_size: None }, count: None },
                 wgpu::BindGroupLayoutEntry { binding: 5, visibility: wgpu::ShaderStages::COMPUTE, ty: wgpu::BindingType::Buffer { ty: wgpu::BufferBindingType::Storage { read_only: false }, has_dynamic_offset: false, min_binding_size: None }, count: None },
                 wgpu::BindGroupLayoutEntry { binding: 6, visibility: wgpu::ShaderStages::COMPUTE, ty: wgpu::BindingType::Buffer { ty: wgpu::BufferBindingType::Storage { read_only: false }, has_dynamic_offset: false, min_binding_size: None }, count: None },
+                wgpu::BindGroupLayoutEntry { binding: 7, visibility: wgpu::ShaderStages::COMPUTE, ty: wgpu::BindingType::Buffer { ty: wgpu::BufferBindingType::Storage { read_only: false }, has_dynamic_offset: false, min_binding_size: None }, count: None },
             ],
         });
 
@@ -698,6 +771,7 @@ impl GpuComputeDriver {
                 wgpu::BindGroupEntry { binding: 4, resource: visible_instances_buf.as_entire_binding() },
                 wgpu::BindGroupEntry { binding: 5, resource: cull_output_buf.as_entire_binding() },
                 wgpu::BindGroupEntry { binding: 6, resource: dart_instances_buf.as_entire_binding() },
+                wgpu::BindGroupEntry { binding: 7, resource: agent_atomics_buf.as_entire_binding() },
             ],
         });
 
@@ -897,14 +971,19 @@ impl GpuComputeDriver {
             staging_visible_instances,
             staging_dart_instances,
             staging_freelist,
+            staging_audio,
+            staging_lbvh,
             soil_pipeline,
             preamble_pipeline,
             morton_clear_pipeline,
             morton_encode_pipeline,
             morton_offsets_pipeline,
             lbvh_pipeline,
+            lbvh_aabb_pipeline,
             agent_pipeline,
+            agent_pipelines,
             birth_pipeline,
+            birth_pipelines,
             spatial_query_pipeline,
             cull_clear_pipeline,
             cull_pipeline,
@@ -1024,7 +1103,20 @@ impl GpuComputeDriver {
     }
 
     pub fn dispatch_sub_ticks(&self, sub_ticks: u32, params: &GpuSimParams) {
+        self.dispatch_sub_ticks_with_mods(sub_ticks, params, false, false, false);
+    }
+
+    pub fn dispatch_sub_ticks_with_mods(
+        &self,
+        sub_ticks: u32,
+        params: &GpuSimParams,
+        barnes_hut: bool,
+        expanded_cortex: bool,
+        sexual_selection: bool,
+    ) {
         let mut cur_params = *params;
+        let mod_idx = (barnes_hut as usize) | ((expanded_cortex as usize) << 1) | ((sexual_selection as usize) << 2);
+        let birth_mod_idx = expanded_cortex as usize;
 
         for step in 0..sub_ticks {
             cur_params.sub_tick = step;
@@ -1035,27 +1127,32 @@ impl GpuComputeDriver {
                 label: Some("gpu_sim_sub_tick_encoder"),
             });
 
+            // 1. Soil decay and renewal
             {
                 let mut cpass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {
-                    label: Some("gpu_sim_pass"),
+                    label: Some("gpu_soil_pass"),
                     timestamp_writes: None,
                 });
-
-                // 1. Soil decay and diffusion
                 cpass.set_pipeline(&self.soil_pipeline);
                 cpass.set_bind_group(0, &self.soil_bind_group, &[]);
                 cpass.dispatch_workgroups((self.soil_cols + 7) / 8, (self.soil_rows + 7) / 8, 1);
+            }
 
-                // 2. Preamble clear pass: clears mate/death claims, queue counters, and resets instantaneous population on final sub-tick
-                let active_slots = cur_params.max_agents.max(cur_params.agent_count);
-                let agent_workgroups = (active_slots + 63) / 64;
-                if agent_workgroups > 0 {
+            let active_slots = cur_params.max_agents.max(cur_params.agent_count);
+            let agent_workgroups = (active_slots + 63) / 64;
+
+            if agent_workgroups > 0 {
+                // 2. Preamble clear pass & Morton Grid spatial hashing
+                {
+                    let mut cpass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {
+                        label: Some("gpu_preamble_and_morton_pass"),
+                        timestamp_writes: None,
+                    });
                     cpass.set_pipeline(&self.preamble_pipeline);
                     cpass.set_bind_group(0, &self.preamble_bg0, &[]);
                     cpass.set_bind_group(1, &self.preamble_bg1, &[]);
                     cpass.dispatch_workgroups(agent_workgroups, 1, 1);
 
-                    // 3. Morton grid spatial hashing
                     cpass.set_pipeline(&self.morton_clear_pipeline);
                     cpass.set_bind_group(0, &self.morton_bind_group, &[]);
                     cpass.dispatch_workgroups(1, 1, 1);
@@ -1067,22 +1164,64 @@ impl GpuComputeDriver {
                     cpass.set_pipeline(&self.morton_offsets_pipeline);
                     cpass.set_bind_group(0, &self.morton_bind_group, &[]);
                     cpass.dispatch_workgroups(agent_workgroups, 1, 1);
+                }
 
-                    // 3. LBVH construction
-                    if cur_params.agent_count >= 2 {
-                        cpass.set_pipeline(&self.lbvh_pipeline);
-                        cpass.set_bind_group(0, &self.lbvh_bind_group, &[]);
-                        cpass.dispatch_workgroups((cur_params.agent_count - 1 + 63) / 64, 1, 1);
+                // 3. LBVH Phase 1: Hierarchy Topology
+                if cur_params.agent_count >= 2 {
+                    let mut cpass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {
+                        label: Some("gpu_lbvh_phase1_pass"),
+                        timestamp_writes: None,
+                    });
+                    cpass.set_pipeline(&self.lbvh_pipeline);
+                    cpass.set_bind_group(0, &self.lbvh_bind_group, &[]);
+                    cpass.dispatch_workgroups((cur_params.agent_count - 1 + 63) / 64, 1, 1);
+                }
+
+                // 4. LBVH Phase 2: Bottom-Up AABB fitting across explicit compute pass barrier
+                if cur_params.agent_count >= 1 {
+                    let mut cpass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {
+                        label: Some("gpu_lbvh_phase2_pass"),
+                        timestamp_writes: None,
+                    });
+                    cpass.set_pipeline(&self.lbvh_aabb_pipeline);
+                    cpass.set_bind_group(0, &self.lbvh_bind_group, &[]);
+                    cpass.dispatch_workgroups((cur_params.agent_count + 63) / 64, 1, 1);
+                }
+
+                // 5. Unified Spatial Query (Mouse Picking & AoE tools) on sub_tick 0
+                if cur_params.tool_type != 0xFFFFFFFF && step == 0 {
+                    let mut cpass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {
+                        label: Some("gpu_spatial_query_pass"),
+                        timestamp_writes: None,
+                    });
+                    cpass.set_pipeline(&self.spatial_query_pipeline);
+                    cpass.set_bind_group(0, &self.spatial_query_bind_group, &[]);
+                    if cur_params.tool_type == 0 {
+                        cpass.dispatch_workgroups(1, 1, 1);
+                    } else {
+                        cpass.dispatch_workgroups(agent_workgroups, 1, 1);
                     }
+                }
 
-                    // 4. Agent forward pass, kinematics & combat
-                    cpass.set_pipeline(&self.agent_pipeline);
+                // 6. Agent forward pass, kinematics & combat (using specialized mod pipeline)
+                {
+                    let mut cpass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {
+                        label: Some("gpu_agent_step_pass"),
+                        timestamp_writes: None,
+                    });
+                    cpass.set_pipeline(&self.agent_pipelines[mod_idx]);
                     cpass.set_bind_group(0, &self.agent_group0, &[]);
                     cpass.set_bind_group(1, &self.agent_group1, &[]);
                     cpass.dispatch_workgroups(agent_workgroups, 1, 1);
+                }
 
-                    // 5. Decoupled birth step (parallel dispatch for up to 64 births per sub-tick)
-                    cpass.set_pipeline(&self.birth_pipeline);
+                // 7. Decoupled birth step across compute pass barrier (using specialized birth pipeline)
+                {
+                    let mut cpass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {
+                        label: Some("gpu_birth_step_pass"),
+                        timestamp_writes: None,
+                    });
+                    cpass.set_pipeline(&self.birth_pipelines[birth_mod_idx]);
                     cpass.set_bind_group(0, &self.birth_group0, &[]);
                     cpass.set_bind_group(1, &self.birth_group1, &[]);
                     cpass.dispatch_workgroups(64, 1, 1);
@@ -1536,7 +1675,8 @@ impl GpuComputeDriver {
             let id = self.next_agent_id.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
             let root = (self.next_agent_root.fetch_add(1, std::sync::atomic::Ordering::Relaxed) % 16) as u32;
             let energy = 43.0f32;
-            let angle = ((i as f32) * 1.6180339) % (2.0 * std::f32::consts::PI);
+            let phi = (1.0 + 5.0f32.sqrt()) * 0.5;
+            let angle = ((i as f32) * phi) % (2.0 * std::f32::consts::PI);
 
             let pal_color = crate::theme::PALETTE[(root as usize) % crate::theme::PALETTE.len()];
             let packed_color = (pal_color.r() as u32)
@@ -1612,5 +1752,135 @@ impl GpuComputeDriver {
         self.queue.write_buffer(&self.queue_buffer, 24, bytemuck::bytes_of(&next_id));
 
         slots
+    }
+
+    pub fn readback_audio_voices(&self, count: usize) -> Vec<AudioVoice> {
+        let count = count.min(256);
+        if count == 0 {
+            return Vec::new();
+        }
+        let byte_len = (count * 16) as u64;
+        let mut encoder = self.device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
+            label: Some("readback_audio_voices_encoder"),
+        });
+        // Offset 1,048,704 in queue_buffer
+        encoder.copy_buffer_to_buffer(&self.queue_buffer, 1_048_704, &self.staging_audio, 0, byte_len);
+        self.queue.submit([encoder.finish()]);
+
+        let slice = self.staging_audio.slice(0..byte_len);
+        let (sender, receiver) = std::sync::mpsc::channel();
+        slice.map_async(wgpu::MapMode::Read, move |res| {
+            let _ = sender.send(res);
+        });
+        self.device.poll(wgpu::PollType::wait_indefinitely()).unwrap();
+        receiver.recv().unwrap().unwrap();
+
+        let data = slice.get_mapped_range();
+        let voices = bytemuck::cast_slice::<u8, AudioVoice>(&data[0..byte_len as usize]).to_vec();
+        drop(data);
+        self.staging_audio.unmap();
+
+        voices
+    }
+
+    pub fn readback_lbvh_nodes(&self, count: usize) -> Vec<GpuLbvhNode> {
+        let count = count.min(64);
+        if count == 0 {
+            return Vec::new();
+        }
+        let node_size = std::mem::size_of::<GpuLbvhNode>() as u64;
+        let byte_len = (count as u64) * node_size;
+        let mut encoder = self.device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
+            label: Some("readback_lbvh_nodes_encoder"),
+        });
+        encoder.copy_buffer_to_buffer(&self.lbvh_nodes_buf, 0, &self.staging_lbvh, 0, byte_len);
+        self.queue.submit([encoder.finish()]);
+
+        let slice = self.staging_lbvh.slice(0..byte_len);
+        let (sender, receiver) = std::sync::mpsc::channel();
+        slice.map_async(wgpu::MapMode::Read, move |res| {
+            let _ = sender.send(res);
+        });
+        self.device.poll(wgpu::PollType::wait_indefinitely()).unwrap();
+        receiver.recv().unwrap().unwrap();
+
+        let data = slice.get_mapped_range();
+        let nodes = bytemuck::cast_slice::<u8, GpuLbvhNode>(&data[0..byte_len as usize]).to_vec();
+        drop(data);
+        self.staging_lbvh.unmap();
+
+        nodes
+    }
+
+    pub fn extract_gpu_minimap_clusters(&self, target_depth: usize) -> Vec<crate::gpu::lbvh::MinimapCluster> {
+        let nodes = self.readback_lbvh_nodes(63);
+        if nodes.is_empty() {
+            return Vec::new();
+        }
+        let tree = crate::gpu::lbvh::LbvhTree { nodes };
+        tree.extract_minimap_clusters(target_depth)
+    }
+
+    pub fn readback_agent_slot(&self, slot: u32) -> Option<(GpuAgentState, GpuAgentGenome, GpuAgentAtomic)> {
+        if slot >= self.max_agents {
+            return None;
+        }
+        let state_offset = (slot as u64) * 128;
+        let genome_offset = (slot as u64) * 352;
+        let atomic_offset = (slot as u64) * 16;
+
+        let mut encoder = self.device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
+            label: Some("readback_agent_slot_encoder"),
+        });
+        encoder.copy_buffer_to_buffer(&self.agent_states_buf, state_offset, &self.staging_agent_states, 0, 128);
+        encoder.copy_buffer_to_buffer(&self.agent_genomes_buf, genome_offset, &self.staging_genomes, 0, 352);
+        encoder.copy_buffer_to_buffer(&self.agent_atomics_buf, atomic_offset, &self.staging_atomics, 0, 16);
+        self.queue.submit([encoder.finish()]);
+
+        // Map state
+        let s_slice = self.staging_agent_states.slice(0..128);
+        let (s_tx, s_rx) = std::sync::mpsc::channel();
+        s_slice.map_async(wgpu::MapMode::Read, move |res| { let _ = s_tx.send(res); });
+        self.device.poll(wgpu::PollType::wait_indefinitely()).unwrap();
+        s_rx.recv().unwrap().unwrap();
+        let state = *bytemuck::from_bytes::<GpuAgentState>(&s_slice.get_mapped_range()[0..128]);
+        self.staging_agent_states.unmap();
+
+        // Map genome
+        let g_slice = self.staging_genomes.slice(0..352);
+        let (g_tx, g_rx) = std::sync::mpsc::channel();
+        g_slice.map_async(wgpu::MapMode::Read, move |res| { let _ = g_tx.send(res); });
+        self.device.poll(wgpu::PollType::wait_indefinitely()).unwrap();
+        g_rx.recv().unwrap().unwrap();
+        let genome = *bytemuck::from_bytes::<GpuAgentGenome>(&g_slice.get_mapped_range()[0..352]);
+        self.staging_genomes.unmap();
+
+        // Map atomic
+        let a_slice = self.staging_atomics.slice(0..16);
+        let (a_tx, a_rx) = std::sync::mpsc::channel();
+        a_slice.map_async(wgpu::MapMode::Read, move |res| { let _ = a_tx.send(res); });
+        self.device.poll(wgpu::PollType::wait_indefinitely()).unwrap();
+        a_rx.recv().unwrap().unwrap();
+        let atomic = *bytemuck::from_bytes::<GpuAgentAtomic>(&a_slice.get_mapped_range()[0..16]);
+        self.staging_atomics.unmap();
+
+        Some((state, genome, atomic))
+    }
+
+    pub fn sync_soil_cells_gpu(&self, soil: &clank_core::soil::SoilGrid, cx: i32, cy: i32, radius: i32) {
+        for dy in -radius..=radius {
+            for dx in -radius..=radius {
+                if dx * dx + dy * dy <= radius * radius {
+                    let x = (cx + dx).rem_euclid(self.soil_cols as i32) as u32;
+                    let y = (cy + dy).rem_euclid(self.soil_rows as i32) as u32;
+                    let idx = (y * self.soil_cols + x) as usize;
+                    let food = soil.food.get(idx).copied().unwrap_or(0.0);
+                    let taint = soil.taint.get(idx).copied().unwrap_or(0.0);
+                    let scent = soil.scent.get(idx).copied().unwrap_or(0.0);
+                    let cell = crate::gpu::soil_pipeline::GpuSoilPipeline::from_physics(food, taint, scent);
+                    self.queue.write_buffer(&self.soil_buf, (idx * 16) as u64, bytemuck::bytes_of(&cell));
+                }
+            }
+        }
     }
 }

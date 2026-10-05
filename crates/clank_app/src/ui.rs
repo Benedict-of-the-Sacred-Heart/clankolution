@@ -181,8 +181,22 @@ pub fn update_minimap_cache_from_sim(sim: &SimWorld, cache: &mut MinimapCache) {
     }
 }
 
-pub fn update_minimap_cache_system(sim: Option<Res<SimWorld>>, mut cache: ResMut<MinimapCache>) {
+pub fn update_minimap_cache_system(
+    sim: Option<Res<SimWorld>>,
+    gpu_res: Option<Res<crate::sim::GpuDriverResource>>,
+    mut cache: ResMut<MinimapCache>,
+) {
     if let Some(sim) = sim {
+        if sim.active_engine == crate::sim::ActiveEngine::Gpu {
+            if let Some(ref gpu) = gpu_res {
+                if let Some(ref driver) = gpu.driver {
+                    if driver.is_initialized() {
+                        cache.clusters = driver.extract_gpu_minimap_clusters(4);
+                        return;
+                    }
+                }
+            }
+        }
         update_minimap_cache_from_sim(&sim, &mut cache);
     }
 }

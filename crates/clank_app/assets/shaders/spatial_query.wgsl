@@ -107,6 +107,13 @@ struct DartInstance {
     pad1: vec2u,
 }
 
+struct GpuAgentAtomic {
+    energy_milli: atomic<i32>,
+    mate_claim: atomic<u32>,
+    mate_energy_milli: atomic<u32>,
+    dead_claimed: atomic<u32>,
+}
+
 @group(0) @binding(0) var<storage, read_write> agent_states: array<GpuAgentState>;
 @group(0) @binding(1) var<storage, read> lbvh_nodes: array<GpuLbvhNode>;
 @group(0) @binding(2) var<storage, read_write> queue_buffer: ConsolidatedQueue;
@@ -114,6 +121,7 @@ struct DartInstance {
 @group(0) @binding(4) var<storage, read_write> visible_instances: array<u32>;
 @group(0) @binding(5) var<storage, read_write> cull_output: CullOutput;
 @group(0) @binding(6) var<storage, read_write> dart_instances: array<DartInstance>;
+@group(0) @binding(7) var<storage, read_write> agent_atomics: array<GpuAgentAtomic>;
 
 fn toroidal_aabb_dist_1d(p: f32, b_min: f32, b_max: f32, w: f32) -> f32 {
     if (p >= b_min && p <= b_max) { return 0.0; }
@@ -242,14 +250,18 @@ fn spatial_query_main(@builtin(global_invocation_id) id: vec3u) {
             if (params.tool_type == 1u) {
                 // Nourish: grant energy
                 agent_states[agent_idx].angle_energy[1] = min(agent_states[agent_idx].angle_energy[1] + 25.0, 150.0);
+                atomicAdd(&agent_atomics[agent_idx].energy_milli, 25000);
             } else if (params.tool_type == 2u) {
                 // Blight: deduct energy
                 agent_states[agent_idx].angle_energy[1] = max(agent_states[agent_idx].angle_energy[1] - 30.0, 0.0);
+                atomicSub(&agent_atomics[agent_idx].energy_milli, 30000);
             } else if (params.tool_type == 3u) {
                 // Extinguish: kill agent
                 agent_states[agent_idx].meta_flags |= (1u << 13u);
                 agent_states[agent_idx].angle_energy[1] = 0.0;
                 agent_states[agent_idx].visual_cache = 0u;
+                atomicStore(&agent_atomics[agent_idx].energy_milli, 0);
+                atomicStore(&agent_atomics[agent_idx].dead_claimed, 1u);
             }
         }
     }

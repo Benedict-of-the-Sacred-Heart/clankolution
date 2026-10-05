@@ -65,7 +65,7 @@ fn fit_lbvh_aabbs(@builtin(global_invocation_id) id: vec3u) {
     let n = params.agent_count;
     if (id.x >= n) { return; }
 
-    let agent_idx = spatial_keys[id.x].y;
+    let agent_idx = id.x;
 
     // Degenerate N=1 guard
     if (n == 1u) {
@@ -99,7 +99,9 @@ fn fit_lbvh_aabbs(@builtin(global_invocation_id) id: vec3u) {
 
     // Climb tree towards root
     var curr = lbvh_nodes[leaf_node_idx].parent;
-    while (curr != 0xFFFFFFFFu) {
+    var steps = 0u;
+    while (curr != 0xFFFFFFFFu && steps < 64u) {
+        steps += 1u;
         let flag = atomicAdd(&node_flags[curr], 1u);
         if (flag < 1u) {
             // First child arrived; terminate thread to let second child process parent
@@ -132,6 +134,9 @@ fn fit_lbvh_aabbs(@builtin(global_invocation_id) id: vec3u) {
             lbvh_nodes[curr].dominant_lineage = lbvh_nodes[right].dominant_lineage;
         }
 
+        if (curr == 0u) {
+            break;
+        }
         curr = lbvh_nodes[curr].parent;
     }
 }

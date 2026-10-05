@@ -207,7 +207,6 @@ pub fn sync_gpu_to_rust(
         }
 
         let is_dead = (state.meta_flags & (1 << 13)) != 0;
-        let atomic_energy = atomics.get(i).map(|at| at.energy_milli as f64 * 0.001).unwrap_or(state.angle_energy[1] as f64);
 
         if is_dead {
             if i < sim.world.agents.len() {
@@ -216,60 +215,18 @@ pub fn sync_gpu_to_rust(
             continue;
         }
 
-        let a = if i < sim.world.agents.len() {
-            &mut sim.world.agents[i]
+        let dummy_genome = GpuAgentGenome { packed_genes: [0u32; 88] };
+        let genome = genomes.get(i).unwrap_or(&dummy_genome);
+        let atomic = atomics.get(i);
+        let agent_data = unpack_gpu_agent_to_agent_data(state, genome, atomic);
+
+        if i < sim.world.agents.len() {
+            sim.world.agents[i] = agent_data;
         } else {
-            if is_dead {
-                continue;
-            }
-            if sim.world.agents.iter().filter(|ag| ag.dead == 0).count() >= sim.world.max_cap {
-                continue;
-            }
-            sim.world.agents.push(AgentData::default());
-            sim.world.agents.last_mut().unwrap()
-        };
-        a.id = state.id;
-        a.x = state.pos_vel[0] as f64;
-        a.y = state.pos_vel[1] as f64;
-        a.vx = state.pos_vel[2] as f64;
-        a.vy = state.pos_vel[3] as f64;
-
-        a.angle = state.angle_energy[0] as f64;
-        // Prioritize atomic energy ground truth
-        a.energy = atomic_energy.max(0.0);
-        a.feeding = state.angle_energy[2] as f64;
-        a.attack = state.angle_energy[3] as f64;
-
-        for (k, val) in state.traits.iter().enumerate() {
-            if k < 6 {
-                a.tr[k] = *val as f64;
-            } else if k == 6 {
-                a.signal = *val as f64;
-            } else if k == 7 {
-                a.last_victim = *val as u32;
+            if sim.world.agents.iter().filter(|ag| ag.dead == 0).count() < sim.world.max_cap {
+                sim.world.agents.push(agent_data);
             }
         }
-
-        for (k, val) in state.hidden.iter().enumerate() {
-            a.h[k] = *val;
-        }
-
-        if let Some(genome) = genomes.get(i) {
-            let bytes: [u8; 352] = bytemuck::cast(genome.packed_genes);
-            for k in 0..a.genes.len() {
-                a.genes[k] = bytes[k] as i8;
-            }
-        }
-
-        let meta = state.meta_flags;
-        a.root = meta & 0x0F;
-        a.cooldown = (meta >> 4) & 0x03;
-        a.birth = (meta >> 6) & 0x7F;
-        a.dead = (meta >> 13) & 0x01;
-        a.kills = meta >> 14;
-
-        a.age = state.age_gen & 0xFFFF;
-        a.gen = state.age_gen >> 16;
     }
 
     // Filter dead agents in-place (matching CPU World::evolve stable compaction)
@@ -291,4 +248,54 @@ pub fn sync_gpu_to_rust(
             sim.world.soil.scent[i] = cell.scent_milli as f32 * 0.001;
         }
     }
+}
+
+/// Unpacks a single GPU agent state and genome into an AgentData struct.
+pub fn unpack_gpu_agent_to_agent_data(
+    state: &GpuAgentState,
+    genome: &GpuAgentGenome,
+    atomic: Option<&GpuAgentAtomic>,
+) -> AgentData {
+    let mut a = AgentData::default();
+    a.id = state.id;
+    a.x = state.pos_vel[0] as f64;
+    a.y = state.pos_vel[1] as f64;
+    a.vx = state.pos_vel[2] as f64;
+    a.vy = state.pos_vel[3] as f64;
+
+    a.angle = state.angle_energy[0] as f64;
+    let atomic_energy = atomic.map(|at| at.energy_milli as f64 * 0.001).unwrap_or(state.angle_energy[1] as f64);
+    a.energy = atomic_energy.max(0.0);
+    a.feeding = state.angle_energy[2] as f64;
+    a.attack = state.angle_energy[3] as f64;
+
+    for (k, val) in state.traits.iter().enumerate() {
+        if k < 6 {
+            a.tr[k] = *val as f64;
+        } else if k == 6 {
+            a.signal = *val as f64;
+        } else if k == 7 {
+            a.last_victim = *val as u32;
+        }
+    }
+
+    for (k, val) in state.hidden.iter().enumerate() {
+        a.h[k] = *val;
+    }
+
+    let bytes: [u8; 352] = bytemuck::cast(genome.packed_genes);
+    for k in 0..a.genes.len() {
+        a.genes[k] = bytes[k] as i8;
+    }
+
+    let meta = state.meta_flags;
+    a.root = meta & 0x0F;
+    a.cooldown = (meta >> 4) & 0x03;
+    a.birth = (meta >> 6) & 0x7F;
+    a.dead = (meta >> 13) & 0x01;
+    a.kills = meta >> 14;
+
+    a.age = state.age_gen & 0xFFFF;
+    a.gen = state.age_gen >> 16;
+    a
 }
