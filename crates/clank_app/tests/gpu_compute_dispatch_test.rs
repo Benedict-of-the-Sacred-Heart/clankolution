@@ -11,8 +11,15 @@ fn test_gpu_compute_driver_initialization_and_dispatch() {
     }
     let driver = driver.unwrap();
 
-    let sim = SimWorld::new(42);
-    let (states, genomes, atomics, soil, params) = sync_rust_to_gpu(&sim);
+    let mut sim = SimWorld::new(42);
+    // Cluster low-energy victims around attacker to ensure combat kill attribution in 16 ticks
+    for i in 1..15 {
+        sim.world.agents[i].energy = 0.05;
+        sim.world.agents[i].x = sim.world.agents[0].x + (i as f64 * 0.2);
+        sim.world.agents[i].y = sim.world.agents[0].y + (i as f64 * 0.2);
+    }
+    let (states, genomes, atomics, soil, mut params) = sync_rust_to_gpu(&sim);
+    params.hostility = 10.0;
 
     driver.upload_state(&states, &genomes, &atomics, &soil, &params);
 
@@ -34,9 +41,10 @@ fn test_gpu_compute_clears_dead_and_spawns_births() {
     let driver = driver.unwrap();
 
     let mut sim = SimWorld::new(1234);
-    // Give all agents high energy so they reproduce
+    // Give all agents high energy and mature age so they reproduce
     for a in &mut sim.world.agents {
         a.energy = 150.0;
+        a.age = 100;
         a.cooldown = 0;
         a.birth = 0;
     }
