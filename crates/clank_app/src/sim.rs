@@ -244,6 +244,28 @@ pub fn sim_step_system(
                     sim.world.births += telemetry.total_births.max(telemetry.birth_count);
                     sim.gpu_population = telemetry.population;
 
+                    // Spore replenishment if GPU population collapses (matching HTML line 1464 & Rust world.rs line 984)
+                    if sim.gpu_population < 15 && sim.world.tick % 45 < steps {
+                        let n = 15 - sim.gpu_population;
+                        let mut spore_positions = Vec::with_capacity(n as usize);
+                        for _ in 0..n {
+                            let x = (sim.world.prng.next_f64() * sim.world_width) as f32;
+                            let y = (sim.world.prng.next_f64() * sim.world_height) as f32;
+                            spore_positions.push((x, y));
+                        }
+                        let new_slots = driver.seed_spores_gpu(&spore_positions);
+                        sim.gpu_population += new_slots.len() as u32;
+                        let cur_tick = sim.world.tick;
+                        if sim.world.events.len() < 1024 {
+                            sim.world.events.push(clank_core::SimEvent {
+                                tick: cur_tick,
+                                event_type: 1,
+                                p1: 0,
+                                p2: 0,
+                            });
+                        }
+                    }
+
                     if telemetry.apex_agent_id > 0 {
                         driver.next_agent_id.fetch_max(telemetry.apex_agent_id, std::sync::atomic::Ordering::Relaxed);
                         sim.world.next_id = sim.world.next_id.max(telemetry.apex_agent_id);

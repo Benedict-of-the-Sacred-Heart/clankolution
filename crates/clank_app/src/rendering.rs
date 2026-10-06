@@ -410,13 +410,23 @@ pub fn update_soil_texture_system(
     }
 }
 
+#[derive(Clone, Copy, Debug)]
+pub struct VisualCacheUnpacked {
+    pub radius: f32,
+    pub color: Color,
+    pub is_attacking: bool,
+    pub birth_val: u8,
+    pub signal: f32,
+}
+
 #[inline]
-pub fn unpack_visual_cache(visual_cache: u32, packed_color: u32) -> Option<(f32, Color, bool, bool)> {
+pub fn unpack_visual_cache_detailed(visual_cache: u32, packed_color: u32) -> Option<VisualCacheUnpacked> {
     if visual_cache == 0 {
         return None;
     }
     let r_u8 = (visual_cache & 0xFF) as f32;
     let radius = 2.3 + (r_u8 / 255.0) * 4.5;
+    let signal = ((visual_cache >> 8) & 0xFF) as f32 / 255.0;
     let e_u8 = ((visual_cache >> 16) & 0xFF) as f32;
     let alpha = (0.55 + (e_u8 / 255.0 * 100.0 / 160.0)).clamp(0.55, 1.0);
 
@@ -426,9 +436,21 @@ pub fn unpack_visual_cache(visual_cache: u32, packed_color: u32) -> Option<(f32,
     let base_color = Color::srgba_u8(r, g, b, (alpha * 255.0) as u8);
 
     let is_attacking = (visual_cache & (1 << 24)) != 0;
-    let has_birth = (visual_cache & (1 << 25)) != 0;
+    let birth_val = ((visual_cache >> 25) & 0x7F) as u8;
 
-    Some((radius, base_color, is_attacking, has_birth))
+    Some(VisualCacheUnpacked {
+        radius,
+        color: base_color,
+        is_attacking,
+        birth_val,
+        signal,
+    })
+}
+
+#[inline]
+pub fn unpack_visual_cache(visual_cache: u32, packed_color: u32) -> Option<(f32, Color, bool, bool)> {
+    let d = unpack_visual_cache_detailed(visual_cache, packed_color)?;
+    Some((d.radius, d.color, d.is_attacking, d.birth_val > 0))
 }
 
 pub fn generate_dart_mesh_from_gpu_states(
@@ -501,7 +523,7 @@ pub fn generate_outline_mesh_from_gpu_states(
     colors.reserve(agents.len() * 12);
 
     for a in agents {
-        let Some((radius, _color, is_attacking, has_birth)) = unpack_visual_cache(a.visual_cache, a.packed_color) else {
+        let Some(vis) = unpack_visual_cache_detailed(a.visual_cache, a.packed_color) else {
             continue;
         };
 
@@ -509,7 +531,7 @@ pub fn generate_outline_mesh_from_gpu_states(
         let bevy_pos = sim_to_bevy_coord(sim_pos, world_height);
         let rot = Mat2::from_angle(-a.angle_energy[0]);
 
-        let r = radius;
+        let r = vis.radius;
         let armor = a.traits[3];
         let carnivory = a.traits[5];
 
@@ -518,7 +540,7 @@ pub fn generate_outline_mesh_from_gpu_states(
         let rear = bevy_pos + rot * Vec2::new(-r * (0.45 + carnivory), 0.0);
         let left = bevy_pos + rot * Vec2::new(-r * 0.75, -r * (0.5 + armor * 0.45));
 
-        let border_rgba = if is_attacking {
+        let border_rgba = if vis.is_attacking {
             [1.0, 0.33, 0.31, 1.0]
         } else {
             [0.082, 0.188, 0.204, 1.0]
@@ -566,14 +588,20 @@ pub fn generate_outline_mesh_from_gpu_states(
             colors.push(ant_color);
         }
 
-        // Birth halo ring if newborn
-        if has_birth {
-            let birth_val = ((a.meta_flags >> 6) & 0x7F) as f32;
-            let halo_r = r + 3.0 + ((95.0 - birth_val).max(0.0)) * 0.12;
-            let halo_color = [1.0, 0.95, 0.8, (birth_val / 120.0).clamp(0.0, 1.0)];
-            for seg in 0..8 {
-                let theta1 = (seg as f32) * std::f32::consts::TAU / 8.0;
-                let theta2 = ((seg + 1) as f32) * std::f32::consts::TAU / 8.0;
+        // Birth halo ring if newborn (dynamic expanding ring in creature lineage color)
+        let birth_val = if vis.birth_val > 0 {
+            vis.birth_val
+        } else {
+            ((a.meta_flags >> 6) & 0x7F) as u8
+        };
+        if birth_val > 0 {
+            let birth_f = birth_val as f32;
+            let halo_r = r + 3.0 + ((95.0 - birth_f).max(0.0)) * 0.12;
+            let c = vis.color.to_srgba();
+            let halo_color = [c.red, c.green, c.blue, (birth_f / 120.0).clamp(0.0, 1.0)];
+            for seg in 0..16 {
+                let theta1 = (seg as f32) * std::f32::consts::TAU / 16.0;
+                let theta2 = ((seg + 1) as f32) * std::f32::consts::TAU / 16.0;
                 let p1 = bevy_pos + Vec2::new(theta1.cos() * halo_r, theta1.sin() * halo_r);
                 let p2 = bevy_pos + Vec2::new(theta2.cos() * halo_r, theta2.sin() * halo_r);
                 positions.push([p1.x, p1.y, -1.8]);
@@ -616,7 +644,11 @@ pub fn generate_dart_mesh_from_instances(
 
         let r = radius;
         let armor = inst.pad0;
-        let carnivory = f32::from_bits(inst.pad1[0]);
+        let carnivory = if (inst.pad1[0] & 0xFF000000) != 0 {
+            ((inst.pad1[0] >> 24) as f32) / 255.0
+        } else {
+            f32::from_bits(inst.pad1[0])
+        };
 
         let nose = bevy_pos + rot * Vec2::new(r * 1.5, 0.0);
         let right = bevy_pos + rot * Vec2::new(-r * 0.75, r * (0.5 + armor * 0.45));
@@ -662,7 +694,7 @@ pub fn generate_outline_mesh_from_instances(
     colors.reserve(instances.len() * 12);
 
     for inst in instances {
-        let Some((radius, _color, is_attacking, has_birth)) = unpack_visual_cache(inst.vis_data[1], inst.vis_data[0]) else {
+        let Some(vis) = unpack_visual_cache_detailed(inst.vis_data[1], inst.vis_data[0]) else {
             continue;
         };
 
@@ -670,9 +702,13 @@ pub fn generate_outline_mesh_from_instances(
         let bevy_pos = sim_to_bevy_coord(sim_pos, world_height);
         let rot = Mat2::from_angle(-inst.pos_angle[2]);
 
-        let r = radius;
+        let r = vis.radius;
         let armor = inst.pad0;
-        let carnivory = f32::from_bits(inst.pad1[0]);
+        let carnivory = if (inst.pad1[0] & 0xFF000000) != 0 {
+            ((inst.pad1[0] >> 24) as f32) / 255.0
+        } else {
+            f32::from_bits(inst.pad1[0])
+        };
         let sight = f32::from_bits(inst.pad1[1]);
 
         let nose = bevy_pos + rot * Vec2::new(r * 1.5, 0.0);
@@ -680,7 +716,7 @@ pub fn generate_outline_mesh_from_instances(
         let rear = bevy_pos + rot * Vec2::new(-r * (0.45 + carnivory), 0.0);
         let left = bevy_pos + rot * Vec2::new(-r * 0.75, -r * (0.5 + armor * 0.45));
 
-        let border_rgba = if is_attacking {
+        let border_rgba = if vis.is_attacking {
             [1.0, 0.33, 0.31, 1.0]
         } else {
             [0.082, 0.188, 0.204, 1.0]
@@ -710,7 +746,7 @@ pub fn generate_outline_mesh_from_instances(
         // Sensory antennae whiskers if sight > 0.56
         if sight > 0.56 {
             let ant_color = [border_rgba[0], border_rgba[1], border_rgba[2], 0.6];
-            let signal = 0.5;
+            let signal = vis.signal;
             let ant1_start = bevy_pos + rot * Vec2::new(-r * 0.3, r * 0.6);
             let ant1_end = bevy_pos + rot * Vec2::new(-r * (1.5 + sight), r * (1.1 + signal));
             let ant2_start = bevy_pos + rot * Vec2::new(-r * 0.3, -r * 0.6);
@@ -727,13 +763,15 @@ pub fn generate_outline_mesh_from_instances(
             colors.push(ant_color);
         }
 
-        // Birth halo ring if newborn
-        if has_birth {
-            let halo_r = r + 3.0;
-            let halo_color = [1.0, 0.95, 0.8, 0.8];
-            for seg in 0..8 {
-                let theta1 = (seg as f32) * std::f32::consts::TAU / 8.0;
-                let theta2 = ((seg + 1) as f32) * std::f32::consts::TAU / 8.0;
+        // Birth halo ring if newborn (dynamic expanding ring in creature lineage color)
+        if vis.birth_val > 0 {
+            let birth_f = vis.birth_val as f32;
+            let halo_r = r + 3.0 + (95.0 - birth_f).max(0.0) * 0.12;
+            let c = vis.color.to_srgba();
+            let halo_color = [c.red, c.green, c.blue, (birth_f / 120.0).clamp(0.0, 1.0)];
+            for seg in 0..16 {
+                let theta1 = (seg as f32) * std::f32::consts::TAU / 16.0;
+                let theta2 = ((seg + 1) as f32) * std::f32::consts::TAU / 16.0;
                 let p1 = bevy_pos + Vec2::new(theta1.cos() * halo_r, theta1.sin() * halo_r);
                 let p2 = bevy_pos + Vec2::new(theta2.cos() * halo_r, theta2.sin() * halo_r);
                 positions.push([p1.x, p1.y, -1.8]);
@@ -766,6 +804,210 @@ pub struct AgentOutlineMeshResource {
     pub mesh_handle: Handle<Mesh>,
 }
 
+#[derive(Resource)]
+pub struct AgentGlowMeshResource {
+    pub mesh_handle: Handle<Mesh>,
+}
+
+#[derive(Resource)]
+pub struct AgentTrailMeshResource {
+    pub mesh_handle: Handle<Mesh>,
+}
+
+#[derive(Resource, Default)]
+pub struct AgentTrailsTracker {
+    pub trails: std::collections::HashMap<u32, std::collections::VecDeque<Vec2>>,
+    pub last_clean_tick: u32,
+}
+
+pub fn generate_glow_mesh_from_instances(
+    instances: &[crate::gpu::types::GpuDartInstance],
+    world_height: f32,
+    positions: &mut Vec<[f32; 3]>,
+    colors: &mut Vec<[f32; 4]>,
+) {
+    positions.clear();
+    colors.clear();
+    positions.reserve(instances.len() * 24);
+    colors.reserve(instances.len() * 24);
+
+    for inst in instances {
+        let Some(vis) = unpack_visual_cache_detailed(inst.vis_data[1], inst.vis_data[0]) else {
+            continue;
+        };
+
+        let sim_pos = Vec2::new(inst.pos_angle[0], inst.pos_angle[1]);
+        let bevy_pos = sim_to_bevy_coord(sim_pos, world_height);
+        let r = vis.radius;
+        let c = vis.color.to_srgba();
+        let signal = vis.signal;
+
+        let glow_r = r + 5.0 + 8.0 * signal;
+        let center_alpha = (0.20 + 0.18 * signal).clamp(0.12, 0.40);
+        let center_color = [c.red, c.green, c.blue, center_alpha];
+        let outer_color = [c.red, c.green, c.blue, 0.0];
+
+        for seg in 0..8 {
+            let theta1 = (seg as f32) * std::f32::consts::TAU / 8.0;
+            let theta2 = ((seg + 1) as f32) * std::f32::consts::TAU / 8.0;
+            let p1 = bevy_pos + Vec2::new(theta1.cos() * glow_r, theta1.sin() * glow_r);
+            let p2 = bevy_pos + Vec2::new(theta2.cos() * glow_r, theta2.sin() * glow_r);
+
+            positions.push([bevy_pos.x, bevy_pos.y, -2.05]);
+            positions.push([p1.x, p1.y, -2.05]);
+            positions.push([p2.x, p2.y, -2.05]);
+            colors.push(center_color);
+            colors.push(outer_color);
+            colors.push(outer_color);
+        }
+    }
+
+    if positions.is_empty() {
+        positions.push([0.0, 0.0, -100.0]);
+        positions.push([0.0, 0.0, -100.0]);
+        positions.push([0.0, 0.0, -100.0]);
+        colors.push([0.0, 0.0, 0.0, 0.0]);
+        colors.push([0.0, 0.0, 0.0, 0.0]);
+        colors.push([0.0, 0.0, 0.0, 0.0]);
+    }
+}
+
+pub fn generate_glow_mesh_from_gpu_states(
+    agents: &[crate::gpu::types::GpuAgentState],
+    world_height: f32,
+    positions: &mut Vec<[f32; 3]>,
+    colors: &mut Vec<[f32; 4]>,
+) {
+    positions.clear();
+    colors.clear();
+    positions.reserve(agents.len() * 24);
+    colors.reserve(agents.len() * 24);
+
+    for a in agents {
+        let Some(vis) = unpack_visual_cache_detailed(a.visual_cache, a.packed_color) else {
+            continue;
+        };
+
+        let sim_pos = Vec2::new(a.pos_vel[0], a.pos_vel[1]);
+        let bevy_pos = sim_to_bevy_coord(sim_pos, world_height);
+        let r = vis.radius;
+        let c = vis.color.to_srgba();
+        let signal = a.traits[6];
+
+        let glow_r = r + 5.0 + 8.0 * signal;
+        let center_alpha = (0.20 + 0.18 * signal).clamp(0.12, 0.40);
+        let center_color = [c.red, c.green, c.blue, center_alpha];
+        let outer_color = [c.red, c.green, c.blue, 0.0];
+
+        for seg in 0..8 {
+            let theta1 = (seg as f32) * std::f32::consts::TAU / 8.0;
+            let theta2 = ((seg + 1) as f32) * std::f32::consts::TAU / 8.0;
+            let p1 = bevy_pos + Vec2::new(theta1.cos() * glow_r, theta1.sin() * glow_r);
+            let p2 = bevy_pos + Vec2::new(theta2.cos() * glow_r, theta2.sin() * glow_r);
+
+            positions.push([bevy_pos.x, bevy_pos.y, -2.05]);
+            positions.push([p1.x, p1.y, -2.05]);
+            positions.push([p2.x, p2.y, -2.05]);
+            colors.push(center_color);
+            colors.push(outer_color);
+            colors.push(outer_color);
+        }
+    }
+
+    if positions.is_empty() {
+        positions.push([0.0, 0.0, -100.0]);
+        positions.push([0.0, 0.0, -100.0]);
+        positions.push([0.0, 0.0, -100.0]);
+        colors.push([0.0, 0.0, 0.0, 0.0]);
+        colors.push([0.0, 0.0, 0.0, 0.0]);
+        colors.push([0.0, 0.0, 0.0, 0.0]);
+    }
+}
+
+pub fn generate_swarm_trails_from_sim(
+    sim: &SimWorld,
+    positions: &mut Vec<[f32; 3]>,
+    colors: &mut Vec<[f32; 4]>,
+) {
+    positions.clear();
+    colors.clear();
+    let w = sim.world_width as f32;
+    let h = sim.world_height as f32;
+
+    for a in sim.world.agents.iter().filter(|ag| ag.dead == 0) {
+        let tc = (a.trail_count as usize).min(9);
+        if tc < 2 { continue; }
+        let c = lineage_color(a.root).to_srgba();
+
+        for i in 0..(tc - 1) {
+            let p1 = sim_to_bevy_coord(Vec2::new(a.trail_x[i] as f32, a.trail_y[i] as f32), h);
+            let p2 = sim_to_bevy_coord(Vec2::new(a.trail_x[i + 1] as f32, a.trail_y[i + 1] as f32), h);
+
+            if (p1.x - p2.x).abs() < w * 0.5 && (p1.y - p2.y).abs() < h * 0.5 {
+                let alpha = (0.08 + 0.32 * ((i + 1) as f32 / tc as f32)).clamp(0.05, 0.40);
+                let seg_color = [c.red, c.green, c.blue, alpha];
+                positions.push([p1.x, p1.y, -2.1]);
+                positions.push([p2.x, p2.y, -2.1]);
+                colors.push(seg_color);
+                colors.push(seg_color);
+            }
+        }
+    }
+
+    if positions.is_empty() {
+        positions.push([0.0, 0.0, -100.0]);
+        positions.push([0.0, 0.0, -100.0]);
+        colors.push([0.0, 0.0, 0.0, 0.0]);
+        colors.push([0.0, 0.0, 0.0, 0.0]);
+    }
+}
+
+pub fn generate_swarm_trails_from_tracker(
+    tracker: &AgentTrailsTracker,
+    instances: &[crate::gpu::types::GpuDartInstance],
+    world_width: f32,
+    world_height: f32,
+    positions: &mut Vec<[f32; 3]>,
+    colors: &mut Vec<[f32; 4]>,
+) {
+    positions.clear();
+    colors.clear();
+    positions.reserve(instances.len() * 18);
+    colors.reserve(instances.len() * 18);
+
+    for inst in instances {
+        let agent_id = inst.pad1[0] & 0x00FFFFFF;
+        let Some(vis) = unpack_visual_cache_detailed(inst.vis_data[1], inst.vis_data[0]) else {
+            continue;
+        };
+        let c = vis.color.to_srgba();
+
+        if let Some(trail) = tracker.trails.get(&agent_id) {
+            let tc = trail.len();
+            if tc < 2 { continue; }
+            for i in 0..(tc - 1) {
+                let p1 = trail[i];
+                let p2 = trail[i + 1];
+                if (p1.x - p2.x).abs() < world_width * 0.5 && (p1.y - p2.y).abs() < world_height * 0.5 {
+                    let alpha = (0.08 + 0.32 * ((i + 1) as f32 / tc as f32)).clamp(0.05, 0.40);
+                    let seg_color = [c.red, c.green, c.blue, alpha];
+                    positions.push([p1.x, p1.y, -2.1]);
+                    positions.push([p2.x, p2.y, -2.1]);
+                    colors.push(seg_color);
+                    colors.push(seg_color);
+                }
+            }
+        }
+    }
+
+    if positions.is_empty() {
+        positions.push([0.0, 0.0, -100.0]);
+        positions.push([0.0, 0.0, -100.0]);
+        colors.push([0.0, 0.0, 0.0, 0.0]);
+        colors.push([0.0, 0.0, 0.0, 0.0]);
+    }
+}
+
 pub fn setup_agent_rendering(
     mut commands: Commands,
     mut meshes: ResMut<Assets<Mesh>>,
@@ -791,10 +1033,36 @@ pub fn setup_agent_rendering(
 
     commands.spawn((
         Mesh2d(outline_handle.clone()),
-        MeshMaterial2d(mat_handle),
+        MeshMaterial2d(mat_handle.clone()),
         Transform::default(),
     ));
     commands.insert_resource(AgentOutlineMeshResource { mesh_handle: outline_handle });
+
+    // Bioluminescent glow aura mesh (interpolated radial gradient)
+    let mut glow_mesh = Mesh::new(PrimitiveTopology::TriangleList, RenderAssetUsages::default());
+    glow_mesh.insert_attribute(Mesh::ATTRIBUTE_POSITION, vec![[0.0, 0.0, -100.0]; 3]);
+    glow_mesh.insert_attribute(Mesh::ATTRIBUTE_COLOR, vec![[0.0, 0.0, 0.0, 0.0]; 3]);
+    let glow_handle = meshes.add(glow_mesh);
+
+    commands.spawn((
+        Mesh2d(glow_handle.clone()),
+        MeshMaterial2d(mat_handle.clone()),
+        Transform::default(),
+    ));
+    commands.insert_resource(AgentGlowMeshResource { mesh_handle: glow_handle });
+
+    // Fading swarm motion trail mesh
+    let mut trail_mesh = Mesh::new(PrimitiveTopology::LineList, RenderAssetUsages::default());
+    trail_mesh.insert_attribute(Mesh::ATTRIBUTE_POSITION, vec![[0.0, 0.0, -100.0]; 2]);
+    trail_mesh.insert_attribute(Mesh::ATTRIBUTE_COLOR, vec![[0.0, 0.0, 0.0, 0.0]; 2]);
+    let trail_handle = meshes.add(trail_mesh);
+
+    commands.spawn((
+        Mesh2d(trail_handle.clone()),
+        MeshMaterial2d(mat_handle),
+        Transform::default(),
+    ));
+    commands.insert_resource(AgentTrailMeshResource { mesh_handle: trail_handle });
 }
 
 pub fn update_agent_mesh_system(
@@ -803,6 +1071,9 @@ pub fn update_agent_mesh_system(
     camera_query: Query<(&Camera, &GlobalTransform), With<crate::camera::MainCamera>>,
     res: Option<Res<AgentMeshResource>>,
     outline_res: Option<Res<AgentOutlineMeshResource>>,
+    glow_res: Option<Res<AgentGlowMeshResource>>,
+    trail_res: Option<Res<AgentTrailMeshResource>>,
+    mut tracker: Option<ResMut<AgentTrailsTracker>>,
     mut meshes: ResMut<Assets<Mesh>>,
 ) {
     let (Some(sim), Some(res)) = (sim, res) else { return };
@@ -845,11 +1116,54 @@ pub fn update_agent_mesh_system(
                         mesh.insert_attribute(Mesh::ATTRIBUTE_COLOR, colors);
                     }
 
-                    if let Some(outline_res) = outline_res {
+                    if let Some(ref outline_res) = outline_res {
                         if let Some(mut mesh) = meshes.get_mut(&outline_res.mesh_handle) {
                             let mut positions = Vec::new();
                             let mut colors = Vec::new();
                             generate_outline_mesh_from_instances(&instances, sim.world_height as f32, &mut positions, &mut colors);
+                            mesh.insert_attribute(Mesh::ATTRIBUTE_POSITION, positions);
+                            mesh.insert_attribute(Mesh::ATTRIBUTE_COLOR, colors);
+                        }
+                    }
+
+                    if let Some(ref glow_res) = glow_res {
+                        if let Some(mut mesh) = meshes.get_mut(&glow_res.mesh_handle) {
+                            let mut positions = Vec::new();
+                            let mut colors = Vec::new();
+                            generate_glow_mesh_from_instances(&instances, sim.world_height as f32, &mut positions, &mut colors);
+                            mesh.insert_attribute(Mesh::ATTRIBUTE_POSITION, positions);
+                            mesh.insert_attribute(Mesh::ATTRIBUTE_COLOR, colors);
+                        }
+                    }
+
+                    if let Some(ref mut tracker) = tracker {
+                        let mut current_ids = std::collections::HashSet::new();
+                        for inst in &instances {
+                            let agent_id = inst.pad1[0] & 0x00FFFFFF;
+                            if agent_id > 0 {
+                                current_ids.insert(agent_id);
+                                let sim_pos = Vec2::new(inst.pos_angle[0], inst.pos_angle[1]);
+                                let bevy_pos = sim_to_bevy_coord(sim_pos, sim.world_height as f32);
+                                let queue = tracker.trails.entry(agent_id).or_default();
+                                if queue.back().map_or(true, |last: &Vec2| last.distance_squared(bevy_pos) > 0.25) {
+                                    queue.push_back(bevy_pos);
+                                    if queue.len() > 9 {
+                                        queue.pop_front();
+                                    }
+                                }
+                            }
+                        }
+                        if sim.world.tick.saturating_sub(tracker.last_clean_tick) >= 30 {
+                            tracker.trails.retain(|id, _| current_ids.contains(id));
+                            tracker.last_clean_tick = sim.world.tick;
+                        }
+                    }
+
+                    if let (Some(ref trail_res), Some(ref tracker)) = (trail_res.as_ref(), tracker.as_ref()) {
+                        if let Some(mut mesh) = meshes.get_mut(&trail_res.mesh_handle) {
+                            let mut positions = Vec::new();
+                            let mut colors = Vec::new();
+                            generate_swarm_trails_from_tracker(tracker, &instances, sim.world_width as f32, sim.world_height as f32, &mut positions, &mut colors);
                             mesh.insert_attribute(Mesh::ATTRIBUTE_POSITION, positions);
                             mesh.insert_attribute(Mesh::ATTRIBUTE_COLOR, colors);
                         }
@@ -871,11 +1185,31 @@ pub fn update_agent_mesh_system(
         mesh.insert_attribute(Mesh::ATTRIBUTE_COLOR, colors);
     }
 
-    if let Some(outline_res) = outline_res {
+    if let Some(ref outline_res) = outline_res {
         if let Some(mut mesh) = meshes.get_mut(&outline_res.mesh_handle) {
             let mut positions = Vec::new();
             let mut colors = Vec::new();
             generate_outline_mesh_from_gpu_states(&gpu_states, sim.world_height as f32, &mut positions, &mut colors);
+            mesh.insert_attribute(Mesh::ATTRIBUTE_POSITION, positions);
+            mesh.insert_attribute(Mesh::ATTRIBUTE_COLOR, colors);
+        }
+    }
+
+    if let Some(ref glow_res) = glow_res {
+        if let Some(mut mesh) = meshes.get_mut(&glow_res.mesh_handle) {
+            let mut positions = Vec::new();
+            let mut colors = Vec::new();
+            generate_glow_mesh_from_gpu_states(&gpu_states, sim.world_height as f32, &mut positions, &mut colors);
+            mesh.insert_attribute(Mesh::ATTRIBUTE_POSITION, positions);
+            mesh.insert_attribute(Mesh::ATTRIBUTE_COLOR, colors);
+        }
+    }
+
+    if let Some(ref trail_res) = trail_res {
+        if let Some(mut mesh) = meshes.get_mut(&trail_res.mesh_handle) {
+            let mut positions = Vec::new();
+            let mut colors = Vec::new();
+            generate_swarm_trails_from_sim(&sim, &mut positions, &mut colors);
             mesh.insert_attribute(Mesh::ATTRIBUTE_POSITION, positions);
             mesh.insert_attribute(Mesh::ATTRIBUTE_COLOR, colors);
         }
@@ -1031,8 +1365,8 @@ pub fn render_sim_gizmos_system(
 
     // Render high-detail focus gizmos (reticle & trail) ONLY for the selected specimen.
     // Background dart outlines and birth halos are rendered in the unified GPU mesh.
-    if let Some(selected_id) = sim.selected_agent_id {
-        if let Some(a) = sim.world.agents.iter().find(|ag| ag.id == selected_id && ag.dead == 0) {
+    if let Some(a) = sim.get_selected_agent() {
+        if a.dead == 0 {
             let sim_pos = Vec2::new(a.x as f32, a.y as f32);
             let bevy_pos = sim_to_bevy_coord(sim_pos, h);
             let r = (2.3 + a.tr[0] * 4.5) as f32;
@@ -1198,7 +1532,11 @@ pub fn agent_picking_system(
                 });
             }
         }
-        crate::ui::ActiveTool::Eclipse => {}
+        crate::ui::ActiveTool::Eclipse => {
+            if mouse_buttons.just_pressed(MouseButton::Left) {
+                sim.world.eclipse = 120;
+            }
+        }
     }
 }
 
@@ -1207,6 +1545,7 @@ pub struct ClankRenderPlugin;
 impl Plugin for ClankRenderPlugin {
     fn build(&self, app: &mut App) {
         app.init_resource::<ParticleSystemResource>()
+            .init_resource::<AgentTrailsTracker>()
             .add_systems(
                 Startup,
                 (

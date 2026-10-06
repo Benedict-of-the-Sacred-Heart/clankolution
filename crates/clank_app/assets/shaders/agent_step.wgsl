@@ -205,7 +205,31 @@ fn agent_main(@builtin(global_invocation_id) id: vec3u) {
     let vel = agent_states[agent_idx].pos_vel.zw;
 
     var angle = agent_states[agent_idx].angle_energy[0];
-    var a_energy = agent_states[agent_idx].angle_energy[1];
+    let atomic_energy_milli = atomicLoad(&agent_atomics[agent_idx].energy_milli);
+    if (atomic_energy_milli <= 0) {
+        let claim_death = atomicCompareExchangeWeak(&agent_atomics[agent_idx].dead_claimed, 0u, 1u);
+        if (claim_death.exchanged) {
+            atomicAdd(&queue_buffer.telemetry.starvations, 1u);
+            atomicAdd(&queue_buffer.telemetry.total_deaths, 1u);
+            let free_slot = atomicAdd(&queue_buffer.telemetry.freelist_top, 1u);
+            if (free_slot < params.max_agents) {
+                freelist[free_slot] = agent_idx;
+            }
+            let cell_w = params.world_size.x / f32(params.soil_grid.x);
+            let cell_h = params.world_size.y / f32(params.soil_grid.y);
+            let cx = min(u32(max(0.0, pos.x) / cell_w), params.soil_grid.x - 1u);
+            let cy = min(u32(max(0.0, pos.y) / cell_h), params.soil_grid.y - 1u);
+            let cell_idx = cy * params.soil_grid.x + cx;
+            atomicAdd(&soil_buffer[cell_idx].food_milli, 600);
+            atomicAdd(&soil_buffer[cell_idx].taint_milli, 100);
+        }
+        agent_states[agent_idx].meta_flags |= (1u << 13u);
+        agent_states[agent_idx].angle_energy[1] = 0.0;
+        agent_states[agent_idx].visual_cache = 0u;
+        return;
+    }
+
+    var a_energy = max(0.0, f32(atomic_energy_milli) * 0.001);
     var a_feed = agent_states[agent_idx].angle_energy[2];
     var a_attack = agent_states[agent_idx].angle_energy[3];
 
@@ -215,7 +239,6 @@ fn agent_main(@builtin(global_invocation_id) id: vec3u) {
     let tr3 = agent_states[agent_idx].traits[0][3]; // armor
     let tr4 = agent_states[agent_idx].traits[1][0];
     let tr5 = agent_states[agent_idx].traits[1][1]; // carnivory
-
     let a_root = m_flags & 0x0Fu;
     var a_cooldown = (m_flags >> 4u) & 0x03u;
     var a_birth = (m_flags >> 6u) & 0x7Fu;
@@ -223,6 +246,10 @@ fn agent_main(@builtin(global_invocation_id) id: vec3u) {
 
     var a_age = agent_states[agent_idx].age_gen & 0xFFFFu;
     let a_gen = agent_states[agent_idx].age_gen >> 16u;
+
+    a_age = min(a_age + 1u, 65535u);
+    if (a_cooldown > 0u) { a_cooldown -= 1u; }
+    if (a_birth > 0u) { a_birth -= 1u; }
 
     // Antennae feelers
     // HTML: reach = 19 + 38 * tr2 (sight trait)
@@ -273,7 +300,7 @@ fn agent_main(@builtin(global_invocation_id) id: vec3u) {
                             if (d <= 100.0) {
                                 density += 1.0;
                             }
-                            if (d < best_dist && d <= sight_radius) {
+                            if (d < best_dist || (d == best_dist && curr < best_neighbor)) {
                                 best_dist = d;
                                 best_neighbor = curr;
                             }
@@ -366,13 +393,15 @@ fn agent_main(@builtin(global_invocation_id) id: vec3u) {
         out[j] = tanh(s * scale_o);
     }
 
+    // Heading direction before steering (matching HTML line 1299 and clank_core line 712)
+    let fwd_dir = vec2f(cos(angle), sin(angle));
+
     // Actuator 0: Steering (HTML: a.angle += o[0] * (0.11 + 0.09 * tr1))
     angle += out[0] * (0.11 + 0.09 * tr1);
 
     // Actuator 1: Thrust & Kinematics (HTML: thrust = (o[1] + 1) * 0.5; mot = 0.45 + 1.1 * tr1)
     let thrust = (out[1] + 1.0) * 0.5;
     let mot = 0.45 + 1.1 * tr1;
-    let fwd_dir = vec2f(cos(angle), sin(angle));
     let thrust_force = fwd_dir * (thrust * mot * 0.22);
     let new_vel = (vel + thrust_force) * 0.89;
     var new_pos = wrap_coords(pos + new_vel);
@@ -389,10 +418,17 @@ fn agent_main(@builtin(global_invocation_id) id: vec3u) {
     let cy = min(u32(max(0.0, new_pos.y) / cell_h), params.soil_grid.y - 1u);
     let cell_idx = cy * params.soil_grid.x + cx;
     let intake_cap = (0.016 + 0.064 * a_feed) * (0.7 + tr4);
-    let eaten_float = min(intake_cap, max(0.0, here_food));
+    let cur_food_milli = atomicLoad(&soil_buffer[cell_idx].food_milli);
+    let cur_food_float = max(0.0, f32(cur_food_milli) * 0.001);
+    let eaten_float = min(intake_cap, cur_food_float);
     let eaten_milli = i32(eaten_float * 1000.0);
-    atomicSub(&soil_buffer[cell_idx].food_milli, eaten_milli);
-    atomicAdd(&queue_buffer.telemetry.food_grazed_milli, u32(max(0, eaten_milli)));
+    if (eaten_milli > 0) {
+        let prev_food = atomicSub(&soil_buffer[cell_idx].food_milli, eaten_milli);
+        if (prev_food < eaten_milli) {
+            atomicStore(&soil_buffer[cell_idx].food_milli, 0);
+        }
+        atomicAdd(&queue_buffer.telemetry.food_grazed_milli, u32(eaten_milli));
+    }
 
     // Scent emission (HTML line 1394)
     if (a_signal > 0.4) {
@@ -502,7 +538,6 @@ fn agent_main(@builtin(global_invocation_id) id: vec3u) {
                 atomicSub(&agent_atomics[mate_partner].energy_milli, 6000);
             }
             a_birth = 95u;
-            a_cooldown = 10u;
             queue_buffer.births[queue_idx] = BirthEvent(agent_idx, mate_partner, 0xFFFFFFFFu, 0u);
 
             // Frustum-culled birth audio voice
@@ -569,11 +604,6 @@ fn agent_main(@builtin(global_invocation_id) id: vec3u) {
         atomicAdd(&queue_buffer.telemetry.lineage_counts[a_root % 16u], 1u);
     }
 
-    // Age and cooldown updates
-    a_age = min(a_age + 1u, 65535u);
-    if (a_birth > 0u) { a_birth -= 1u; }
-    if (a_cooldown > 0u) { a_cooldown -= 1u; }
-
     // Commit state
     agent_states[agent_idx].pos_vel = vec4f(new_pos.x, new_pos.y, new_vel.x, new_vel.y);
     agent_states[agent_idx].angle_energy = vec4f(angle, a_energy, a_feed, a_attack);
@@ -584,10 +614,10 @@ fn agent_main(@builtin(global_invocation_id) id: vec3u) {
     agent_states[agent_idx].meta_flags = (a_root & 0x0Fu) | (a_cooldown << 4u) | (a_birth << 6u) | (a_kills << 14u);
     agent_states[agent_idx].age_gen = (a_age & 0xFFFFu) | (a_gen << 16u);
 
-    // Pack visual_cache
+    // Pack visual_cache: radius_u8 (0..7), glow_u8/signal (8..15), energy_u8 (16..23), is_attacking (24), birth_val (25..31)
     let r_u8 = u32(clamp(tr0, 0.0, 1.0) * 255.0);
-    let glow_u8 = u32(clamp(max(a_attack, select(0.0, 1.0, a_birth > 0u)), 0.0, 1.0) * 255.0);
+    let glow_u8 = u32(clamp(a_signal, 0.0, 1.0) * 255.0);
     let e_u8 = u32(clamp(a_energy / 100.0, 0.0, 1.0) * 255.0);
-    let vis_flags = select(0u, 1u << 24u, a_attack > 0.25) | select(0u, 1u << 25u, a_birth > 0u);
+    let vis_flags = select(0u, 1u << 24u, a_attack > 0.25) | ((a_birth & 0x7Fu) << 25u);
     agent_states[agent_idx].visual_cache = r_u8 | (glow_u8 << 8u) | (e_u8 << 16u) | vis_flags;
 }

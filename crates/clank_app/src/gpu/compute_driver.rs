@@ -1038,9 +1038,9 @@ impl GpuComputeDriver {
         if !states.is_empty() {
             self.queue.write_buffer(&self.agent_states_buf, 0, bytemuck::cast_slice(states));
         }
-        let clear_tail = (states.len() + 512).min(self.max_agents as usize);
-        if clear_tail > states.len() {
-            let empty_count = clear_tail - states.len();
+        let total_agents = self.max_agents as usize;
+        if total_agents > states.len() {
+            let chunk_size = 2048;
             let tombstone = GpuAgentState {
                 pos_vel: [0.0; 4],
                 angle_energy: [0.0; 4],
@@ -1053,8 +1053,21 @@ impl GpuComputeDriver {
                 packed_color: 0,
                 visual_cache: 0,
             };
-            let empty_vec = vec![tombstone; empty_count];
-            self.queue.write_buffer(&self.agent_states_buf, (states.len() * 128) as u64, bytemuck::cast_slice(&empty_vec));
+            let dead_atomic = GpuAgentAtomic {
+                energy_milli: 0,
+                mate_claim: 0,
+                mate_energy_milli: 0,
+                dead_claimed: 1,
+            };
+            let tombstone_chunk = vec![tombstone; chunk_size];
+            let atomic_chunk = vec![dead_atomic; chunk_size];
+            let mut curr = states.len();
+            while curr < total_agents {
+                let this_chunk = (total_agents - curr).min(chunk_size);
+                self.queue.write_buffer(&self.agent_states_buf, (curr * 128) as u64, bytemuck::cast_slice(&tombstone_chunk[..this_chunk]));
+                self.queue.write_buffer(&self.agent_atomics_buf, (curr * 16) as u64, bytemuck::cast_slice(&atomic_chunk[..this_chunk]));
+                curr += this_chunk;
+            }
         }
         if !genomes.is_empty() {
             self.queue.write_buffer(&self.agent_genomes_buf, 0, bytemuck::cast_slice(genomes));
@@ -1142,26 +1155,25 @@ impl GpuComputeDriver {
             let agent_workgroups = (active_slots + 63) / 64;
 
             if agent_workgroups > 0 {
-                // 2. Preamble clear pass & Morton Grid spatial hashing
+                // 2. Preamble clear pass (resets atomics, sub-tick telemetry counters, and cell_offsets sentinels)
                 {
                     let mut cpass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {
-                        label: Some("gpu_preamble_and_morton_pass"),
+                        label: Some("gpu_preamble_pass"),
                         timestamp_writes: None,
                     });
                     cpass.set_pipeline(&self.preamble_pipeline);
                     cpass.set_bind_group(0, &self.preamble_bg0, &[]);
                     cpass.set_bind_group(1, &self.preamble_bg1, &[]);
                     cpass.dispatch_workgroups(agent_workgroups, 1, 1);
+                }
 
-                    cpass.set_pipeline(&self.morton_clear_pipeline);
-                    cpass.set_bind_group(0, &self.morton_bind_group, &[]);
-                    cpass.dispatch_workgroups(1, 1, 1);
-
+                // 2b. Morton Grid spatial hashing (strictly after preamble barrier)
+                {
+                    let mut cpass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {
+                        label: Some("gpu_morton_pass"),
+                        timestamp_writes: None,
+                    });
                     cpass.set_pipeline(&self.morton_encode_pipeline);
-                    cpass.set_bind_group(0, &self.morton_bind_group, &[]);
-                    cpass.dispatch_workgroups(agent_workgroups, 1, 1);
-
-                    cpass.set_pipeline(&self.morton_offsets_pipeline);
                     cpass.set_bind_group(0, &self.morton_bind_group, &[]);
                     cpass.dispatch_workgroups(agent_workgroups, 1, 1);
                 }

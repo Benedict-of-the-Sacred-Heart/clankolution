@@ -224,22 +224,40 @@ fn birth_main(@builtin(workgroup_id) wg_id: vec3u, @builtin(local_invocation_id)
 
         // Inherit traits with crossover (45% parent B) and mutation
         let mut_rate = params.mut_rate;
-        for (var t = 0u; t < 2u; t += 1u) {
-            var tr_vec = agent_states[parent_a].traits[t];
-            if (parent_b != 0xFFFFFFFFu && parent_b < params.max_agents) {
-                let tr_b = agent_states[parent_b].traits[t];
-                for (var c = 0u; c < 4u; c += 1u) {
-                    if (pcg_float(child_idx, 200u + t * 4u + c, params.tick) < 0.45) {
-                        tr_vec[c] = tr_b[c];
-                    }
+        var tr0 = agent_states[parent_a].traits[0];
+        var tr1 = agent_states[parent_a].traits[1];
+
+        if (parent_b != 0xFFFFFFFFu && parent_b < params.max_agents) {
+            let tr0_b = agent_states[parent_b].traits[0];
+            let tr1_b = agent_states[parent_b].traits[1];
+            for (var c = 0u; c < 4u; c += 1u) {
+                if (pcg_float(child_idx, 200u + c, params.tick) < 0.45) {
+                    tr0[c] = tr0_b[c];
                 }
             }
-            for (var c = 0u; c < 4u; c += 1u) {
-                let delta = pcg_triangular(child_idx, 10u + t * 4u + c, params.tick) * mut_rate * 0.6;
-                tr_vec[c] = clamp(tr_vec[c] + delta, 0.03, 0.98);
+            for (var c = 0u; c < 2u; c += 1u) {
+                if (pcg_float(child_idx, 204u + c, params.tick) < 0.45) {
+                    tr1[c] = tr1_b[c];
+                }
             }
-            agent_states[child_idx].traits[t] = tr_vec;
         }
+        for (var c = 0u; c < 4u; c += 1u) {
+            let delta = pcg_triangular(child_idx, 10u + c, params.tick) * mut_rate * 0.6;
+            tr0[c] = clamp(tr0[c] + delta, 0.03, 0.98);
+        }
+        for (var c = 0u; c < 2u; c += 1u) {
+            let delta = pcg_triangular(child_idx, 14u + c, params.tick) * mut_rate * 0.6;
+            tr1[c] = clamp(tr1[c] + delta, 0.03, 0.98);
+        }
+        tr1[2] = 0.0; // signal = 0.0
+        tr1[3] = 0.0; // last_victim = 0
+        agent_states[child_idx].traits[0] = tr0;
+        agent_states[child_idx].traits[1] = tr1;
+
+        // Newborn recurrent hidden states must start at 0
+        agent_states[child_idx].hidden[0] = vec4f(0.0);
+        agent_states[child_idx].hidden[1] = vec4f(0.0);
+        agent_states[child_idx].hidden_tail = vec2f(0.0);
 
         let parent_meta = agent_states[parent_a].meta_flags;
         let child_root = parent_meta & 0x0Fu;
@@ -260,7 +278,8 @@ fn birth_main(@builtin(workgroup_id) wg_id: vec3u, @builtin(local_invocation_id)
 
         let child_r_u8 = u32(clamp(agent_states[child_idx].traits[0][0], 0.0, 1.0) * 255.0);
         let child_e_u8 = u32(clamp(24.0 / 100.0, 0.0, 1.0) * 255.0);
-        let child_glow_u8 = 255u; // Newborn birth flash!
-        agent_states[child_idx].visual_cache = child_r_u8 | (child_glow_u8 << 8u) | (child_e_u8 << 16u);
+        let child_glow_u8 = 128u;
+        let child_birth_flags = (95u << 25u);
+        agent_states[child_idx].visual_cache = child_r_u8 | (child_glow_u8 << 8u) | (child_e_u8 << 16u) | child_birth_flags;
     }
 }

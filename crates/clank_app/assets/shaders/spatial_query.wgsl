@@ -308,7 +308,9 @@ fn frustum_cull_main(@builtin(global_invocation_id) id: vec3u) {
             dart_instances[slot].pos_angle = vec3f(pos.x, pos.y, angle);
             dart_instances[slot].pad0 = state.traits[0].w;
             dart_instances[slot].vis_data = vec2u(state.packed_color, state.visual_cache);
-            dart_instances[slot].pad1 = vec2u(bitcast<u32>(state.traits[1].y), bitcast<u32>(state.traits[0].z));
+            let carn_u8 = u32(clamp(state.traits[1].y, 0.0, 1.0) * 255.0);
+            let packed_carn_id = (carn_u8 << 24u) | (state.id & 0x00FFFFFFu);
+            dart_instances[slot].pad1 = vec2u(packed_carn_id, bitcast<u32>(state.traits[0].z));
         }
     }
 }

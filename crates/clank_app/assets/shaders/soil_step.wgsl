@@ -54,17 +54,33 @@ fn evaluate_soil_color(f: f32, t: f32, s: f32, coord: vec2u) -> vec4f {
     );
 }
 
+fn pcg_hash(id: u32, stream: u32, tick: u32) -> u32 {
+    let state = id * 747796405u + stream * 2891336453u + tick * 1013904223u;
+    let word = ((state >> ((state >> 28u) + 4u)) ^ state) * 277803737u;
+    return (word >> 22u) ^ word;
+}
+
+fn pcg_float(id: u32, stream: u32, tick: u32) -> f32 {
+    return f32(pcg_hash(id, stream, tick)) / 4294967295.0;
+}
+
 @compute @workgroup_size(8, 8)
 fn soil_main(@builtin(global_invocation_id) id: vec3u) {
     if (id.x >= params.width || id.y >= params.height) { return; }
     let k = id.y * params.width + id.x;
 
-    var f = f32(atomicLoad(&soil_buffer[k].food_milli)) * 0.001;
+    let f_milli = atomicLoad(&soil_buffer[k].food_milli);
+    var f = f32(f_milli) * 0.001;
     var t = f32(atomicLoad(&soil_buffer[k].taint_milli)) * 0.001;
     var s = f32(atomicLoad(&soil_buffer[k].scent_milli)) * 0.001;
 
-    // Environmental renewal & decay:
+    // Environmental renewal & decay (HTML lines 1249-1254 and clank_core line 128)
     f += params.renewal * bloom_table[k] * (1.0 - f / 1.7);
+    let spawn_threshold = 0.00013 * params.renewal;
+    let prng_seed = u32(f_milli) ^ (k * 1013904223u);
+    if (pcg_float(k, prng_seed, 0u) < spawn_threshold) {
+        f += 0.15 + 0.45 * pcg_float(k, prng_seed + 100u, 1u);
+    }
     f = clamp(f, 0.0, 2.5);
     if (t > 0.0) { t = max(0.0, t * (1.0 - params.decay_rate) - 0.0001); }
     if (s > 0.0) { s = s * 0.954; }

@@ -661,11 +661,43 @@ pub fn api_dispatch_system(
                                 };
                                 sim.world.nourish_at(nx, ny);
                             }
+                            if sim.active_engine == crate::sim::ActiveEngine::Gpu {
+                                sim.pending_tool = Some(crate::sim::PendingTool {
+                                    tool_type: 1,
+                                    tool_pos: [x as f32, y as f32],
+                                    tool_radius: 45.0,
+                                });
+                                if let Some(ref gpu) = gpu_res {
+                                    if let Some(ref driver) = gpu.driver {
+                                        if driver.is_initialized() {
+                                            let cx = (x / 12.0).floor() as i32;
+                                            let cy = (y / 12.0).floor() as i32;
+                                            driver.sync_soil_cells_gpu(&sim.world.soil, cx, cy, 3);
+                                        }
+                                    }
+                                }
+                            }
                         }
                         "blight" => {
                             sim.world.blight_at(x, y);
+                            if sim.active_engine == crate::sim::ActiveEngine::Gpu {
+                                sim.pending_tool = Some(crate::sim::PendingTool {
+                                    tool_type: 2,
+                                    tool_pos: [x as f32, y as f32],
+                                    tool_radius: 45.0,
+                                });
+                                if let Some(ref gpu) = gpu_res {
+                                    if let Some(ref driver) = gpu.driver {
+                                        if driver.is_initialized() {
+                                            let cx = (x / 12.0).floor() as i32;
+                                            let cy = (y / 12.0).floor() as i32;
+                                            driver.sync_soil_cells_gpu(&sim.world.soil, cx, cy, 3);
+                                        }
+                                    }
+                                }
+                            }
                         }
-                        "seed" | "seedlife" => {
+                        "seed" | "seedlife" | "seed_life" => {
                             let repeat = req.count.unwrap_or(1).clamp(1, 65_536);
                             let (w, h) = (sim.world.w, sim.world.h);
                             let mut positions = Vec::with_capacity(repeat);
@@ -693,6 +725,13 @@ pub fn api_dispatch_system(
                         }
                         "extinguish" | "kill" => {
                             sim.world.extinguish_at(x, y, 23.0);
+                            if sim.active_engine == crate::sim::ActiveEngine::Gpu {
+                                sim.pending_tool = Some(crate::sim::PendingTool {
+                                    tool_type: 3,
+                                    tool_pos: [x as f32, y as f32],
+                                    tool_radius: 35.0,
+                                });
+                            }
                         }
                         "eclipse" => {
                             trigger_spore_catastrophe(sim);
