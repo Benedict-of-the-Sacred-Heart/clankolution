@@ -93,10 +93,9 @@ fn preamble_main(@builtin(global_invocation_id) id: vec3u) {
         // Active queue depth reset (runs every sub-tick for birth processing):
         atomicStore(&queue_buffer.telemetry.birth_count, 0u);
 
-        // Frame-level cumulative counter reset (strictly at frame start on sub-tick 0):
+        // Frame-level counter reset (strictly at frame start on sub-tick 0):
         if (params.sub_tick == 0u) {
             atomicStore(&queue_buffer.telemetry.audio_voice_count, 0u);
-            atomicStore(&queue_buffer.telemetry.total_births, 0u);
             atomicStore(&queue_buffer.telemetry.kills, 0u);
             atomicStore(&queue_buffer.telemetry.starvations, 0u);
             atomicStore(&queue_buffer.telemetry.apex_record_milli, 0u);

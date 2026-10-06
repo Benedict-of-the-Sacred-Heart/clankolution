@@ -182,7 +182,7 @@ pub fn sync_rust_to_gpu(
         world_size: [sim.world_width as f32, sim.world_height as f32],
         soil_grid: [sim.world.soil.cols as u32, sim.world.soil.rows as u32],
         eclipse: sim.world.eclipse,
-        epoch: 0,
+        epoch: sim.world.births,
     };
 
     (states, genomes, atomics, soil, params)

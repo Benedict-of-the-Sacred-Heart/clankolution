@@ -58,42 +58,36 @@ pub fn compute_arena_viewport(window_size: Vec2, scale_factor: f32) -> (Viewport
 pub fn setup_camera(mut commands: Commands) {
     commands.spawn((
         Camera2d,
-        Transform::from_xyz(640.0, 400.0, 0.0),
+        Transform::from_xyz(450.0, 300.0, 0.0),
         MainCamera,
     ));
 }
 
 pub fn camera_viewport_sync_system(
     window_query: Query<&Window>,
-    mut camera_query: Query<(&mut Transform, &mut Projection), With<MainCamera>>,
+    mut camera_query: Query<(&mut Camera, &mut Transform, &mut Projection), With<MainCamera>>,
     mut sim: Option<ResMut<SimWorld>>,
 ) {
     let Ok(window) = window_query.single() else { return };
-    let (_vp, arena_size) = compute_arena_viewport(
+    let (vp, arena_size) = compute_arena_viewport(
         Vec2::new(window.width(), window.height()),
         window.scale_factor(),
     );
 
-    if let Ok((mut transform, mut projection)) = camera_query.single_mut() {
-        transform.translation.x = window.width() * 0.5;
-        transform.translation.y = window.height() * 0.5;
+    if let Ok((mut camera, mut transform, mut projection)) = camera_query.single_mut() {
+        camera.viewport = Some(vp);
+        transform.translation.x = 450.0;
+        transform.translation.y = 300.0;
 
         if let Projection::Orthographic(ref mut ortho) = *projection {
-            ortho.scale = 1.0;
+            let scale_x = 900.0 / arena_size.x;
+            let scale_y = 600.0 / arena_size.y;
+            ortho.scale = scale_x.max(scale_y);
         }
 
         if let Some(ref mut sim) = sim {
-            if (sim.world_width - arena_size.x as f64).abs() > 0.5
-                || (sim.world_height - arena_size.y as f64).abs() > 0.5
-            {
-                let w = arena_size.x as f64;
-                let h = arena_size.y as f64;
-                sim.world_width = w;
-                sim.world_height = h;
-                let cols = ((arena_size.x / 12.0).ceil() as usize).clamp(20, 200);
-                let rows = ((arena_size.y / 12.0).ceil() as usize).clamp(20, 200);
-                sim.world.resize(w, h, cols, rows);
-            }
+            sim.world_width = 900.0;
+            sim.world_height = 600.0;
         }
     }
 }

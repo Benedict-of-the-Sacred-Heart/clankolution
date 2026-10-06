@@ -34,27 +34,13 @@ pub struct PendingTool {
 
 impl Default for SimWorld {
     fn default() -> Self {
-        let world = World::new_with_size(42, 950.0, 747.0, 80, 63);
-        Self {
-            world,
-            speed: 1,
-            paused: false,
-            unthrottled: false,
-            selected_agent_id: None,
-            selected_agent_slot: None,
-            selected_agent_cache: None,
-            pending_tool: None,
-            world_width: 950.0,
-            world_height: 747.0,
-            active_engine: ActiveEngine::Rust,
-            gpu_population: 0,
-        }
+        Self::new(42)
     }
 }
 
 impl SimWorld {
     pub fn new(seed: u32) -> Self {
-        let world = World::new_with_size(seed, 950.0, 747.0, 80, 63);
+        let world = World::new(seed);
         Self {
             world,
             speed: 1,
@@ -64,8 +50,8 @@ impl SimWorld {
             selected_agent_slot: None,
             selected_agent_cache: None,
             pending_tool: None,
-            world_width: 950.0,
-            world_height: 747.0,
+            world_width: 900.0,
+            world_height: 600.0,
             active_engine: ActiveEngine::Rust,
             gpu_population: 0,
         }
@@ -146,7 +132,7 @@ pub fn sim_step_system(
     mut gpu_res: Option<ResMut<GpuDriverResource>>,
     mut audio_queue: Option<ResMut<crate::audio::AudioVoiceQueue>>,
     ui_state: Option<Res<crate::ui::UiState>>,
-    camera_query: Query<(&Camera, &Transform), With<Camera2d>>,
+    camera_query: Query<(&Camera, &Transform, &Projection), With<Camera2d>>,
 ) {
     if sim.paused {
         return;
@@ -191,10 +177,13 @@ pub fn sim_step_system(
                         sim.world.agents.len() as u32
                     };
 
-                    let (cam_pos, cam_size) = if let Ok((camera, transform)) = camera_query.single() {
+                    let (cam_pos, cam_size) = if let Ok((camera, transform, proj)) = camera_query.single() {
                         let pos = transform.translation.truncate();
                         let sim_cam = crate::rendering::bevy_to_sim_coord(pos, sim.world_height as f32);
-                        let size = camera.logical_viewport_size().unwrap_or(Vec2::new(sim.world_width as f32, sim.world_height as f32));
+                        let mut size = camera.logical_viewport_size().unwrap_or(Vec2::new(sim.world_width as f32, sim.world_height as f32));
+                        if let Projection::Orthographic(ref ortho) = *proj {
+                            size *= ortho.scale;
+                        }
                         ([sim_cam.x, sim_cam.y], [size.x, size.y])
                     } else {
                         ([(sim.world_width * 0.5) as f32, (sim.world_height * 0.5) as f32], [sim.world_width as f32, sim.world_height as f32])
@@ -241,7 +230,7 @@ pub fn sim_step_system(
                     let telemetry = driver.readback_telemetry();
                     sim.world.tick += steps;
                     sim.world.kills += telemetry.kills;
-                    sim.world.births += telemetry.total_births.max(telemetry.birth_count);
+                    sim.world.births = telemetry.total_births.max(sim.world.births);
                     sim.gpu_population = telemetry.population;
 
                     // Spore replenishment if GPU population collapses (matching HTML line 1464 & Rust world.rs line 984)
@@ -271,19 +260,41 @@ pub fn sim_step_system(
                         sim.world.next_id = sim.world.next_id.max(telemetry.apex_agent_id);
                     }
 
-                    // Ingest audio voices into AudioVoiceQueue
-                    if let Some(ref mut aq) = audio_queue {
-                        let v_count = (telemetry.audio_voice_count as usize).min(256);
-                        if v_count > 0 {
-                            let voices = driver.readback_audio_voices(v_count);
+                    // Ingest audio voices into AudioVoiceQueue and generate visual sparks
+                    let v_count = (telemetry.audio_voice_count as usize).min(256);
+                    if v_count > 0 {
+                        let voices = driver.readback_audio_voices(v_count);
+                        for v in &voices {
+                            let (color_idx, count) = match v.event_type {
+                                1 => (8, 2),  // Kill spark
+                                2 => (9, 9),  // Birth spark
+                                3 => (10, 9), // Lineage spark
+                                _ => (8, 2),
+                            };
+                            if sim.world.spark_events.len() < 512 {
+                                sim.world.spark_events.push(clank_core::SparkEvent {
+                                    x: v.pos[0],
+                                    y: v.pos[1],
+                                    color_idx,
+                                    count,
+                                });
+                            }
+                        }
+                        if let Some(ref mut aq) = audio_queue {
                             aq.ingest_voices(&voices);
                         }
                     }
 
                     // Specimen Picking & Identity Guard
-                    if telemetry.selected_agent_idx != 0xFFFFFFFF {
-                        sim.selected_agent_id = Some(telemetry.selected_agent_id);
-                        sim.selected_agent_slot = Some(telemetry.selected_agent_idx);
+                    if tool_type == 0 {
+                        if telemetry.selected_agent_idx != 0xFFFFFFFF {
+                            sim.selected_agent_id = Some(telemetry.selected_agent_id);
+                            sim.selected_agent_slot = Some(telemetry.selected_agent_idx);
+                        } else {
+                            sim.selected_agent_id = None;
+                            sim.selected_agent_slot = None;
+                            sim.selected_agent_cache = None;
+                        }
                     }
 
                     if let (Some(slot), Some(expected_id)) = (sim.selected_agent_slot, sim.selected_agent_id) {
@@ -299,20 +310,6 @@ pub fn sim_step_system(
                         }
                     } else {
                         sim.selected_agent_cache = None;
-                    }
-
-                    // Automatic agent replenishment if population collapses in GPU mode
-                    if telemetry.population < 15 && sim.world.tick % 45 == 0 {
-                        let n = (15 - telemetry.population).min(15) as usize;
-                        let mut agent_positions = Vec::with_capacity(n);
-                        let w = sim.world.w;
-                        let h = sim.world.h;
-                        for _ in 0..n {
-                            let x = sim.world.prng.rand(0.0, w) as f32;
-                            let y = sim.world.prng.rand(0.0, h) as f32;
-                            agent_positions.push((x, y));
-                        }
-                        driver.seed_agents_gpu(&agent_positions);
                     }
 
                     return;

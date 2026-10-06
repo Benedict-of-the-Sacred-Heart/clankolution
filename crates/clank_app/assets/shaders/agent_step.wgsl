@@ -141,8 +141,86 @@ fn wrap_coords(p: vec2f) -> vec2f {
 }
 
 fn sample_soil_probe(p: vec2f) -> vec4f {
-    let uv = p / params.world_size;
-    return textureSampleLevel(soil_data, soil_sampler, uv, 0.0);
+    let wrapped = wrap_coords(p);
+    let cell_w = params.world_size.x / f32(params.soil_grid.x);
+    let cell_h = params.world_size.y / f32(params.soil_grid.y);
+    let cx = min(u32(max(0.0, wrapped.x) / cell_w), params.soil_grid.x - 1u);
+    let cy = min(u32(max(0.0, wrapped.y) / cell_h), params.soil_grid.y - 1u);
+    let k = cy * params.soil_grid.x + cx;
+    let f = f32(atomicLoad(&soil_buffer[k].food_milli)) * 0.001;
+    let t = f32(atomicLoad(&soil_buffer[k].taint_milli)) * 0.001;
+    let s = f32(atomicLoad(&soil_buffer[k].scent_milli)) * 0.001;
+    return vec4f(f, t, s, 1.0);
+}
+
+fn deposit_food_radius2(p: vec2f, val: f32) {
+    let wrapped = wrap_coords(p);
+    let cell_w = params.world_size.x / f32(params.soil_grid.x);
+    let cell_h = params.world_size.y / f32(params.soil_grid.y);
+    let cx = i32(min(u32(max(0.0, wrapped.x) / cell_w), params.soil_grid.x - 1u));
+    let cy = i32(min(u32(max(0.0, wrapped.y) / cell_h), params.soil_grid.y - 1u));
+    let cols = i32(params.soil_grid.x);
+    let rows = i32(params.soil_grid.y);
+    for (var dy = -2; dy <= 2; dy++) {
+        let ny = u32((cy + dy + rows) % rows);
+        for (var dx = -2; dx <= 2; dx++) {
+            let rr = f32(dx * dx + dy * dy);
+            if (rr > 4.5) { continue; }
+            let nx = u32((cx + dx + cols) % cols);
+            let idx = ny * params.soil_grid.x + nx;
+            let w = 1.0 / (1.0 + rr * 0.8);
+            let deposit_milli = i32(val * w * 1000.0);
+            atomicAdd(&soil_buffer[idx].food_milli, deposit_milli);
+        }
+    }
+}
+
+fn deposit_taint_radius1(p: vec2f, val: f32) {
+    let wrapped = wrap_coords(p);
+    let cell_w = params.world_size.x / f32(params.soil_grid.x);
+    let cell_h = params.world_size.y / f32(params.soil_grid.y);
+    let cx = i32(min(u32(max(0.0, wrapped.x) / cell_w), params.soil_grid.x - 1u));
+    let cy = i32(min(u32(max(0.0, wrapped.y) / cell_h), params.soil_grid.y - 1u));
+    let cols = i32(params.soil_grid.x);
+    let rows = i32(params.soil_grid.y);
+
+    let c0 = u32(cy) * params.soil_grid.x + u32(cx);
+    atomicAdd(&soil_buffer[c0].taint_milli, i32(val * 1000.0));
+
+    let v18_milli = i32((val / 1.8) * 1000.0);
+    let c_up = u32((cy - 1 + rows) % rows) * params.soil_grid.x + u32(cx);
+    let c_down = u32((cy + 1 + rows) % rows) * params.soil_grid.x + u32(cx);
+    let c_left = u32(cy) * params.soil_grid.x + u32((cx - 1 + cols) % cols);
+    let c_right = u32(cy) * params.soil_grid.x + u32((cx + 1 + cols) % cols);
+
+    atomicAdd(&soil_buffer[c_up].taint_milli, v18_milli);
+    atomicAdd(&soil_buffer[c_down].taint_milli, v18_milli);
+    atomicAdd(&soil_buffer[c_left].taint_milli, v18_milli);
+    atomicAdd(&soil_buffer[c_right].taint_milli, v18_milli);
+}
+
+fn deposit_scent_radius1(p: vec2f, val: f32) {
+    let wrapped = wrap_coords(p);
+    let cell_w = params.world_size.x / f32(params.soil_grid.x);
+    let cell_h = params.world_size.y / f32(params.soil_grid.y);
+    let cx = i32(min(u32(max(0.0, wrapped.x) / cell_w), params.soil_grid.x - 1u));
+    let cy = i32(min(u32(max(0.0, wrapped.y) / cell_h), params.soil_grid.y - 1u));
+    let cols = i32(params.soil_grid.x);
+    let rows = i32(params.soil_grid.y);
+
+    let c0 = u32(cy) * params.soil_grid.x + u32(cx);
+    atomicAdd(&soil_buffer[c0].scent_milli, i32(val * 1000.0));
+
+    let v18_milli = i32((val / 1.8) * 1000.0);
+    let c_up = u32((cy - 1 + rows) % rows) * params.soil_grid.x + u32(cx);
+    let c_down = u32((cy + 1 + rows) % rows) * params.soil_grid.x + u32(cx);
+    let c_left = u32(cy) * params.soil_grid.x + u32((cx - 1 + cols) % cols);
+    let c_right = u32(cy) * params.soil_grid.x + u32((cx + 1 + cols) % cols);
+
+    atomicAdd(&soil_buffer[c_up].scent_milli, v18_milli);
+    atomicAdd(&soil_buffer[c_down].scent_milli, v18_milli);
+    atomicAdd(&soil_buffer[c_left].scent_milli, v18_milli);
+    atomicAdd(&soil_buffer[c_right].scent_milli, v18_milli);
 }
 
 fn get_gene(agent_idx: u32, p: u32) -> f32 {
@@ -215,13 +293,8 @@ fn agent_main(@builtin(global_invocation_id) id: vec3u) {
             if (free_slot < params.max_agents) {
                 freelist[free_slot] = agent_idx;
             }
-            let cell_w = params.world_size.x / f32(params.soil_grid.x);
-            let cell_h = params.world_size.y / f32(params.soil_grid.y);
-            let cx = min(u32(max(0.0, pos.x) / cell_w), params.soil_grid.x - 1u);
-            let cy = min(u32(max(0.0, pos.y) / cell_h), params.soil_grid.y - 1u);
-            let cell_idx = cy * params.soil_grid.x + cx;
-            atomicAdd(&soil_buffer[cell_idx].food_milli, 600);
-            atomicAdd(&soil_buffer[cell_idx].taint_milli, 100);
+            deposit_food_radius2(pos, 0.6);
+            deposit_taint_radius1(pos, 0.1);
         }
         agent_states[agent_idx].meta_flags |= (1u << 13u);
         agent_states[agent_idx].angle_energy[1] = 0.0;
@@ -308,6 +381,24 @@ fn agent_main(@builtin(global_invocation_id) id: vec3u) {
                     }
                     curr = spatial_keys[curr].x;
                     loop_count += 1u;
+                }
+            }
+        }
+
+        // Fallback global scan if no neighbor within 100px (guaranteeing 100% parity with HTML near() lines 1154-1170)
+        if (best_neighbor == 0xFFFFFFFFu) {
+            let scan_limit = min(params.agent_count, params.max_capacity);
+            for (var k = 0u; k < scan_limit; k += 1u) {
+                if (k != agent_idx) {
+                    let other_meta = agent_states[k].meta_flags;
+                    if ((other_meta & (1u << 13u)) == 0u) {
+                        let other_pos = agent_states[k].pos_vel.xy;
+                        let d = toroidal_dist(pos, other_pos);
+                        if (d < best_dist || (d == best_dist && k < best_neighbor)) {
+                            best_dist = d;
+                            best_neighbor = k;
+                        }
+                    }
                 }
             }
         }
@@ -411,7 +502,7 @@ fn agent_main(@builtin(global_invocation_id) id: vec3u) {
     let a_signal = max(0.0, out[4]);
     var a_last_victim = u32(agent_states[agent_idx].traits[1][3]);
 
-    // Soil Grazing
+    // 1. Soil Grazing
     let cell_w = params.world_size.x / f32(params.soil_grid.x);
     let cell_h = params.world_size.y / f32(params.soil_grid.y);
     let cx = min(u32(max(0.0, new_pos.x) / cell_w), params.soil_grid.x - 1u);
@@ -430,76 +521,84 @@ fn agent_main(@builtin(global_invocation_id) id: vec3u) {
         atomicAdd(&queue_buffer.telemetry.food_grazed_milli, u32(eaten_milli));
     }
 
-    // Scent emission (HTML line 1394)
+    // 2. Scent emission (HTML line 1394, radius 1)
     if (a_signal > 0.4) {
-        let scent_milli = i32((a_signal - 0.4) * 0.035 * 1000.0);
-        atomicAdd(&soil_buffer[cell_idx].scent_milli, scent_milli);
+        deposit_scent_radius1(new_pos, (a_signal - 0.4) * 0.035);
     }
 
-    // Combat Resolution & Decisive Killer Attribution
+    // 3. Basal, Thrust, and Taint Metabolic Costs
+    let energy_gain = eaten_float * (9.0 + 9.0 * tr4);
+    let basal_cost = 0.10 + 0.12 * tr0 + 0.07 * tr1 + 0.035 * tr2 + 0.055 * tr3 + 0.035 * a_attack + 0.014 * a_signal;
+    let thrust_cost = thrust * 0.06;
+    let post_taint = f32(atomicLoad(&soil_buffer[cell_idx].taint_milli)) * 0.001;
+    let taint_cost = post_taint * (0.10 + 0.18 * (1.0 - tr3));
+    let internal_delta_milli = i32((energy_gain - basal_cost - thrust_cost - taint_cost) * 1000.0);
+    atomicAdd(&agent_atomics[agent_idx].energy_milli, internal_delta_milli);
+
+    // 4. Combat Resolution & Decisive Killer Attribution
     let contact_dist = 14.0 + 10.0 * tr0;
     if (best_neighbor != 0xFFFFFFFFu && best_dist < contact_dist && a_attack > 0.25 && a_cooldown == 0u) {
         let victim_idx = best_neighbor;
         let victim_tr3 = agent_states[victim_idx].traits[0][3];
-        let damage = (0.5 + a_attack * 2.2) * params.hostility * (0.8 + tr0) * (1.0 - 0.65 * victim_tr3);
-        let damage_milli = i32(damage * 1000.0);
-        let old_energy_milli = atomicSub(&agent_atomics[victim_idx].energy_milli, damage_milli);
+        let victim_energy_milli = atomicLoad(&agent_atomics[victim_idx].energy_milli);
+        if (victim_energy_milli > 0) {
+            let damage = (0.5 + a_attack * 2.2) * params.hostility * (0.8 + tr0) * (1.0 - 0.65 * victim_tr3);
+            let damage_milli = i32(damage * 1000.0);
+            let old_energy_milli = atomicSub(&agent_atomics[victim_idx].energy_milli, damage_milli);
 
-        a_cooldown = 3u;
-        a_last_victim = agent_states[victim_idx].id;
-        let combat_gain = damage * (0.1 + 0.55 * tr5);
-        atomicAdd(&agent_atomics[agent_idx].energy_milli, i32(combat_gain * 1000.0));
+            a_cooldown = 3u;
+            a_last_victim = agent_states[victim_idx].id;
+            let combat_gain = damage * (0.1 + 0.55 * tr5);
+            atomicAdd(&agent_atomics[agent_idx].energy_milli, i32(combat_gain * 1000.0));
 
-        // Decisive killer attribution:
-        if (old_energy_milli > 0 && old_energy_milli <= damage_milli) {
-            a_kills += 1u;
-            atomicAdd(&queue_buffer.telemetry.kills, 1u);
-            atomicAdd(&queue_buffer.telemetry.total_deaths, 1u);
-            let kill_bonus = min(9.0, 8.0 * tr5);
-            atomicAdd(&agent_atomics[agent_idx].energy_milli, i32(kill_bonus * 1000.0));
+            // Decisive killer attribution:
+            if (old_energy_milli > 0 && old_energy_milli <= damage_milli) {
+                a_kills += 1u;
+                atomicAdd(&queue_buffer.telemetry.kills, 1u);
+                atomicAdd(&queue_buffer.telemetry.total_deaths, 1u);
+                let kill_bonus = min(9.0, 8.0 * tr5);
+                atomicAdd(&agent_atomics[agent_idx].energy_milli, i32(kill_bonus * 1000.0));
 
-            // Frustum-culled stochastic audio emission:
-            let dx = abs(pos.x - params.camera_pos.x);
-            let dist_x = min(dx, params.world_size.x - dx);
-            let dy = abs(pos.y - params.camera_pos.y);
-            let dist_y = min(dy, params.world_size.y - dy);
-            let in_view = (dist_x <= params.camera_size.x * 0.5 && dist_y <= params.camera_size.y * 0.5);
-            if (in_view) {
-                let zoom_factor = clamp(1.0 - (params.camera_size.x - 150.0) / (params.world_size.x - 150.0), 0.0, 1.0);
-                let kill_volume = mix(0.08, 1.0, zoom_factor);
-                let density_filter = select(1u, 4u, params.agent_count > 10000u);
-                if (pcg_hash(agent_idx, victim_idx, params.tick) % density_filter == 0u) {
-                    let voice_slot = atomicAdd(&queue_buffer.telemetry.audio_voice_count, 1u);
-                    if (voice_slot < 256u) {
-                        queue_buffer.audio[voice_slot] = AudioVoice(pos, 1u /* EVENT_KILL */, kill_volume);
+                // Frustum-culled stochastic audio emission:
+                let dx = abs(pos.x - params.camera_pos.x);
+                let dist_x = min(dx, params.world_size.x - dx);
+                let dy = abs(pos.y - params.camera_pos.y);
+                let dist_y = min(dy, params.world_size.y - dy);
+                let in_view = (dist_x <= params.camera_size.x * 0.5 && dist_y <= params.camera_size.y * 0.5);
+                if (in_view) {
+                    let zoom_factor = clamp(1.0 - (params.camera_size.x - 150.0) / (params.world_size.x - 150.0), 0.0, 1.0);
+                    let kill_volume = mix(0.08, 1.0, zoom_factor);
+                    let density_filter = select(1u, 4u, params.agent_count > 10000u);
+                    if (pcg_hash(agent_idx, victim_idx, params.tick) % density_filter == 0u) {
+                        let voice_slot = atomicAdd(&queue_buffer.telemetry.audio_voice_count, 1u);
+                        if (voice_slot < 256u) {
+                            queue_buffer.audio[voice_slot] = AudioVoice(pos, 1u /* EVENT_KILL */, kill_volume);
+                        }
                     }
                 }
-            }
 
-            // Atomic CAS death ownership
-            let claim_death = atomicCompareExchangeWeak(&agent_atomics[victim_idx].dead_claimed, 0u, 1u);
-            if (claim_death.exchanged) {
-                let free_slot = atomicAdd(&queue_buffer.telemetry.freelist_top, 1u);
-                if (free_slot < params.max_agents) {
-                    freelist[free_slot] = victim_idx;
+                // Atomic CAS death ownership
+                let claim_death = atomicCompareExchangeWeak(&agent_atomics[victim_idx].dead_claimed, 0u, 1u);
+                if (claim_death.exchanged) {
+                    let free_slot = atomicAdd(&queue_buffer.telemetry.freelist_top, 1u);
+                    if (free_slot < params.max_agents) {
+                        freelist[free_slot] = victim_idx;
+                    }
+
+                    // Multi-cell corpse deposition from victim (HTML line 1210: food radius 2, taint radius 1)
+                    let vpos = agent_states[victim_idx].pos_vel.xy;
+                    deposit_food_radius2(vpos, 0.6);
+                    deposit_taint_radius1(vpos, 0.1);
                 }
-
-                // Corpse deposition from victim
-                let vpos = agent_states[victim_idx].pos_vel.xy;
-                let vcx = min(u32(max(0.0, vpos.x) / cell_w), params.soil_grid.x - 1u);
-                let vcy = min(u32(max(0.0, vpos.y) / cell_h), params.soil_grid.y - 1u);
-                let v_cell = vcy * params.soil_grid.x + vcx;
-                atomicAdd(&soil_buffer[v_cell].food_milli, 600);
-                atomicAdd(&soil_buffer[v_cell].taint_milli, 100);
             }
         }
     }
 
-    // Reproduction (sexual crossover if viable partner nearby, otherwise asexual)
-    // HTML: a.energy > 58 + 12 * tr0 && a.age > 65 && a.birth === 0 && o[5] > -0.15 && agents.length < CAP
+    // 5. Reproduction (evaluated AFTER grazing, metabolism & combat in strict parity with HTML lines 1400-1444)
+    let current_pre_birth_e = f32(atomicLoad(&agent_atomics[agent_idx].energy_milli)) * 0.001;
     let can_reproduce = (params.agent_count < params.max_capacity)
         && (out[5] > -0.15)
-        && (a_energy > (58.0 + 12.0 * tr0))
+        && (current_pre_birth_e > (58.0 + 12.0 * tr0))
         && (a_age > 65u)
         && (a_birth == 0u);
 
@@ -507,11 +606,11 @@ fn agent_main(@builtin(global_invocation_id) id: vec3u) {
         var mate_partner = 0xFFFFFFFFu;
         if (best_neighbor != 0xFFFFFFFFu && best_dist < 18.0) {
             let partner_idx = best_neighbor;
-            let partner_energy = agent_states[partner_idx].angle_energy[1];
+            let partner_e_milli = atomicLoad(&agent_atomics[partner_idx].energy_milli);
             let partner_root = agent_states[partner_idx].meta_flags & 0x0Fu;
-            if (partner_energy > 42.0 && partner_root != a_root) {
+            if (partner_e_milli > 42000 && partner_root != a_root) {
                 if (ENABLE_SEXUAL_SELECTION) {
-                    let my_energy_milli = u32(max(0.0, a_energy) * 1000.0);
+                    let my_energy_milli = u32(max(0.0, current_pre_birth_e) * 1000.0);
                     let prev_bid = atomicMax(&agent_atomics[partner_idx].mate_energy_milli, my_energy_milli);
                     if (my_energy_milli > prev_bid) {
                         atomicStore(&agent_atomics[partner_idx].mate_claim, agent_idx + 1u);
@@ -533,7 +632,6 @@ fn agent_main(@builtin(global_invocation_id) id: vec3u) {
         let queue_idx = atomicAdd(&queue_buffer.telemetry.birth_count, 1u);
         if (queue_idx < 65536u) {
             atomicSub(&agent_atomics[agent_idx].energy_milli, 24000);
-            a_energy = max(0.0, a_energy - 24.0);
             if (mate_partner != 0xFFFFFFFFu) {
                 atomicSub(&agent_atomics[mate_partner].energy_milli, 6000);
             }
@@ -557,17 +655,7 @@ fn agent_main(@builtin(global_invocation_id) id: vec3u) {
         }
     }
 
-
-    // Energy Gain and Basal/Thrust/Taint metabolic cost
-    let energy_gain = eaten_float * (9.0 + 9.0 * tr4);
-    let basal_cost = 0.10 + 0.12 * tr0 + 0.07 * tr1 + 0.035 * tr2 + 0.055 * tr3 + 0.035 * a_attack + 0.014 * a_signal;
-    let thrust_cost = thrust * 0.06;
-    let taint_cost = here_taint * (0.10 + 0.18 * (1.0 - tr3));
-    let internal_delta_milli = i32((energy_gain - basal_cost - thrust_cost - taint_cost) * 1000.0);
-    atomicAdd(&agent_atomics[agent_idx].energy_milli, internal_delta_milli);
-
-
-    // Strict Single-Writer Death Check (Energy depletion or Senescence at age > 2100)
+    // 6. Strict Single-Writer Death Check (Energy depletion or Senescence at age > 2100)
     let already_claimed = atomicLoad(&agent_atomics[agent_idx].dead_claimed);
     let current_energy_milli = atomicLoad(&agent_atomics[agent_idx].energy_milli);
 
@@ -582,10 +670,10 @@ fn agent_main(@builtin(global_invocation_id) id: vec3u) {
                     freelist[free_slot] = agent_idx;
                 }
 
-                // Corpse deposition into soil
+                // Corpse deposition into soil (HTML line 1210: food radius 2, taint radius 1)
                 let corpse_food = clamp(f32(max(0, current_energy_milli)) * 0.000016 + 0.6, 0.3, 2.0);
-                atomicAdd(&soil_buffer[cell_idx].food_milli, i32(corpse_food * 1000.0));
-                atomicAdd(&soil_buffer[cell_idx].taint_milli, 100);
+                deposit_food_radius2(pos, corpse_food);
+                deposit_taint_radius1(pos, 0.1);
             }
         }
         agent_states[agent_idx].meta_flags |= (1u << 13u);
@@ -614,10 +702,10 @@ fn agent_main(@builtin(global_invocation_id) id: vec3u) {
     agent_states[agent_idx].meta_flags = (a_root & 0x0Fu) | (a_cooldown << 4u) | (a_birth << 6u) | (a_kills << 14u);
     agent_states[agent_idx].age_gen = (a_age & 0xFFFFu) | (a_gen << 16u);
 
-    // Pack visual_cache: radius_u8 (0..7), glow_u8/signal (8..15), energy_u8 (16..23), is_attacking (24), birth_val (25..31)
+    // Pack visual_cache: radius_u8 (0..7), glow_u8/signal (8..15), energy_u8 (16..23), is_attacking (24: a_attack > 0.5), birth_val (25..31)
     let r_u8 = u32(clamp(tr0, 0.0, 1.0) * 255.0);
     let glow_u8 = u32(clamp(a_signal, 0.0, 1.0) * 255.0);
     let e_u8 = u32(clamp(a_energy / 100.0, 0.0, 1.0) * 255.0);
-    let vis_flags = select(0u, 1u << 24u, a_attack > 0.25) | ((a_birth & 0x7Fu) << 25u);
+    let vis_flags = select(0u, 1u << 24u, a_attack > 0.5) | ((a_birth & 0x7Fu) << 25u);
     agent_states[agent_idx].visual_cache = r_u8 | (glow_u8 << 8u) | (e_u8 << 16u) | vis_flags;
 }

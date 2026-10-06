@@ -7,8 +7,8 @@ fn test_sim_world_initialization() {
     assert_eq!(sim.world.tick, 0);
     assert_eq!(sim.speed, 1);
     assert!(!sim.paused);
-    assert_eq!(sim.world_width, 950.0);
-    assert_eq!(sim.world_height, 747.0);
+    assert_eq!(sim.world_width, 900.0);
+    assert_eq!(sim.world_height, 600.0);
     assert_eq!(sim.world.agents.len(), 72);
     assert_eq!(sim.world.max_cap, 340);
 }

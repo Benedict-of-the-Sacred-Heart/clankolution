@@ -305,10 +305,10 @@ pub fn setup_soil_rendering(
     commands.spawn((
         Sprite {
             image: soil_handle.clone(),
-            custom_size: Some(Vec2::new(950.0, 747.0)),
+            custom_size: Some(Vec2::new(900.0, 600.0)),
             ..default()
         },
-        Transform::from_xyz(475.0, 373.5, -20.0),
+        Transform::from_xyz(450.0, 300.0, -20.0),
         SoilSprite,
     ));
     commands.insert_resource(SoilTextureHandle(soil_handle));
@@ -330,10 +330,10 @@ pub fn setup_soil_rendering(
     commands.spawn((
         Sprite {
             image: vig_handle.clone(),
-            custom_size: Some(Vec2::new(950.0, 747.0)),
+            custom_size: Some(Vec2::new(900.0, 600.0)),
             ..default()
         },
-        Transform::from_xyz(475.0, 373.5, -5.0),
+        Transform::from_xyz(450.0, 300.0, -5.0),
         VignetteSprite,
     ));
     commands.insert_resource(VignetteTextureHandle(vig_handle));
@@ -569,7 +569,8 @@ pub fn generate_outline_mesh_from_gpu_states(
 
         // Sensory antennae whiskers if sight > 0.56
         if a.traits[2] > 0.56 {
-            let ant_color = [border_rgba[0], border_rgba[1], border_rgba[2], 0.6];
+            let c = vis.color.to_srgba();
+            let ant_color = [c.red, c.green, c.blue, 0.55];
             let sight = a.traits[2];
             let signal = a.traits[6];
             let ant1_start = bevy_pos + rot * Vec2::new(-r * 0.3, r * 0.6);
@@ -644,11 +645,7 @@ pub fn generate_dart_mesh_from_instances(
 
         let r = radius;
         let armor = inst.pad0;
-        let carnivory = if (inst.pad1[0] & 0xFF000000) != 0 {
-            ((inst.pad1[0] >> 24) as f32) / 255.0
-        } else {
-            f32::from_bits(inst.pad1[0])
-        };
+        let carnivory = ((inst.pad1[0] >> 24) as f32) / 255.0;
 
         let nose = bevy_pos + rot * Vec2::new(r * 1.5, 0.0);
         let right = bevy_pos + rot * Vec2::new(-r * 0.75, r * (0.5 + armor * 0.45));
@@ -704,11 +701,7 @@ pub fn generate_outline_mesh_from_instances(
 
         let r = vis.radius;
         let armor = inst.pad0;
-        let carnivory = if (inst.pad1[0] & 0xFF000000) != 0 {
-            ((inst.pad1[0] >> 24) as f32) / 255.0
-        } else {
-            f32::from_bits(inst.pad1[0])
-        };
+        let carnivory = ((inst.pad1[0] >> 24) as f32) / 255.0;
         let sight = f32::from_bits(inst.pad1[1]);
 
         let nose = bevy_pos + rot * Vec2::new(r * 1.5, 0.0);
@@ -745,7 +738,8 @@ pub fn generate_outline_mesh_from_instances(
 
         // Sensory antennae whiskers if sight > 0.56
         if sight > 0.56 {
-            let ant_color = [border_rgba[0], border_rgba[1], border_rgba[2], 0.6];
+            let c = vis.color.to_srgba();
+            let ant_color = [c.red, c.green, c.blue, 0.55];
             let signal = vis.signal;
             let ant1_start = bevy_pos + rot * Vec2::new(-r * 0.3, r * 0.6);
             let ant1_end = bevy_pos + rot * Vec2::new(-r * (1.5 + sight), r * (1.1 + signal));
@@ -828,8 +822,8 @@ pub fn generate_glow_mesh_from_instances(
 ) {
     positions.clear();
     colors.clear();
-    positions.reserve(instances.len() * 24);
-    colors.reserve(instances.len() * 24);
+    positions.reserve(instances.len() * 60);
+    colors.reserve(instances.len() * 60);
 
     for inst in instances {
         let Some(vis) = unpack_visual_cache_detailed(inst.vis_data[1], inst.vis_data[0]) else {
@@ -847,15 +841,15 @@ pub fn generate_glow_mesh_from_instances(
         let center_color = [c.red, c.green, c.blue, center_alpha];
         let outer_color = [c.red, c.green, c.blue, 0.0];
 
-        for seg in 0..8 {
-            let theta1 = (seg as f32) * std::f32::consts::TAU / 8.0;
-            let theta2 = ((seg + 1) as f32) * std::f32::consts::TAU / 8.0;
+        for seg in 0..20 {
+            let theta1 = (seg as f32) * std::f32::consts::TAU / 20.0;
+            let theta2 = ((seg + 1) as f32) * std::f32::consts::TAU / 20.0;
             let p1 = bevy_pos + Vec2::new(theta1.cos() * glow_r, theta1.sin() * glow_r);
             let p2 = bevy_pos + Vec2::new(theta2.cos() * glow_r, theta2.sin() * glow_r);
 
-            positions.push([bevy_pos.x, bevy_pos.y, -2.05]);
-            positions.push([p1.x, p1.y, -2.05]);
-            positions.push([p2.x, p2.y, -2.05]);
+            positions.push([bevy_pos.x, bevy_pos.y, -2.2]);
+            positions.push([p1.x, p1.y, -2.2]);
+            positions.push([p2.x, p2.y, -2.2]);
             colors.push(center_color);
             colors.push(outer_color);
             colors.push(outer_color);
@@ -880,8 +874,8 @@ pub fn generate_glow_mesh_from_gpu_states(
 ) {
     positions.clear();
     colors.clear();
-    positions.reserve(agents.len() * 24);
-    colors.reserve(agents.len() * 24);
+    positions.reserve(agents.len() * 60);
+    colors.reserve(agents.len() * 60);
 
     for a in agents {
         let Some(vis) = unpack_visual_cache_detailed(a.visual_cache, a.packed_color) else {
@@ -899,15 +893,15 @@ pub fn generate_glow_mesh_from_gpu_states(
         let center_color = [c.red, c.green, c.blue, center_alpha];
         let outer_color = [c.red, c.green, c.blue, 0.0];
 
-        for seg in 0..8 {
-            let theta1 = (seg as f32) * std::f32::consts::TAU / 8.0;
-            let theta2 = ((seg + 1) as f32) * std::f32::consts::TAU / 8.0;
+        for seg in 0..20 {
+            let theta1 = (seg as f32) * std::f32::consts::TAU / 20.0;
+            let theta2 = ((seg + 1) as f32) * std::f32::consts::TAU / 20.0;
             let p1 = bevy_pos + Vec2::new(theta1.cos() * glow_r, theta1.sin() * glow_r);
             let p2 = bevy_pos + Vec2::new(theta2.cos() * glow_r, theta2.sin() * glow_r);
 
-            positions.push([bevy_pos.x, bevy_pos.y, -2.05]);
-            positions.push([p1.x, p1.y, -2.05]);
-            positions.push([p2.x, p2.y, -2.05]);
+            positions.push([bevy_pos.x, bevy_pos.y, -2.2]);
+            positions.push([p1.x, p1.y, -2.2]);
+            positions.push([p2.x, p2.y, -2.2]);
             colors.push(center_color);
             colors.push(outer_color);
             colors.push(outer_color);
@@ -944,10 +938,10 @@ pub fn generate_swarm_trails_from_sim(
             let p2 = sim_to_bevy_coord(Vec2::new(a.trail_x[i + 1] as f32, a.trail_y[i + 1] as f32), h);
 
             if (p1.x - p2.x).abs() < w * 0.5 && (p1.y - p2.y).abs() < h * 0.5 {
-                let alpha = (0.08 + 0.32 * ((i + 1) as f32 / tc as f32)).clamp(0.05, 0.40);
+                let alpha = (0.18 + 0.32 * ((i + 1) as f32 / (tc - 1) as f32)).clamp(0.15, 0.50);
                 let seg_color = [c.red, c.green, c.blue, alpha];
-                positions.push([p1.x, p1.y, -2.1]);
-                positions.push([p2.x, p2.y, -2.1]);
+                positions.push([p1.x, p1.y, -2.05]);
+                positions.push([p2.x, p2.y, -2.05]);
                 colors.push(seg_color);
                 colors.push(seg_color);
             }
@@ -989,10 +983,10 @@ pub fn generate_swarm_trails_from_tracker(
                 let p1 = trail[i];
                 let p2 = trail[i + 1];
                 if (p1.x - p2.x).abs() < world_width * 0.5 && (p1.y - p2.y).abs() < world_height * 0.5 {
-                    let alpha = (0.08 + 0.32 * ((i + 1) as f32 / tc as f32)).clamp(0.05, 0.40);
+                    let alpha = (0.18 + 0.32 * ((i + 1) as f32 / (tc - 1) as f32)).clamp(0.15, 0.50);
                     let seg_color = [c.red, c.green, c.blue, alpha];
-                    positions.push([p1.x, p1.y, -2.1]);
-                    positions.push([p2.x, p2.y, -2.1]);
+                    positions.push([p1.x, p1.y, -2.05]);
+                    positions.push([p2.x, p2.y, -2.05]);
                     colors.push(seg_color);
                     colors.push(seg_color);
                 }
@@ -1068,7 +1062,7 @@ pub fn setup_agent_rendering(
 pub fn update_agent_mesh_system(
     sim: Option<Res<SimWorld>>,
     gpu_driver: Option<Res<crate::sim::GpuDriverResource>>,
-    camera_query: Query<(&Camera, &GlobalTransform), With<crate::camera::MainCamera>>,
+    camera_query: Query<(&Camera, &GlobalTransform, &Projection), With<crate::camera::MainCamera>>,
     res: Option<Res<AgentMeshResource>>,
     outline_res: Option<Res<AgentOutlineMeshResource>>,
     glow_res: Option<Res<AgentGlowMeshResource>>,
@@ -1082,10 +1076,13 @@ pub fn update_agent_mesh_system(
         if let Some(ref gpu) = gpu_driver {
             if let Some(ref driver) = gpu.driver {
                 if driver.is_initialized() {
-                    let (cam_pos, cam_size) = if let Ok((camera, transform)) = camera_query.single() {
+                    let (cam_pos, cam_size) = if let Ok((camera, transform, proj)) = camera_query.single() {
                         let pos_bevy = transform.translation().truncate();
                         let pos_sim = bevy_to_sim_coord(pos_bevy, sim.world_height as f32);
-                        let size = camera.logical_viewport_size().unwrap_or(Vec2::new(sim.world_width as f32, sim.world_height as f32));
+                        let mut size = camera.logical_viewport_size().unwrap_or(Vec2::new(sim.world_width as f32, sim.world_height as f32));
+                        if let Projection::Orthographic(ref ortho) = *proj {
+                            size *= ortho.scale;
+                        }
                         ([pos_sim.x, pos_sim.y], [size.x, size.y])
                     } else {
                         ([(sim.world_width * 0.5) as f32, (sim.world_height * 0.5) as f32], [sim.world_width as f32, sim.world_height as f32])
@@ -1356,6 +1353,7 @@ pub fn update_particles_system(
 
 pub fn render_sim_gizmos_system(
     sim: Option<Res<SimWorld>>,
+    tracker: Option<Res<AgentTrailsTracker>>,
     mut gizmos: Gizmos,
 ) {
     let Some(sim) = sim else { return };
@@ -1375,9 +1373,22 @@ pub fn render_sim_gizmos_system(
             // Selection Reticle (#fff1d6)
             gizmos.circle_2d(bevy_pos, r + 8.0, Color::srgb(1.0, 0.945, 0.839));
 
-            // Selected specimen history trail
-            if a.trail_count > 1 {
-                let trail_color = c.with_alpha(0.45);
+            // Selected specimen history trail (from tracker in GPU mode, or world agent in Rust mode)
+            let trail_color = c.with_alpha(0.45);
+            if sim.active_engine == crate::sim::ActiveEngine::Gpu {
+                if let Some(ref tr) = tracker {
+                    if let Some(queue) = tr.trails.get(&a.id) {
+                        let q_vec: Vec<Vec2> = queue.iter().copied().collect();
+                        for i in 0..q_vec.len().saturating_sub(1) {
+                            let p1 = q_vec[i];
+                            let p2 = q_vec[i + 1];
+                            if (p1.x - p2.x).abs() < w * 0.5 && (p1.y - p2.y).abs() < h * 0.5 {
+                                gizmos.line_2d(p1, p2, trail_color);
+                            }
+                        }
+                    }
+                }
+            } else if a.trail_count > 1 {
                 let trail_len = (a.trail_count as usize).min(9);
                 for i in 0..trail_len.saturating_sub(1) {
                     let p1 = sim_to_bevy_coord(Vec2::new(a.trail_x[i] as f32, a.trail_y[i] as f32), h);

@@ -132,6 +132,8 @@ fn test_starvation_death_on_gpu() {
     sim.world.agents[0].age = 10;
     sim.world.agents[0].energy = 0.001;
     sim.world.agents[0].dead = 0;
+    sim.world.growth = 0.0;
+    sim.world.soil.food.fill(0.0);
 
     let (states, genomes, atomics, soil, params) = sync_rust_to_gpu(&sim);
     driver.upload_state(&states, &genomes, &atomics, &soil, &params);

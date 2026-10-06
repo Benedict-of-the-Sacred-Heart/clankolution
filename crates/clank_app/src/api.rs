@@ -602,9 +602,41 @@ pub fn api_dispatch_system(
                     }
                     if let Some(agent_id) = req.selected_agent {
                         if agent_id == 0 {
-                            sim.selected_agent_id = sim.world.agents.iter().find(|a| a.dead == 0).map(|a| a.id);
+                            if sim.active_engine == crate::sim::ActiveEngine::Gpu {
+                                if let Some(ref gpu) = gpu_res {
+                                    if let Some(ref driver) = gpu.driver {
+                                        let states = driver.readback_agent_states(driver.max_agents.min(500) as usize);
+                                        if let Some((idx, s)) = states.iter().enumerate().find(|(_, a)| (a.meta_flags & (1 << 13)) == 0 && a.visual_cache != 0) {
+                                            sim.selected_agent_id = Some(s.id);
+                                            sim.selected_agent_slot = Some(idx as u32);
+                                        }
+                                    }
+                                }
+                            } else {
+                                sim.selected_agent_id = sim.world.agents.iter().find(|a| a.dead == 0).map(|a| a.id);
+                            }
+                        } else if agent_id == 0xFFFFFFFF {
+                            sim.selected_agent_id = None;
+                            sim.selected_agent_slot = None;
+                            sim.selected_agent_cache = None;
                         } else {
                             sim.selected_agent_id = Some(agent_id);
+                            if sim.active_engine == crate::sim::ActiveEngine::Gpu {
+                                if let Some(ref gpu) = gpu_res {
+                                    if let Some(ref driver) = gpu.driver {
+                                        let states = driver.readback_agent_states(driver.max_agents.min(500) as usize);
+                                        if let Some((idx, _)) = states.iter().enumerate().find(|(_, a)| a.id == agent_id && (a.meta_flags & (1 << 13)) == 0) {
+                                            sim.selected_agent_slot = Some(idx as u32);
+                                        } else {
+                                            sim.selected_agent_slot = Some(agent_id);
+                                        }
+                                    } else {
+                                        sim.selected_agent_slot = Some(agent_id);
+                                    }
+                                } else {
+                                    sim.selected_agent_slot = Some(agent_id);
+                                }
+                            }
                         }
                     }
                     if let Some(ref engine) = req.active_engine {
@@ -644,7 +676,15 @@ pub fn api_dispatch_system(
                     match tool_lower.as_str() {
                         "observe" | "inspect" | "select" => {
                             if let (Some(x), Some(y)) = (req.x, req.y) {
-                                sim.selected_agent_id = crate::rendering::find_agent_at_position(&sim, Vec2::new(x as f32, y as f32), 25.0);
+                                if sim.active_engine == crate::sim::ActiveEngine::Gpu {
+                                    sim.pending_tool = Some(crate::sim::PendingTool {
+                                        tool_type: 0,
+                                        tool_pos: [x as f32, y as f32],
+                                        tool_radius: 25.0,
+                                    });
+                                } else {
+                                    sim.selected_agent_id = crate::rendering::find_agent_at_position(&sim, Vec2::new(x as f32, y as f32), 25.0);
+                                }
                             }
                         }
                         "nourish" => {

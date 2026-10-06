@@ -178,29 +178,38 @@ fn birth_main(@builtin(workgroup_id) wg_id: vec3u, @builtin(local_invocation_id)
             continue;
         }
 
-        var word_a = agent_genomes[parent_a].packed_genes[w];
+        let word_a = agent_genomes[parent_a].packed_genes[w];
         var word_b = word_a;
         if (parent_b != 0xFFFFFFFFu && parent_b < params.max_agents) {
             word_b = agent_genomes[parent_b].packed_genes[w];
         }
-        let p_cross = pcg_float(child_idx, w, params.tick);
-        var chosen = select(word_b, word_a, p_cross < 0.48);
 
-        // Unpack 4 bytes, mutate each, and repack
-        let b0 = (i32(chosen << 24u) >> 24);
-        let b1 = (i32(chosen << 16u) >> 24);
-        let b2 = (i32(chosen << 8u) >> 24);
-        let b3 = (i32(chosen) >> 24);
+        // Unpack 4 bytes from parent A and parent B
+        let a0 = (i32(word_a << 24u) >> 24);
+        let a1 = (i32(word_a << 16u) >> 24);
+        let a2 = (i32(word_a << 8u) >> 24);
+        let a3 = (i32(word_a) >> 24);
+
+        let b0 = (i32(word_b << 24u) >> 24);
+        let b1 = (i32(word_b << 16u) >> 24);
+        let b2 = (i32(word_b << 8u) >> 24);
+        let b3 = (i32(word_b) >> 24);
 
         let g0 = w * 4u + 0u;
         let g1 = w * 4u + 1u;
         let g2 = w * 4u + 2u;
         let g3 = w * 4u + 3u;
 
-        let m0 = select(0u, mutate_gene_byte(b0, child_idx, g0, params.tick, params.mut_rate), g0 < 326u);
-        let m1 = select(0u, mutate_gene_byte(b1, child_idx, g1, params.tick, params.mut_rate), g1 < 326u);
-        let m2 = select(0u, mutate_gene_byte(b2, child_idx, g2, params.tick, params.mut_rate), g2 < 326u);
-        let m3 = select(0u, mutate_gene_byte(b3, child_idx, g3, params.tick, params.mut_rate), g3 < 326u);
+        // Individual per-gene crossover (48% parent B, otherwise parent A)
+        let base0 = select(a0, b0, parent_b != 0xFFFFFFFFu && pcg_float(child_idx, g0, params.tick) < 0.48);
+        let base1 = select(a1, b1, parent_b != 0xFFFFFFFFu && pcg_float(child_idx, g1, params.tick) < 0.48);
+        let base2 = select(a2, b2, parent_b != 0xFFFFFFFFu && pcg_float(child_idx, g2, params.tick) < 0.48);
+        let base3 = select(a3, b3, parent_b != 0xFFFFFFFFu && pcg_float(child_idx, g3, params.tick) < 0.48);
+
+        let m0 = select(0u, mutate_gene_byte(base0, child_idx, g0, params.tick, params.mut_rate), g0 < 326u);
+        let m1 = select(0u, mutate_gene_byte(base1, child_idx, g1, params.tick, params.mut_rate), g1 < 326u);
+        let m2 = select(0u, mutate_gene_byte(base2, child_idx, g2, params.tick, params.mut_rate), g2 < 326u);
+        let m3 = select(0u, mutate_gene_byte(base3, child_idx, g3, params.tick, params.mut_rate), g3 < 326u);
 
         agent_genomes[child_idx].packed_genes[w] = m0 | (m1 << 8u) | (m2 << 16u) | (m3 << 24u);
     }
@@ -210,8 +219,8 @@ fn birth_main(@builtin(workgroup_id) wg_id: vec3u, @builtin(local_invocation_id)
         atomicAdd(&queue_buffer.telemetry.total_births, 1u);
         let parent_pos = agent_states[parent_a].pos_vel.xy;
         let offset = vec2f(
-            pcg_triangular(child_idx, 1u, params.tick) * 9.0,
-            pcg_triangular(child_idx, 2u, params.tick) * 9.0
+            (pcg_float(child_idx, 1u, params.tick) * 18.0) - 9.0,
+            (pcg_float(child_idx, 2u, params.tick) * 18.0) - 9.0
         );
         let child_pos = wrap_coords(parent_pos + offset);
 
@@ -261,7 +270,7 @@ fn birth_main(@builtin(workgroup_id) wg_id: vec3u, @builtin(local_invocation_id)
 
         let parent_meta = agent_states[parent_a].meta_flags;
         let child_root = parent_meta & 0x0Fu;
-        agent_states[child_idx].meta_flags = (child_root & 0x0Fu) | (95u << 6u); // root, birth = 95, dead = 0
+        agent_states[child_idx].meta_flags = (child_root & 0x0Fu); // root, birth = 0, dead = 0
 
         let parent_gen = agent_states[parent_a].age_gen >> 16u;
         var max_parent_gen = parent_gen;
@@ -278,8 +287,6 @@ fn birth_main(@builtin(workgroup_id) wg_id: vec3u, @builtin(local_invocation_id)
 
         let child_r_u8 = u32(clamp(agent_states[child_idx].traits[0][0], 0.0, 1.0) * 255.0);
         let child_e_u8 = u32(clamp(24.0 / 100.0, 0.0, 1.0) * 255.0);
-        let child_glow_u8 = 128u;
-        let child_birth_flags = (95u << 25u);
-        agent_states[child_idx].visual_cache = child_r_u8 | (child_glow_u8 << 8u) | (child_e_u8 << 16u) | child_birth_flags;
+        agent_states[child_idx].visual_cache = child_r_u8 | (child_e_u8 << 16u);
     }
 }

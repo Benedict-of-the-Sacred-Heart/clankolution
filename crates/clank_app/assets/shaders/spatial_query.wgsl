@@ -277,7 +277,7 @@ fn frustum_cull_clear(@builtin(global_invocation_id) id: vec3u) {
 @compute @workgroup_size(64)
 fn frustum_cull_main(@builtin(global_invocation_id) id: vec3u) {
     let agent_idx = id.x;
-    if (agent_idx >= params.max_capacity || agent_idx >= params.max_agents) {
+    if (agent_idx >= params.max_agents) {
         return;
     }
 
@@ -302,7 +302,7 @@ fn frustum_cull_main(@builtin(global_invocation_id) id: vec3u) {
 
     if (dist_x <= half_w && dist_y <= half_h) {
         let slot = atomicAdd(&cull_output.count, 1u);
-        if (slot < params.max_capacity && slot < params.max_agents) {
+        if (slot < params.max_agents) {
             visible_instances[slot] = agent_idx;
             let angle = state.angle_energy[0];
             dart_instances[slot].pos_angle = vec3f(pos.x, pos.y, angle);
