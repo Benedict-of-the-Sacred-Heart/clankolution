@@ -64,7 +64,7 @@ fn test_instanced_dart_rendering_zero_cpu_vertices() {
     let target_view = target_tex.create_view(&wgpu::TextureViewDescriptor::default());
 
     // Render directly using GPU instance stream and unit dart template (12 vertices)
-    driver.render_darts_instanced(&target_view, &params, visible_count);
+    driver.render_darts_instanced(&target_view, &params);
 
     // Verify template mesh contains exactly 12 vertices (unit dart), zero CPU vertex bloat
     assert_eq!(driver.dart_template_vertex_count(), 12);

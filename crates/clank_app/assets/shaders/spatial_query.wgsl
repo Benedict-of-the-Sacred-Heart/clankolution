@@ -94,10 +94,10 @@ struct ConsolidatedQueue {
 }
 
 struct CullOutput {
-    count: atomic<u32>,
-    pad0: u32,
-    pad1: u32,
-    pad2: u32,
+    vertex_count: u32,
+    instance_count: atomic<u32>,
+    first_vertex: u32,
+    first_instance: u32,
 }
 
 struct DartInstance {
@@ -245,23 +245,13 @@ fn spatial_query_main(@builtin(global_invocation_id) id: vec3u) {
 
         let pos = agent_states[agent_idx].pos_vel.xy;
         let d = toroidal_dist(tool_pos, pos);
-        let aoe_radius = select(params.tool_radius, 60.0, params.tool_radius <= 0.0);
+        let aoe_radius = select(params.tool_radius, 23.0, params.tool_radius <= 0.0);
         if (d <= aoe_radius) {
-            if (params.tool_type == 1u) {
-                // Nourish: grant energy
-                agent_states[agent_idx].angle_energy[1] = min(agent_states[agent_idx].angle_energy[1] + 25.0, 150.0);
-                atomicAdd(&agent_atomics[agent_idx].energy_milli, 25000);
-            } else if (params.tool_type == 2u) {
-                // Blight: deduct energy
-                agent_states[agent_idx].angle_energy[1] = max(agent_states[agent_idx].angle_energy[1] - 30.0, 0.0);
-                atomicSub(&agent_atomics[agent_idx].energy_milli, 30000);
-            } else if (params.tool_type == 3u) {
-                // Extinguish: kill agent
-                agent_states[agent_idx].meta_flags |= (1u << 13u);
-                agent_states[agent_idx].angle_energy[1] = 0.0;
-                agent_states[agent_idx].visual_cache = 0u;
+            if (params.tool_type == 3u) {
+                // Extinguish: kill agent by setting energy to 0.
+                // Standard atomic death resolution runs in agent_step (depositing corpse & pushing freelist).
                 atomicStore(&agent_atomics[agent_idx].energy_milli, 0);
-                atomicStore(&agent_atomics[agent_idx].dead_claimed, 1u);
+                agent_states[agent_idx].angle_energy[1] = 0.0;
             }
         }
     }
@@ -270,7 +260,10 @@ fn spatial_query_main(@builtin(global_invocation_id) id: vec3u) {
 @compute @workgroup_size(64)
 fn frustum_cull_clear(@builtin(global_invocation_id) id: vec3u) {
     if (id.x == 0u) {
-        atomicStore(&cull_output.count, 0u);
+        cull_output.vertex_count = 12u;
+        atomicStore(&cull_output.instance_count, 0u);
+        cull_output.first_vertex = 0u;
+        cull_output.first_instance = 0u;
     }
 }
 
@@ -283,8 +276,8 @@ fn frustum_cull_main(@builtin(global_invocation_id) id: vec3u) {
 
     let state = agent_states[agent_idx];
 
-    // Culling invariant: dead agents (dead flag in meta_flags or visual_cache == 0) are culled
-    if ((state.meta_flags & (1u << 13u)) != 0u || state.visual_cache == 0u) {
+    // Culling invariant: dead agents (dead flag in meta_flags, visual_cache == 0, or dead_claimed) are culled
+    if ((state.meta_flags & (1u << 13u)) != 0u || state.visual_cache == 0u || atomicLoad(&agent_atomics[agent_idx].dead_claimed) != 0u) {
         return;
     }
 
@@ -301,7 +294,7 @@ fn frustum_cull_main(@builtin(global_invocation_id) id: vec3u) {
     let dist_y = min(dy, params.world_size.y - dy);
 
     if (dist_x <= half_w && dist_y <= half_h) {
-        let slot = atomicAdd(&cull_output.count, 1u);
+        let slot = atomicAdd(&cull_output.instance_count, 1u);
         if (slot < params.max_agents) {
             visible_instances[slot] = agent_idx;
             let angle = state.angle_energy[0];

@@ -19,11 +19,39 @@ struct SoilParams {
     decay_rate: f32,
 }
 
+struct GpuSimParams {
+    tick: u32,
+    agent_count: u32,
+    max_agents: u32,
+    max_capacity: u32,
+
+    hostility: f32,
+    mut_rate: f32,
+    speed: f32,
+    renewal: f32,
+
+    sub_tick: u32,
+    sub_ticks_per_frame: u32,
+    tool_type: u32,
+    tool_radius: f32,
+
+    tool_pos: vec2f,
+    camera_pos: vec2f,
+
+    camera_size: vec2f,
+    world_size: vec2f,
+
+    soil_grid: vec2u,
+    eclipse: u32,
+    epoch: u32,
+}
+
 @group(0) @binding(0) var<storage, read_write> soil_buffer: array<SoilCell>;
 @group(0) @binding(1) var soil_data: texture_storage_2d<rgba16float, write>;      // Raw physics [food, taint, scent, 1.0]
 @group(0) @binding(2) var soil_display: texture_storage_2d<rgba16float, write>;   // Colormap display
 @group(0) @binding(3) var<storage, read> bloom_table: array<f32>;
 @group(0) @binding(4) var<uniform> params: SoilParams;
+@group(0) @binding(5) var<uniform> sim_params: GpuSimParams;
 
 fn evaluate_soil_color(f: f32, t: f32, s: f32, coord: vec2u) -> vec4f {
     let inv18 = 1.0 / 1.8;
@@ -73,6 +101,44 @@ fn soil_main(@builtin(global_invocation_id) id: vec3u) {
     var f = f32(f_milli) * 0.001;
     var t = f32(atomicLoad(&soil_buffer[k].taint_milli)) * 0.001;
     var s = f32(atomicLoad(&soil_buffer[k].scent_milli)) * 0.001;
+
+    // Interactive tool deposit (Nourish = 1, Blight = 2) on sub_tick 0
+    if (sim_params.sub_tick == 0u && (sim_params.tool_type == 1u || sim_params.tool_type == 2u)) {
+        let inv_cw = 1.0 / 12.0;
+        let inv_ch = 1.0 / 12.0;
+        let tx = ((sim_params.tool_pos[0] % sim_params.world_size[0]) + sim_params.world_size[0]) % sim_params.world_size[0];
+        let ty = ((sim_params.tool_pos[1] % sim_params.world_size[1]) + sim_params.world_size[1]) % sim_params.world_size[1];
+        let cx = i32(floor(tx * inv_cw));
+        let cy = i32(floor(ty * inv_ch));
+
+        let cols = i32(params.width);
+        let rows = i32(params.height);
+
+        var dx = (i32(id.x) - cx) % cols;
+        if (dx > cols / 2) { dx -= cols; }
+        if (dx < -cols / 2) { dx += cols; }
+
+        var dy = (i32(id.y) - cy) % rows;
+        if (dy > rows / 2) { dy -= rows; }
+        if (dy < -rows / 2) { dy += rows; }
+
+        let rr = f32(dx * dx + dy * dy);
+
+        if (sim_params.tool_type == 1u) {
+            // Nourish: deposit(food, x, y, 0.28, 3)
+            if (rr <= 9.5) {
+                f = clamp(f + 0.28 / (1.0 + rr * 0.8), 0.0, 3.0);
+            }
+        } else if (sim_params.tool_type == 2u) {
+            // Blight: deposit(taint, x, y, 0.38, 3); deposit(food, x, y, -0.14, 2)
+            if (rr <= 9.5) {
+                t = clamp(t + 0.38 / (1.0 + rr * 0.8), 0.0, 3.0);
+            }
+            if (rr <= 4.5) {
+                f = clamp(f - 0.14 / (1.0 + rr * 0.8), 0.0, 3.0);
+            }
+        }
+    }
 
     // Environmental renewal & decay (HTML lines 1249-1254 and clank_core line 128)
     f += params.renewal * bloom_table[k] * (1.0 - f / 1.7);

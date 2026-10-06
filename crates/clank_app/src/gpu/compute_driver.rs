@@ -105,7 +105,7 @@ pub struct GpuComputeDriver {
 
 impl GpuComputeDriver {
     pub fn create_default() -> Option<Self> {
-        Self::create_for_world(80, 63, 65536)
+        Self::create_for_world(75, 50, 65536)
     }
 
     pub fn create_for_world(soil_cols: u32, soil_rows: u32, max_agents: u32) -> Option<Self> {
@@ -125,7 +125,7 @@ impl GpuComputeDriver {
     }
 
     pub fn new(device: Arc<wgpu::Device>, queue: Arc<wgpu::Queue>, max_agents: u32) -> Self {
-        Self::new_with_grid(device, queue, max_agents, 80, 63)
+        Self::new_with_grid(device, queue, max_agents, 75, 50)
     }
 
     pub fn new_with_grid(
@@ -463,6 +463,7 @@ impl GpuComputeDriver {
                 wgpu::BindGroupLayoutEntry { binding: 2, visibility: wgpu::ShaderStages::COMPUTE, ty: wgpu::BindingType::StorageTexture { access: wgpu::StorageTextureAccess::WriteOnly, format: wgpu::TextureFormat::Rgba16Float, view_dimension: wgpu::TextureViewDimension::D2 }, count: None },
                 wgpu::BindGroupLayoutEntry { binding: 3, visibility: wgpu::ShaderStages::COMPUTE, ty: wgpu::BindingType::Buffer { ty: wgpu::BufferBindingType::Storage { read_only: true }, has_dynamic_offset: false, min_binding_size: None }, count: None },
                 wgpu::BindGroupLayoutEntry { binding: 4, visibility: wgpu::ShaderStages::COMPUTE, ty: wgpu::BindingType::Buffer { ty: wgpu::BufferBindingType::Uniform, has_dynamic_offset: false, min_binding_size: None }, count: None },
+                wgpu::BindGroupLayoutEntry { binding: 5, visibility: wgpu::ShaderStages::COMPUTE, ty: wgpu::BindingType::Buffer { ty: wgpu::BufferBindingType::Uniform, has_dynamic_offset: false, min_binding_size: None }, count: None },
             ],
         });
         let soil_bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
@@ -474,6 +475,7 @@ impl GpuComputeDriver {
                 wgpu::BindGroupEntry { binding: 2, resource: wgpu::BindingResource::TextureView(&soil_display_view) },
                 wgpu::BindGroupEntry { binding: 3, resource: bloom_table_buf.as_entire_binding() },
                 wgpu::BindGroupEntry { binding: 4, resource: soil_params_buf.as_entire_binding() },
+                wgpu::BindGroupEntry { binding: 5, resource: sim_params_buf.as_entire_binding() },
             ],
         });
         let soil_pl = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
@@ -1493,7 +1495,7 @@ impl GpuComputeDriver {
 
         let visible_count = {
             let data = slice.get_mapped_range();
-            let count = u32::from_le_bytes(data[0..4].try_into().unwrap());
+            let count = u32::from_le_bytes(data[4..8].try_into().unwrap());
             drop(data);
             count
         };
@@ -1557,33 +1559,59 @@ impl GpuComputeDriver {
         result
     }
 
+    pub fn readback_cull_args(&self) -> [u32; 4] {
+        let mut encoder = self.device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
+            label: Some("readback_cull_args_encoder"),
+        });
+        encoder.copy_buffer_to_buffer(&self.cull_output_buf, 0, &self.staging_cull_buf, 0, 16);
+        self.queue.submit([encoder.finish()]);
+
+        let slice = self.staging_cull_buf.slice(0..16);
+        let (sender, receiver) = std::sync::mpsc::channel();
+        slice.map_async(wgpu::MapMode::Read, move |res| {
+            let _ = sender.send(res);
+        });
+        self.device.poll(wgpu::PollType::wait_indefinitely()).unwrap();
+        receiver.recv().unwrap().unwrap();
+
+        let args = {
+            let data = slice.get_mapped_range();
+            let mut arr = [0u32; 4];
+            arr[0] = u32::from_le_bytes(data[0..4].try_into().unwrap());
+            arr[1] = u32::from_le_bytes(data[4..8].try_into().unwrap());
+            arr[2] = u32::from_le_bytes(data[8..12].try_into().unwrap());
+            arr[3] = u32::from_le_bytes(data[12..16].try_into().unwrap());
+            drop(data);
+            arr
+        };
+        self.staging_cull_buf.unmap();
+        args
+    }
+
     pub fn render_darts_instanced(
         &self,
         target_view: &wgpu::TextureView,
         params: &GpuSimParams,
-        visible_count: u32,
     ) {
-        if visible_count == 0 {
-            return;
-        }
-
-        // Update view uniform with orthographic projection
+        // Update view uniform with orthographic projection matching dart_instanced.wgsl inverted Y
+        let cam_y = params.world_size[1] - params.camera_pos[1];
         let left = params.camera_pos[0] - params.camera_size[0] * 0.5;
         let right = params.camera_pos[0] + params.camera_size[0] * 0.5;
-        let top = params.camera_pos[1] - params.camera_size[1] * 0.5;
-        let bottom = params.camera_pos[1] + params.camera_size[1] * 0.5;
+        let bottom = cam_y - params.camera_size[1] * 0.5;
+        let top = cam_y + params.camera_size[1] * 0.5;
 
         let sx = 2.0 / (right - left);
-        let sy = 2.0 / (bottom - top);
+        let sy = 2.0 / (top - bottom);
         let tx = -(right + left) / (right - left);
-        let ty = -(bottom + top) / (bottom - top);
+        let ty = -(top + bottom) / (top - bottom);
 
         let mut view_proj = [0.0f32; 16];
         view_proj[0] = sx;
         view_proj[5] = sy;
-        view_proj[10] = 0.5;
+        view_proj[10] = 0.0;
         view_proj[12] = tx;
         view_proj[13] = ty;
+        view_proj[14] = 0.5;
         view_proj[15] = 1.0;
 
         let vu = ViewUniform {
@@ -1619,7 +1647,7 @@ impl GpuComputeDriver {
             rpass.set_bind_group(0, &self.dart_render_bind_group, &[]);
             rpass.set_vertex_buffer(0, self.dart_template_buf.slice(..));
             rpass.set_vertex_buffer(1, self.dart_instances_buf.slice(..));
-            rpass.draw(0..12, 0..visible_count);
+            rpass.draw_indirect(&self.cull_output_buf, 0);
         }
 
         self.queue.submit([encoder.finish()]);

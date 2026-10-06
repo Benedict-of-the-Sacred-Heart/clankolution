@@ -707,15 +707,6 @@ pub fn api_dispatch_system(
                                     tool_pos: [x as f32, y as f32],
                                     tool_radius: 45.0,
                                 });
-                                if let Some(ref gpu) = gpu_res {
-                                    if let Some(ref driver) = gpu.driver {
-                                        if driver.is_initialized() {
-                                            let cx = (x / 12.0).floor() as i32;
-                                            let cy = (y / 12.0).floor() as i32;
-                                            driver.sync_soil_cells_gpu(&sim.world.soil, cx, cy, 3);
-                                        }
-                                    }
-                                }
                             }
                         }
                         "blight" => {
@@ -726,15 +717,6 @@ pub fn api_dispatch_system(
                                     tool_pos: [x as f32, y as f32],
                                     tool_radius: 45.0,
                                 });
-                                if let Some(ref gpu) = gpu_res {
-                                    if let Some(ref driver) = gpu.driver {
-                                        if driver.is_initialized() {
-                                            let cx = (x / 12.0).floor() as i32;
-                                            let cy = (y / 12.0).floor() as i32;
-                                            driver.sync_soil_cells_gpu(&sim.world.soil, cx, cy, 3);
-                                        }
-                                    }
-                                }
                             }
                         }
                         "seed" | "seedlife" | "seed_life" => {
@@ -769,7 +751,7 @@ pub fn api_dispatch_system(
                                 sim.pending_tool = Some(crate::sim::PendingTool {
                                     tool_type: 3,
                                     tool_pos: [x as f32, y as f32],
-                                    tool_radius: 35.0,
+                                    tool_radius: 23.0,
                                 });
                             }
                         }

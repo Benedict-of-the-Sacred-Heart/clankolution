@@ -1489,15 +1489,6 @@ pub fn agent_picking_system(
                     tool_pos: [sim_pos.x, sim_pos.y],
                     tool_radius: 45.0,
                 });
-                if let Some(ref gpu) = gpu_driver {
-                    if let Some(ref driver) = gpu.driver {
-                        if driver.is_initialized() {
-                            let cx = (sim_pos.x / 12.0).floor() as i32;
-                            let cy = (sim_pos.y / 12.0).floor() as i32;
-                            driver.sync_soil_cells_gpu(&sim.world.soil, cx, cy, 3);
-                        }
-                    }
-                }
             }
         }
         crate::ui::ActiveTool::Blight => {
@@ -1508,15 +1499,6 @@ pub fn agent_picking_system(
                     tool_pos: [sim_pos.x, sim_pos.y],
                     tool_radius: 45.0,
                 });
-                if let Some(ref gpu) = gpu_driver {
-                    if let Some(ref driver) = gpu.driver {
-                        if driver.is_initialized() {
-                            let cx = (sim_pos.x / 12.0).floor() as i32;
-                            let cy = (sim_pos.y / 12.0).floor() as i32;
-                            driver.sync_soil_cells_gpu(&sim.world.soil, cx, cy, 3);
-                        }
-                    }
-                }
             }
         }
         crate::ui::ActiveTool::SeedLife => {
@@ -1539,7 +1521,7 @@ pub fn agent_picking_system(
                 sim.pending_tool = Some(crate::sim::PendingTool {
                     tool_type: 3,
                     tool_pos: [sim_pos.x, sim_pos.y],
-                    tool_radius: 35.0,
+                    tool_radius: 23.0,
                 });
             }
         }
