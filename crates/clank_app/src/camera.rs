@@ -55,9 +55,29 @@ pub fn compute_arena_viewport(window_size: Vec2, scale_factor: f32) -> (Viewport
     (vp, arena_size)
 }
 
+use bevy::camera::visibility::RenderLayers;
+
 pub fn setup_camera(mut commands: Commands) {
+    // 1. UI Camera (Order 1, full window, layer 1) for full-bleed egui context
     commands.spawn((
         Camera2d,
+        Camera {
+            order: 1,
+            clear_color: ClearColorConfig::None,
+            ..default()
+        },
+        RenderLayers::layer(1),
+        bevy_egui::PrimaryEguiContext,
+    ));
+
+    // 2. Arena Camera (Order 0, layer 0) for simulation world
+    commands.spawn((
+        Camera2d,
+        Camera {
+            order: 0,
+            ..default()
+        },
+        RenderLayers::layer(0),
         Transform::from_xyz(450.0, 300.0, 0.0),
         MainCamera,
     ));

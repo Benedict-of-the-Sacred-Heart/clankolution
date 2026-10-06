@@ -363,8 +363,9 @@ pub fn clank_ui_system(
             scroll_area.show(ui, |ui| {
                 ui.add_space(8.0);
                 ui.horizontal(|ui| {
-                    ui.add_space(10.0);
+                    ui.add_space(8.0);
                     ui.vertical(|ui| {
+                        ui.set_max_width(290.0);
                         // Eyebrow & Hero Title
                         ui.label(RichText::new("FIELD NOTES / 001").size(9.5).monospace().strong().color(COLOR_CYAN));
                         ui.add_space(3.0);
@@ -557,7 +558,7 @@ fn render_tool_matrix(ui: &mut egui::Ui, state: &mut UiState, sim: &mut SimWorld
                 .stroke(btn_stroke)
                 .corner_radius(CornerRadius::same(3));
 
-            if ui.add_sized([96.0, 30.0], btn).clicked() {
+            if ui.add_sized([92.0, 30.0], btn).clicked() {
                 if tool == ActiveTool::Eclipse {
                     trigger_spore_catastrophe(sim);
                     state.add_chronicle(format!("{:05}  An eclipse consumes the harvest.", sim.world.tick));
@@ -577,7 +578,7 @@ fn render_persistence_section(ui: &mut egui::Ui, state: &mut UiState, sim: &mut 
     egui::Grid::new("persist_grid").num_columns(3).spacing([6.0, 6.0]).show(ui, |ui| {
         let btn_clank = egui::Button::new(RichText::new("EXPORT (.CLANK)").size(9.0).monospace().color(Color32::from_rgb(166, 196, 191)))
             .fill(COLOR_BTN_BG).stroke(Stroke::new(1.0, COLOR_BTN_BORDER)).corner_radius(CornerRadius::same(3));
-        if ui.add_sized([96.0, 30.0], btn_clank).clicked() {
+        if ui.add_sized([92.0, 30.0], btn_clank).clicked() {
             let filename = compute_export_clank_filename(sim.world.tick);
             match save_clank_file(sim, &filename) {
                 Ok(bytes) => {
@@ -590,7 +591,7 @@ fn render_persistence_section(ui: &mut egui::Ui, state: &mut UiState, sim: &mut 
 
         let btn_json = egui::Button::new(RichText::new("EXPORT (.JSON)").size(9.0).monospace().color(Color32::from_rgb(166, 196, 191)))
             .fill(COLOR_BTN_BG).stroke(Stroke::new(1.0, COLOR_BTN_BORDER)).corner_radius(CornerRadius::same(3));
-        if ui.add_sized([96.0, 30.0], btn_json).clicked() {
+        if ui.add_sized([92.0, 30.0], btn_json).clicked() {
             let filename = compute_export_json_filename(sim.world.tick);
             match export_json_file(sim, &filename) {
                 Ok(_bytes) => {
@@ -603,7 +604,7 @@ fn render_persistence_section(ui: &mut egui::Ui, state: &mut UiState, sim: &mut 
 
         let btn_import = egui::Button::new(RichText::new("IMPORT").size(10.0).monospace().color(Color32::from_rgb(166, 196, 191)))
             .fill(COLOR_BTN_BG).stroke(Stroke::new(1.0, COLOR_BTN_BORDER)).corner_radius(CornerRadius::same(3));
-        if ui.add_sized([96.0, 30.0], btn_import).clicked() {
+        if ui.add_sized([92.0, 30.0], btn_import).clicked() {
             let picked = rfd::FileDialog::new()
                 .add_filter("World Snapshot (.clank, .json)", &["clank", "json"])
                 .pick_file();
@@ -648,47 +649,43 @@ fn render_persistence_section(ui: &mut egui::Ui, state: &mut UiState, sim: &mut 
 }
 
 
+fn render_slider_row(ui: &mut egui::Ui, label: &str, val_str: &str, width: f32) {
+    ui.allocate_ui_with_layout(
+        Vec2::new(width, 16.0),
+        egui::Layout::left_to_right(egui::Align::Center),
+        |ui| {
+            ui.label(RichText::new(label).size(11.0).color(Color32::from_rgb(196, 208, 202)));
+            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                ui.label(RichText::new(val_str).size(11.0).color(COLOR_CYAN));
+            });
+        },
+    );
+}
+
 fn render_pressure_sliders(ui: &mut egui::Ui, sim: &mut SimWorld) {
+    let slider_w = 290.0;
+    ui.spacing_mut().slider_width = slider_w;
+
     let mut mutation = sim.world.mutation as f32;
-    ui.horizontal(|ui| {
-        ui.label(RichText::new("Mutation").size(11.0).color(Color32::from_rgb(196, 208, 202)));
-        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-            ui.label(RichText::new(format!("{:.2}", mutation / 100.0)).size(11.0).color(COLOR_CYAN));
-        });
-    });
+    render_slider_row(ui, "Mutation", &format!("{:.2}", mutation / 100.0), slider_w);
     if ui.add(egui::Slider::new(&mut mutation, 0.0..=50.0).show_value(false)).changed() {
         sim.world.mutation = mutation as f64;
     }
 
     let mut growth = sim.world.growth as f32;
-    ui.horizontal(|ui| {
-        ui.label(RichText::new("Food renewal").size(11.0).color(Color32::from_rgb(196, 208, 202)));
-        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-            ui.label(RichText::new(format!("{:.2}×", growth / 100.0)).size(11.0).color(COLOR_CYAN));
-        });
-    });
+    render_slider_row(ui, "Food renewal", &format!("{:.2}×", growth / 100.0), slider_w);
     if ui.add(egui::Slider::new(&mut growth, 0.0..=200.0).show_value(false)).changed() {
         sim.world.growth = growth as f64;
     }
 
     let mut hostility = sim.world.hostility as f32;
-    ui.horizontal(|ui| {
-        ui.label(RichText::new("Hostility of contact").size(11.0).color(Color32::from_rgb(196, 208, 202)));
-        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-            ui.label(RichText::new(format!("{:.2}×", hostility / 100.0)).size(11.0).color(COLOR_CYAN));
-        });
-    });
+    render_slider_row(ui, "Hostility of contact", &format!("{:.2}×", hostility / 100.0), slider_w);
     if ui.add(egui::Slider::new(&mut hostility, 0.0..=200.0).show_value(false)).changed() {
         sim.world.hostility = hostility as f64;
     }
 
     let mut cap = sim.world.max_cap;
-    ui.horizontal(|ui| {
-        ui.label(RichText::new("Creature capacity").size(11.0).color(Color32::from_rgb(196, 208, 202)));
-        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-            ui.label(RichText::new(format!("{}", cap)).size(11.0).color(COLOR_CYAN));
-        });
-    });
+    render_slider_row(ui, "Creature capacity", &format!("{}", cap), slider_w);
     if ui.add(egui::Slider::new(&mut cap, 50..=10000).show_value(false)).changed() {
         sim.world.set_max_capacity(cap as u32);
     }
@@ -719,7 +716,7 @@ fn render_mod_drawer(ui: &mut egui::Ui, state: &mut UiState) {
 }
 
 fn render_history_chart(ui: &mut egui::Ui, state: &UiState, max_cap: usize) {
-    let (response, painter) = ui.allocate_painter(Vec2::new(300.0, 82.0), Sense::hover());
+    let (response, painter) = ui.allocate_painter(Vec2::new(290.0, 82.0), Sense::hover());
     let rect = response.rect;
 
     // Background and border
@@ -794,7 +791,7 @@ fn render_specimen_box(ui: &mut egui::Ui, sim: &SimWorld) {
         .corner_radius(CornerRadius::same(2))
         .inner_margin(egui::Margin::same(10))
         .show(ui, |ui| {
-            ui.set_width(300.0);
+            ui.set_width(290.0);
             if let Some(agent) = sim.get_selected_agent() {
                 ui.horizontal(|ui| {
                     ui.label(RichText::new(format!("SPECIMEN {}", agent.id)).size(13.5).strong().monospace().color(Color32::from_rgb(240, 230, 217)));
@@ -838,7 +835,7 @@ fn render_specimen_box(ui: &mut egui::Ui, sim: &SimWorld) {
 
 fn render_chronicle_log(ui: &mut egui::Ui, state: &UiState) {
     ui.allocate_ui_with_layout(
-        Vec2::new(300.0, 112.0),
+        Vec2::new(290.0, 112.0),
         egui::Layout::top_down(egui::Align::Min),
         |ui| {
             for (i, entry) in state.chronicle.iter().take(7).enumerate() {
@@ -873,7 +870,7 @@ pub fn compute_minimap_cluster_disc(
 }
 
 fn render_radar_minimap(ui: &mut egui::Ui, clusters: &[crate::gpu::lbvh::MinimapCluster]) {
-    let (response, painter) = ui.allocate_painter(Vec2::new(300.0, 100.0), Sense::hover());
+    let (response, painter) = ui.allocate_painter(Vec2::new(290.0, 100.0), Sense::hover());
     let rect = response.rect;
 
     // Background and border
