@@ -49,6 +49,18 @@ pub fn clamp_f32(v: f32, min: f32, max: f32) -> f32 {
     }
 }
 
+/// JavaScript `Math.round`: nearest integer, ties toward +infinity
+/// (`f64::round` sends ties away from zero, so -2.5 would become -3).
+#[inline(always)]
+pub fn js_round(x: f64) -> f64 {
+    let f = x.floor();
+    if x - f >= 0.5 {
+        f + 1.0
+    } else {
+        f
+    }
+}
+
 #[inline(always)]
 pub fn wrap(x: f64, m: f64) -> f64 {
     ((x % m) + m) % m
@@ -62,11 +74,17 @@ extern "C" {
 }
 
 #[cfg(not(target_arch = "wasm32"))]
-unsafe fn host_sin(x: f64) -> f64 { x.sin() }
+unsafe fn host_sin(x: f64) -> f64 {
+    x.sin()
+}
 #[cfg(not(target_arch = "wasm32"))]
-unsafe fn host_cos(x: f64) -> f64 { x.cos() }
+unsafe fn host_cos(x: f64) -> f64 {
+    x.cos()
+}
 #[cfg(not(target_arch = "wasm32"))]
-unsafe fn host_atan2(y: f64, x: f64) -> f64 { y.atan2(x) }
+unsafe fn host_atan2(y: f64, x: f64) -> f64 {
+    y.atan2(x)
+}
 
 #[inline(always)]
 pub fn sin(x: f64) -> f64 {

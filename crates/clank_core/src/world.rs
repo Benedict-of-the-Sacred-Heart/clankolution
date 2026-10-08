@@ -1,10 +1,14 @@
-use crate::math::{self, Prng};
 use crate::agent::{AgentData, GENES};
+use crate::math::{self, Prng};
 use crate::soil::SoilGrid;
 
 pub const TAU: f64 = std::f64::consts::TAU;
-pub const SCALE_H: f64 = 0.61 / 127.0;
-pub const SCALE_O: f64 = 0.66 / 127.0;
+// Original `brain()` (clankolution.html @ dfe8dc6) dequantizes every term with
+// `/127` before summing and only then applies the layer gain. Factoring the
+// division out (`s * (0.61 / 127)`) or grouping sums changes f32 outputs.
+pub const GENE_SCALE: f64 = 127.0;
+pub const HIDDEN_GAIN: f64 = 0.61;
+pub const OUTPUT_GAIN: f64 = 0.66;
 
 pub struct NearResult {
     pub best_idx: Option<usize>,
@@ -161,7 +165,9 @@ impl World {
                 self.neighbor_cells.push((cy as usize) * nx + (cx as usize));
                 for dy in -1..=1 {
                     for dx in -1..=1 {
-                        if dx == 0 && dy == 0 { continue; }
+                        if dx == 0 && dy == 0 {
+                            continue;
+                        }
                         let ncy = (cy + dy).rem_euclid(ny_i) as usize;
                         let ncx = (cx + dx).rem_euclid(nx_i) as usize;
                         self.neighbor_cells.push(ncy * nx + ncx);
@@ -182,9 +188,13 @@ impl World {
     #[inline(always)]
     pub fn get_agent_cell(&self, x: f64, y: f64) -> usize {
         let mut cx = (math::wrap(x, self.w) / self.cell_w) as usize;
-        if cx >= self.grid_nx { cx = self.grid_nx - 1; }
+        if cx >= self.grid_nx {
+            cx = self.grid_nx - 1;
+        }
         let mut cy = (math::wrap(y, self.h) / self.cell_h) as usize;
-        if cy >= self.grid_ny { cy = self.grid_ny - 1; }
+        if cy >= self.grid_ny {
+            cy = self.grid_ny - 1;
+        }
         cy * self.grid_nx + cx
     }
 
@@ -222,7 +232,9 @@ impl World {
     pub fn update_agent_cell(&mut self, i: usize, new_x: f64, new_y: f64) {
         let new_c = self.get_agent_cell(new_x, new_y);
         let cur_c = self.agent_cell[i];
-        if new_c == cur_c { return; }
+        if new_c == cur_c {
+            return;
+        }
         let p = self.grid_prev[i];
         let n = self.grid_next[i];
         if p != -1 {
@@ -300,6 +312,22 @@ impl World {
         }
     }
 
+    /// Original catastrophe button: `eclipse = 210; spark(rand(W), rand(H), '#ff6659', 30)`.
+    pub fn trigger_eclipse(&mut self) {
+        self.eclipse = 210;
+        let sx = self.prng.rand(0.0, self.w);
+        let sy = self.prng.rand(0.0, self.h);
+        self.spark_prng(30);
+        if self.spark_events.len() < 512 {
+            self.spark_events.push(SparkEvent {
+                x: sx as f32,
+                y: sy as f32,
+                color_idx: 9,
+                count: 30,
+            });
+        }
+    }
+
     pub fn nourish_at(&mut self, x: f64, y: f64) {
         self.soil.deposit(0, x, y, 0.28, 3);
         self.spark_prng(2);
@@ -327,17 +355,13 @@ impl World {
         }
     }
 
+    /// Original seed tool: `if (agents.length < CAP)` spawn two creatures (may end at CAP + 1).
     pub fn seed_life_at(&mut self, x: f64, y: f64) {
-        let mut living_count = self.agents.iter().filter(|a| a.dead == 0).count();
-        if living_count < self.max_cap {
+        if self.agents.len() < self.max_cap {
             for _ in 0..2 {
-                if living_count >= self.max_cap {
-                    break;
-                }
                 let jx = self.prng.rand(-11.0, 11.0);
                 let jy = self.prng.rand(-11.0, 11.0);
                 self.create_agent(x + jx, y + jy, None, None);
-                living_count += 1;
             }
             self.spark_prng(5);
             if self.spark_events.len() < 512 {
@@ -351,19 +375,25 @@ impl World {
         }
     }
 
+    /// Original erase tool: every creature within `radius` (untoroidal `Math.hypot`)
+    /// gets `energy = 0; dead = true; die(a)`, then the array is filtered at once.
     pub fn extinguish_at(&mut self, x: f64, y: f64, radius: f64) {
-        let r2 = radius * radius;
+        let mut any = false;
         for i in 0..self.agents.len() {
             if self.agents[i].dead != 0 {
                 continue;
             }
             let dx = self.agents[i].x - x;
             let dy = self.agents[i].y - y;
-            if dx * dx + dy * dy < r2 {
+            if dx.hypot(dy) < radius {
+                any = true;
+                self.agents[i].energy = 0.0;
+                self.agents[i].dead = 1;
+                // die(a): corpse food clamp(0 * .016 + .6, .3, 2) at radius 2, taint .1 at radius 1
                 let ax = self.agents[i].x;
                 let ay = self.agents[i].y;
-                let tr0 = self.agents[i].tr[0];
-                self.soil.deposit(0, ax, ay, 0.45 + tr0 * 0.45, 1);
+                let deposit_food = math::clamp(self.agents[i].energy * 0.016 + 0.6, 0.3, 2.0);
+                self.soil.deposit(0, ax, ay, deposit_food, 2);
                 self.soil.deposit(1, ax, ay, 0.1, 1);
                 self.spark_prng(5);
                 if self.spark_events.len() < 512 {
@@ -374,10 +404,25 @@ impl World {
                         count: 5,
                     });
                 }
-                self.agents[i].dead = 1;
-                self.agents[i].energy = 0.0;
             }
         }
+        if !any {
+            return;
+        }
+        let mut alive_count = 0;
+        for i in 0..self.agents.len() {
+            if self.agents[i].dead == 0 {
+                if alive_count != i {
+                    self.agents[alive_count] = self.agents[i];
+                    self.pos_x[alive_count] = self.pos_x[i];
+                    self.pos_y[alive_count] = self.pos_y[i];
+                }
+                alive_count += 1;
+            }
+        }
+        self.agents.truncate(alive_count);
+        self.pos_x.truncate(alive_count);
+        self.pos_y.truncate(alive_count);
     }
 
     #[inline(always)]
@@ -404,7 +449,11 @@ impl World {
         a.angle = self.prng.rand(0.0, TAU);
         a.vx = 0.0;
         a.vy = 0.0;
-        a.energy = if parent.is_some() { 25.0 } else { self.prng.rand(34.0, 52.0) };
+        a.energy = if parent.is_some() {
+            25.0
+        } else {
+            self.prng.rand(34.0, 52.0)
+        };
         a.age = 0;
 
         if let Some(p) = parent {
@@ -435,15 +484,21 @@ impl World {
                 if self.prng.next_f64() < 0.11 {
                     let r1 = self.prng.next_f64();
                     let r2 = self.prng.next_f64();
-                    let delta = ((r1 + r2 - 1.0) * 100.0 * mut_rate).round() as i32;
+                    let delta = math::js_round((r1 + r2 - 1.0) * 100.0 * mut_rate) as i32;
                     let val = (base as i32) + delta;
-                    base = if val < -127 { -127 } else if val > 127 { 127 } else { val as i8 };
+                    base = if val < -127 {
+                        -127
+                    } else if val > 127 {
+                        127
+                    } else {
+                        val as i8
+                    };
                 }
                 a.genes[i] = base;
             }
         } else {
             for i in 0..GENES {
-                a.genes[i] = self.prng.rand(-58.0, 58.0).round() as i8;
+                a.genes[i] = math::js_round(self.prng.rand(-58.0, 58.0)) as i8;
             }
         }
 
@@ -463,7 +518,13 @@ impl World {
                 let r2 = self.prng.next_f64();
                 let delta = (r1 + r2 - 1.0) * mut_rate * 0.6;
                 let val = base + delta;
-                a.tr[i] = if val < 0.03 { 0.03 } else if val > 0.98 { 0.98 } else { val };
+                a.tr[i] = if val < 0.03 {
+                    0.03
+                } else if val > 0.98 {
+                    0.98
+                } else {
+                    val
+                };
             }
         } else {
             a.tr[0] = self.prng.rand(0.25, 0.8);
@@ -543,7 +604,9 @@ impl World {
         if bd >= 10000.0 {
             let len = self.agents.len();
             for i in 0..len {
-                if i == a_idx { continue; }
+                if i == a_idx {
+                    continue;
+                }
                 let bx = unsafe { *self.pos_x.get_unchecked(i) };
                 let mut dx = bx - ax;
                 if dx > half_w {
@@ -552,7 +615,9 @@ impl World {
                     dx += self.w;
                 }
                 let dx2 = dx * dx;
-                if dx2 >= cutoff { continue; }
+                if dx2 >= cutoff {
+                    continue;
+                }
                 let by = unsafe { *self.pos_y.get_unchecked(i) };
                 let mut dy = by - ay;
                 if dy > half_h {
@@ -586,56 +651,32 @@ impl World {
         let mut new_h = [0.0f32; 10];
         let mut out = [0.0f32; 6];
 
-        // Recurrent Hidden Layer (Q = 10, N = 15)
+        // Recurrent Hidden Layer (Q = 10, N = 15), strictly sequential sums
         for j in 0..10 {
             let mut s = 0.0f64;
-            let mut k = 0;
-            while k + 4 <= 15 {
-                let w0 = a.genes[p] as f64;
-                let w1 = a.genes[p + 1] as f64;
-                let w2 = a.genes[p + 2] as f64;
-                let w3 = a.genes[p + 3] as f64;
-                s += w0 * ins[k] + w1 * ins[k + 1] + w2 * ins[k + 2] + w3 * ins[k + 3];
-                p += 4;
-                k += 4;
-            }
-            while k < 15 {
-                s += (a.genes[p] as f64) * ins[k];
+            for i in 0..15 {
+                s += (a.genes[p] as f64) * ins[i] / GENE_SCALE;
                 p += 1;
-                k += 1;
             }
-
-            k = 0;
-            while k + 2 <= 10 {
-                let w0 = a.genes[p] as f64;
-                let w1 = a.genes[p + 1] as f64;
-                s += w0 * (a.h[k] as f64) + w1 * (a.h[k + 1] as f64);
-                p += 2;
-                k += 2;
+            for k in 0..10 {
+                s += (a.genes[p] as f64) * (a.h[k] as f64) / GENE_SCALE;
+                p += 1;
             }
-
-            s += a.genes[p] as f64;
+            s += (a.genes[p] as f64) / GENE_SCALE;
             p += 1;
-
-            new_h[j] = math::tanh(s * SCALE_H) as f32;
+            new_h[j] = math::tanh(s * HIDDEN_GAIN) as f32;
         }
 
         // Output Actuator Layer (O = 6, Q = 10)
         for j in 0..6 {
             let mut s = 0.0f64;
-            let mut k = 0;
-            while k + 2 <= 10 {
-                let w0 = a.genes[p] as f64;
-                let w1 = a.genes[p + 1] as f64;
-                s += w0 * (new_h[k] as f64) + w1 * (new_h[k + 1] as f64);
-                p += 2;
-                k += 2;
+            for k in 0..10 {
+                s += (a.genes[p] as f64) * (new_h[k] as f64) / GENE_SCALE;
+                p += 1;
             }
-
-            s += a.genes[p] as f64;
+            s += (a.genes[p] as f64) / GENE_SCALE;
             p += 1;
-
-            out[j] = math::tanh(s * SCALE_O) as f32;
+            out[j] = math::tanh(s * OUTPUT_GAIN) as f32;
         }
 
         a.h = new_h;
@@ -659,7 +700,13 @@ impl World {
                     let k = k.min(self.soil.grid_size - 1);
                     self.soil.food[k] = ((self.soil.food[k] as f64) * 0.73) as f32;
                     let new_t = (self.soil.taint[k] as f64) + 0.14;
-                    self.soil.taint[k] = if new_t < 0.0 { 0.0 } else if new_t > 2.0 { 2.0 } else { new_t as f32 };
+                    self.soil.taint[k] = if new_t < 0.0 {
+                        0.0
+                    } else if new_t > 2.0 {
+                        2.0
+                    } else {
+                        new_t as f32
+                    };
                 }
             }
         }
@@ -734,9 +781,15 @@ impl World {
             let right = self.soil.food[self.soil.idx(mid_x - off_x, mid_y - off_y)] as f64;
 
             let near_res = self.near(i);
-            let d = near_res.best_d;
+            // Original: `d = best?.d || 999` — no neighbour, or one at exactly 0, reads as 999.
+            let d = if near_res.best_idx.is_some() && near_res.best_d != 0.0 {
+                near_res.best_d
+            } else {
+                999.0
+            };
             if near_res.best_idx.is_some() {
-                let bearing = math::atan2(near_res.best_dy, near_res.best_dx) - self.agents[i].angle;
+                let bearing =
+                    math::atan2(near_res.best_dy, near_res.best_dx) - self.agents[i].angle;
                 sensory_inputs[7] = math::sin(bearing);
                 sensory_inputs[8] = math::cos(bearing);
             } else {
@@ -745,32 +798,104 @@ impl World {
             }
 
             let mut v = self.agents[i].energy / 75.0 - 1.0;
-            sensory_inputs[0] = if v < -1.0 { -1.0 } else if v > 1.0 { 1.0 } else { v };
+            sensory_inputs[0] = if v < -1.0 {
+                -1.0
+            } else if v > 1.0 {
+                1.0
+            } else {
+                v
+            };
             v = here - 1.0;
-            sensory_inputs[1] = if v < -1.0 { -1.0 } else if v > 1.0 { 1.0 } else { v };
+            sensory_inputs[1] = if v < -1.0 {
+                -1.0
+            } else if v > 1.0 {
+                1.0
+            } else {
+                v
+            };
             v = forward - left;
-            sensory_inputs[2] = if v < -1.0 { -1.0 } else if v > 1.0 { 1.0 } else { v };
+            sensory_inputs[2] = if v < -1.0 {
+                -1.0
+            } else if v > 1.0 {
+                1.0
+            } else {
+                v
+            };
             v = forward - right;
-            sensory_inputs[3] = if v < -1.0 { -1.0 } else if v > 1.0 { 1.0 } else { v };
+            sensory_inputs[3] = if v < -1.0 {
+                -1.0
+            } else if v > 1.0 {
+                1.0
+            } else {
+                v
+            };
             v = forward - here;
-            sensory_inputs[4] = if v < -1.0 { -1.0 } else if v > 1.0 { 1.0 } else { v };
+            sensory_inputs[4] = if v < -1.0 {
+                -1.0
+            } else if v > 1.0 {
+                1.0
+            } else {
+                v
+            };
             v = self.soil.taint[idx_here] as f64;
-            sensory_inputs[5] = if v < 0.0 { 0.0 } else if v > 1.0 { 1.0 } else { v };
+            sensory_inputs[5] = if v < 0.0 {
+                0.0
+            } else if v > 1.0 {
+                1.0
+            } else {
+                v
+            };
             v = (self.soil.scent[idx_fwd] as f64) - (self.soil.scent[idx_here] as f64);
-            sensory_inputs[6] = if v < -1.0 { -1.0 } else if v > 1.0 { 1.0 } else { v };
+            sensory_inputs[6] = if v < -1.0 {
+                -1.0
+            } else if v > 1.0 {
+                1.0
+            } else {
+                v
+            };
             v = 1.0 - d / (100.0 + 70.0 * tr2);
-            sensory_inputs[9] = if v < -1.0 { -1.0 } else if v > 1.0 { 1.0 } else { v };
+            sensory_inputs[9] = if v < -1.0 {
+                -1.0
+            } else if v > 1.0 {
+                1.0
+            } else {
+                v
+            };
             v = near_res.density / 9.0;
-            sensory_inputs[10] = if v < 0.0 { 0.0 } else if v > 1.0 { 1.0 } else { v };
+            sensory_inputs[10] = if v < 0.0 {
+                0.0
+            } else if v > 1.0 {
+                1.0
+            } else {
+                v
+            };
             v = (self.agents[i].age as f64) / 600.0;
-            sensory_inputs[11] = if v < 0.0 { 0.0 } else if v > 1.0 { 1.0 } else { v };
+            sensory_inputs[11] = if v < 0.0 {
+                0.0
+            } else if v > 1.0 {
+                1.0
+            } else {
+                v
+            };
             sensory_inputs[12] = math::sin(tick008 + (self.agents[i].id as f64));
             v = self.agents[i].vx * fwd_x + self.agents[i].vy * fwd_y;
-            sensory_inputs[13] = if v < -1.0 { -1.0 } else if v > 1.0 { 1.0 } else { v };
+            sensory_inputs[13] = if v < -1.0 {
+                -1.0
+            } else if v > 1.0 {
+                1.0
+            } else {
+                v
+            };
 
             if let Some(b_idx) = near_res.best_idx {
                 v = self.agents[b_idx].energy / 70.0 - 1.0;
-                sensory_inputs[14] = if v < -1.0 { -1.0 } else if v > 1.0 { 1.0 } else { v };
+                sensory_inputs[14] = if v < -1.0 {
+                    -1.0
+                } else if v > 1.0 {
+                    1.0
+                } else {
+                    v
+                };
             } else {
                 sensory_inputs[14] = 0.0;
             }
@@ -822,26 +947,31 @@ impl World {
 
             if self.agents[i].signal > 0.4 {
                 let s_val = (self.agents[i].signal - 0.4) * 0.035;
-                self.soil.deposit(2, self.agents[i].x, self.agents[i].y, s_val, 1);
+                self.soil
+                    .deposit(2, self.agents[i].x, self.agents[i].y, s_val, 1);
             }
 
             let fi = self.soil.idx_fast(self.agents[i].x, self.agents[i].y);
             let intake_cap = (0.016 + 0.064 * self.agents[i].feeding) * (0.7 + tr4);
             let cur_food = self.soil.food[fi] as f64;
-            let eaten = if cur_food < intake_cap { cur_food } else { intake_cap };
+            let eaten = if cur_food < intake_cap {
+                cur_food
+            } else {
+                intake_cap
+            };
             self.soil.food[fi] = ((self.soil.food[fi] as f64) - eaten) as f32;
             self.agents[i].energy += eaten * (9.0 + 9.0 * tr4);
 
             let taint_val = self.soil.taint[fi] as f64;
-            self.agents[i].energy -= 0.10 +
-                0.12 * tr0 +
-                0.07 * tr1 +
-                0.035 * tr2 +
-                0.055 * tr3 +
-                0.035 * self.agents[i].attack +
-                0.014 * self.agents[i].signal +
-                thrust * 0.06 +
-                taint_val * (0.10 + 0.18 * (1.0 - tr3));
+            self.agents[i].energy -= 0.10
+                + 0.12 * tr0
+                + 0.07 * tr1
+                + 0.035 * tr2
+                + 0.055 * tr3
+                + 0.035 * self.agents[i].attack
+                + 0.014 * self.agents[i].signal
+                + thrust * 0.06
+                + taint_val * (0.10 + 0.18 * (1.0 - tr3));
 
             // Predation / Combat
             if let Some(b_idx) = near_res.best_idx {
@@ -851,7 +981,10 @@ impl World {
                     && self.agents[b_idx].energy > 0.0
                 {
                     let b_tr3 = self.agents[b_idx].tr[3];
-                    let damage = (0.5 + self.agents[i].attack * 2.2) * hostility_val * (0.8 + tr0) * (1.0 - 0.65 * b_tr3);
+                    let damage = (0.5 + self.agents[i].attack * 2.2)
+                        * hostility_val
+                        * (0.8 + tr0)
+                        * (1.0 - 0.65 * b_tr3);
                     self.agents[b_idx].energy -= damage;
                     self.agents[i].energy += damage * (0.1 + 0.55 * tr5);
                     self.agents[i].cooldown = 3;
@@ -930,7 +1063,10 @@ impl World {
                     });
                 }
 
-                if self.agents[c_idx].gen > 0 && self.agents[c_idx].gen % 12 == 0 && self.prng.next_f64() < 0.08 {
+                if self.agents[c_idx].gen > 0
+                    && self.agents[c_idx].gen % 12 == 0
+                    && self.prng.next_f64() < 0.08
+                {
                     if self.events.len() < 1024 {
                         self.events.push(SimEvent {
                             tick: self.tick,
@@ -944,7 +1080,11 @@ impl World {
 
             self.agents[i].energy = math::clamp(self.agents[i].energy, -10.0, 110.0);
             if self.agents[i].energy <= 0.0 || self.agents[i].age > 2100 {
-                self.agents[i].energy = if self.agents[i].energy > 0.0 { self.agents[i].energy } else { 0.0 };
+                self.agents[i].energy = if self.agents[i].energy > 0.0 {
+                    self.agents[i].energy
+                } else {
+                    0.0
+                };
                 let ax = self.agents[i].x;
                 let ay = self.agents[i].y;
                 let ae = self.agents[i].energy;

@@ -69,18 +69,25 @@ impl SoilGrid {
             for x in 0..self.cols {
                 let x_f = x as f64;
                 let i = y * self.cols + x;
-                self.bloom[i] = 0.0008 + 0.0022 * (0.5 + 0.5 * math::sin(x_f * 0.13 + math::sin(y_f * 0.19)) * math::cos(y_f * 0.11));
+                self.bloom[i] = 0.0008
+                    + 0.0022
+                        * (0.5
+                            + 0.5
+                                * math::sin(x_f * 0.13 + math::sin(y_f * 0.19))
+                                * math::cos(y_f * 0.11));
             }
         }
     }
 
     #[inline(always)]
     pub fn idx(&self, x: f64, y: f64) -> usize {
-        let mut cx = (math::wrap(x, self.w) * self.inv_cell_w) as usize;
+        // Original `idx()` divides by the cell size; a reciprocal multiply picks a
+        // different cell at some boundaries when the cell size is not 12.
+        let mut cx = (math::wrap(x, self.w) / self.cell_w) as usize;
         if cx >= self.cols {
             cx = self.cols - 1;
         }
-        let mut cy = (math::wrap(y, self.h) * self.inv_cell_h) as usize;
+        let mut cy = (math::wrap(y, self.h) / self.cell_h) as usize;
         if cy >= self.rows {
             cy = self.rows - 1;
         }
@@ -89,11 +96,11 @@ impl SoilGrid {
 
     #[inline(always)]
     pub fn idx_fast(&self, x: f64, y: f64) -> usize {
-        let mut cx = (x * self.inv_cell_w) as usize;
+        let mut cx = (x / self.cell_w) as usize;
         if cx >= self.cols {
             cx = self.cols - 1;
         }
-        let mut cy = (y * self.inv_cell_h) as usize;
+        let mut cy = (y / self.cell_h) as usize;
         if cy >= self.rows {
             cy = self.rows - 1;
         }
@@ -129,7 +136,13 @@ impl SoilGrid {
             if prng.next_f64() < spawn_threshold {
                 f += prng.rand(0.15, 0.6);
             }
-            *f_ptr = if f < 0.0 { 0.0 } else if f > 2.5 { 2.5 } else { f as f32 };
+            *f_ptr = if f < 0.0 {
+                0.0
+            } else if f > 2.5 {
+                2.5
+            } else {
+                f as f32
+            };
 
             if t > 0.0 {
                 let dec = (t as f64) * 0.994 - 0.0001;
@@ -147,8 +160,8 @@ impl SoilGrid {
             1 => &mut self.taint,
             _ => &mut self.scent,
         };
-        let cx = (math::wrap(x, self.w) * self.inv_cell_w).floor() as i32;
-        let cy = (math::wrap(y, self.h) * self.inv_cell_h).floor() as i32;
+        let cx = (math::wrap(x, self.w) / self.cell_w).floor() as i32;
+        let cy = (math::wrap(y, self.h) / self.cell_h).floor() as i32;
         let rows_i = self.rows as i32;
         let cols_i = self.cols as i32;
         let cx = cx.rem_euclid(cols_i);

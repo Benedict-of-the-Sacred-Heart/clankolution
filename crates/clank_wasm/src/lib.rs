@@ -1,6 +1,6 @@
 use clank_core::agent::AgentData;
-use clank_core::world::{self, World};
 use clank_core::archive;
+use clank_core::world::{self, World};
 use rkyv::Deserialize;
 
 static mut GLOBAL_WORLD: Option<World> = None;
@@ -145,8 +145,17 @@ pub extern "C" fn restore_snapshot() -> u32 {
         let target_h: f64 = archived.height.into();
         let target_cols: u32 = archived.cols.into();
         let target_rows: u32 = archived.rows.into();
-        if w.w != target_w || w.h != target_h || w.soil.cols != target_cols as usize || w.soil.rows != target_rows as usize {
-            w.resize(target_w, target_h, target_cols as usize, target_rows as usize);
+        if w.w != target_w
+            || w.h != target_h
+            || w.soil.cols != target_cols as usize
+            || w.soil.rows != target_rows as usize
+        {
+            w.resize(
+                target_w,
+                target_h,
+                target_cols as usize,
+                target_rows as usize,
+            );
         }
 
         w.tick = archived.tick.into();
@@ -173,10 +182,11 @@ pub extern "C" fn restore_snapshot() -> u32 {
             w.soil.scent[i] = archived.scent[i].into();
         }
 
-        let snap_agents: Vec<clank_core::agent::AgentData> = match archived.agents.deserialize(&mut rkyv::Infallible) {
-            Ok(ag) => ag,
-            Err(_) => return 3,
-        };
+        let snap_agents: Vec<clank_core::agent::AgentData> =
+            match archived.agents.deserialize(&mut rkyv::Infallible) {
+                Ok(ag) => ag,
+                Err(_) => return 3,
+            };
 
         if snap_agents.len() > w.max_cap {
             w.set_max_capacity(snap_agents.len() as u32);
@@ -396,7 +406,8 @@ mod tests {
 
         let mut saved_bytes = vec![0u8; len as usize];
         unsafe {
-            saved_bytes.copy_from_slice(std::slice::from_raw_parts(get_archive_ptr(), len as usize));
+            saved_bytes
+                .copy_from_slice(std::slice::from_raw_parts(get_archive_ptr(), len as usize));
         }
 
         // Simulate 50 more ticks to mutate world state
@@ -424,5 +435,3 @@ mod tests {
         assert_eq!(get_tick(), tick_saved + 20);
     }
 }
-
-

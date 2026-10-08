@@ -1,5 +1,5 @@
-use rkyv::{Archive, Deserialize, Serialize};
 use crate::agent::AgentData;
+use rkyv::{Archive, Deserialize, Serialize};
 
 #[derive(Archive, Deserialize, Serialize, Debug, Clone)]
 #[archive(check_bytes)]
@@ -94,9 +94,20 @@ mod tests {
         sample_agent.tr[1] = 0.92;
 
         let snap = WorldSnapshot::new(
-            5000, 120, 340, 15, 9999, 105,
-            1200.0, 800.0, 100, 60,
-            0.25, 1.45, 1.10, 0x12345678,
+            5000,
+            120,
+            340,
+            15,
+            9999,
+            105,
+            1200.0,
+            800.0,
+            100,
+            60,
+            0.25,
+            1.45,
+            1.10,
+            0x12345678,
             &[1.0, 1.5, 2.0],
             &[0.1, 0.2, 0.3],
             &[0.4, 0.5, 0.6],
@@ -106,7 +117,8 @@ mod tests {
         let bytes = snap.to_bytes();
         assert!(!bytes.is_empty());
 
-        let archived = rkyv::check_archived_root::<WorldSnapshot>(&bytes).expect("zero-copy validation must pass");
+        let archived = rkyv::check_archived_root::<WorldSnapshot>(&bytes)
+            .expect("zero-copy validation must pass");
         assert_eq!(archived.version, WorldSnapshot::CURRENT_VERSION);
         assert_eq!(archived.tick, 5000);
         assert_eq!(archived.kills, 120);
@@ -150,17 +162,34 @@ mod tests {
     #[test]
     fn test_corrupted_snapshot_rejected() {
         let snap = WorldSnapshot::new(
-            1, 0, 0, 0, 1, 0,
-            900.0, 600.0, 75, 50,
-            0.16, 1.0, 1.0, 12345,
-            &[1.0, 2.0], &[0.0, 0.0], &[0.0, 0.0],
+            1,
+            0,
+            0,
+            0,
+            1,
+            0,
+            900.0,
+            600.0,
+            75,
+            50,
+            0.16,
+            1.0,
+            1.0,
+            12345,
+            &[1.0, 2.0],
+            &[0.0, 0.0],
+            &[0.0, 0.0],
             &[],
         );
         let bytes = snap.to_bytes();
         assert!(rkyv::check_archived_root::<WorldSnapshot>(&bytes).is_ok());
 
         let len = bytes.len();
-        println!("Buffer length: {}, Root size: {}", len, std::mem::size_of::<ArchivedWorldSnapshot>());
+        println!(
+            "Buffer length: {}, Root size: {}",
+            len,
+            std::mem::size_of::<ArchivedWorldSnapshot>()
+        );
 
         // Truncated buffer should always fail
         assert!(rkyv::check_archived_root::<WorldSnapshot>(&bytes[..len - 1]).is_err());
@@ -168,4 +197,3 @@ mod tests {
         assert!(rkyv::check_archived_root::<WorldSnapshot>(&[]).is_err());
     }
 }
-
