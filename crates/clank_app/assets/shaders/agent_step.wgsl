@@ -5,10 +5,6 @@
 // Branchless 88-Word Vectorized RNN with unpack4x8snorm
 // Strict <= 8 Storage Buffer Limit for 100% WebGPU Portability
 
-override ENABLE_BARNES_HUT: bool = false;
-override ENABLE_EXPANDED_CORTEX: bool = false;
-override ENABLE_SEXUAL_SELECTION: bool = false;
-
 struct GpuSimParams {
     tick: u32,
     agent_count: u32,
@@ -46,7 +42,7 @@ struct GpuAgentState {
     meta_flags: u32,
     age_gen: u32,
     morton_code: u32,
-    packed_color: u32,
+    root: u32,
     visual_cache: u32,
 }
 
@@ -61,11 +57,15 @@ struct GpuAgentAtomic {
     dead_claimed: atomic<u32>,
 }
 
+// Fixed-point scale of SoilCell fields (micro-units). Must match
+// SOIL_FIXED_SCALE in src/gpu/types.rs and SOIL_SCALE in soil_step.wgsl.
+const SOIL_SCALE: f32 = 1000000.0;
+
 struct SoilCell {
-    food_milli: atomic<i32>,
-    taint_milli: atomic<i32>,
-    scent_milli: atomic<i32>,
-    fertility_milli: atomic<i32>,
+    food_micro: atomic<i32>,
+    taint_micro: atomic<i32>,
+    scent_micro: atomic<i32>,
+    fertility_micro: atomic<i32>,
 }
 
 struct GpuLbvhNode {
@@ -96,8 +96,11 @@ struct GpuTelemetry {
     total_births: atomic<u32>,
     total_deaths: atomic<u32>,
     max_generation: atomic<u32>,
-    extinctions: atomic<u32>,
-    lineage_counts: array<atomic<u32>, 16>,
+    living_lineages: atomic<u32>,
+    live_count: atomic<u32>,
+    pending_free_count: atomic<u32>,
+    available_slots: atomic<u32>,
+    reserved1: array<u32, 13>,
 }
 
 struct BirthEvent {
@@ -125,13 +128,10 @@ struct ConsolidatedQueue {
 @group(0) @binding(2) var<storage, read_write> agent_atomics: array<GpuAgentAtomic>;
 @group(0) @binding(3) var<storage, read_write> soil_buffer: array<SoilCell>;
 @group(0) @binding(4) var<storage, read> spatial_keys: array<vec2u>;
-@group(0) @binding(5) var<storage, read_write> cell_offsets: array<atomic<u32>>;
 @group(0) @binding(6) var<storage, read_write> freelist: array<u32>;
 @group(0) @binding(7) var<storage, read_write> queue_buffer: ConsolidatedQueue;
 
 @group(1) @binding(0) var<uniform> params: GpuSimParams;
-@group(1) @binding(1) var soil_data: texture_2d<f32>;
-@group(1) @binding(2) var soil_sampler: sampler;
 
 fn wrap_coords(p: vec2f) -> vec2f {
     return vec2f(
@@ -147,9 +147,9 @@ fn sample_soil_probe(p: vec2f) -> vec4f {
     let cx = min(u32(max(0.0, wrapped.x) / cell_w), params.soil_grid.x - 1u);
     let cy = min(u32(max(0.0, wrapped.y) / cell_h), params.soil_grid.y - 1u);
     let k = cy * params.soil_grid.x + cx;
-    let f = f32(atomicLoad(&soil_buffer[k].food_milli)) * 0.001;
-    let t = f32(atomicLoad(&soil_buffer[k].taint_milli)) * 0.001;
-    let s = f32(atomicLoad(&soil_buffer[k].scent_milli)) * 0.001;
+    let f = f32(atomicLoad(&soil_buffer[k].food_micro)) / SOIL_SCALE;
+    let t = f32(atomicLoad(&soil_buffer[k].taint_micro)) / SOIL_SCALE;
+    let s = f32(atomicLoad(&soil_buffer[k].scent_micro)) / SOIL_SCALE;
     return vec4f(f, t, s, 1.0);
 }
 
@@ -169,8 +169,8 @@ fn deposit_food_radius2(p: vec2f, val: f32) {
             let nx = u32((cx + dx + cols) % cols);
             let idx = ny * params.soil_grid.x + nx;
             let w = 1.0 / (1.0 + rr * 0.8);
-            let deposit_milli = i32(val * w * 1000.0);
-            atomicAdd(&soil_buffer[idx].food_milli, deposit_milli);
+            let deposit_micro = i32(round(val * w * SOIL_SCALE));
+            atomicAdd(&soil_buffer[idx].food_micro, deposit_micro);
         }
     }
 }
@@ -185,18 +185,18 @@ fn deposit_taint_radius1(p: vec2f, val: f32) {
     let rows = i32(params.soil_grid.y);
 
     let c0 = u32(cy) * params.soil_grid.x + u32(cx);
-    atomicAdd(&soil_buffer[c0].taint_milli, i32(val * 1000.0));
+    atomicAdd(&soil_buffer[c0].taint_micro, i32(round(val * SOIL_SCALE)));
 
-    let v18_milli = i32((val / 1.8) * 1000.0);
+    let v18_micro = i32(round((val / 1.8) * SOIL_SCALE));
     let c_up = u32((cy - 1 + rows) % rows) * params.soil_grid.x + u32(cx);
     let c_down = u32((cy + 1 + rows) % rows) * params.soil_grid.x + u32(cx);
     let c_left = u32(cy) * params.soil_grid.x + u32((cx - 1 + cols) % cols);
     let c_right = u32(cy) * params.soil_grid.x + u32((cx + 1 + cols) % cols);
 
-    atomicAdd(&soil_buffer[c_up].taint_milli, v18_milli);
-    atomicAdd(&soil_buffer[c_down].taint_milli, v18_milli);
-    atomicAdd(&soil_buffer[c_left].taint_milli, v18_milli);
-    atomicAdd(&soil_buffer[c_right].taint_milli, v18_milli);
+    atomicAdd(&soil_buffer[c_up].taint_micro, v18_micro);
+    atomicAdd(&soil_buffer[c_down].taint_micro, v18_micro);
+    atomicAdd(&soil_buffer[c_left].taint_micro, v18_micro);
+    atomicAdd(&soil_buffer[c_right].taint_micro, v18_micro);
 }
 
 fn deposit_scent_radius1(p: vec2f, val: f32) {
@@ -209,18 +209,18 @@ fn deposit_scent_radius1(p: vec2f, val: f32) {
     let rows = i32(params.soil_grid.y);
 
     let c0 = u32(cy) * params.soil_grid.x + u32(cx);
-    atomicAdd(&soil_buffer[c0].scent_milli, i32(val * 1000.0));
+    atomicAdd(&soil_buffer[c0].scent_micro, i32(round(val * SOIL_SCALE)));
 
-    let v18_milli = i32((val / 1.8) * 1000.0);
+    let v18_micro = i32(round((val / 1.8) * SOIL_SCALE));
     let c_up = u32((cy - 1 + rows) % rows) * params.soil_grid.x + u32(cx);
     let c_down = u32((cy + 1 + rows) % rows) * params.soil_grid.x + u32(cx);
     let c_left = u32(cy) * params.soil_grid.x + u32((cx - 1 + cols) % cols);
     let c_right = u32(cy) * params.soil_grid.x + u32((cx + 1 + cols) % cols);
 
-    atomicAdd(&soil_buffer[c_up].scent_milli, v18_milli);
-    atomicAdd(&soil_buffer[c_down].scent_milli, v18_milli);
-    atomicAdd(&soil_buffer[c_left].scent_milli, v18_milli);
-    atomicAdd(&soil_buffer[c_right].scent_milli, v18_milli);
+    atomicAdd(&soil_buffer[c_up].scent_micro, v18_micro);
+    atomicAdd(&soil_buffer[c_down].scent_micro, v18_micro);
+    atomicAdd(&soil_buffer[c_left].scent_micro, v18_micro);
+    atomicAdd(&soil_buffer[c_right].scent_micro, v18_micro);
 }
 
 fn get_gene(agent_idx: u32, p: u32) -> f32 {
@@ -261,6 +261,25 @@ fn toroidal_dist(p1: vec2f, p2: vec2f) -> f32 {
     return sqrt(x_dist * x_dist + y_dist * y_dist);
 }
 
+// Squared toroidal distance (the reference wraps each axis to the nearer image).
+fn toroidal_dist2(p1: vec2f, p2: vec2f) -> f32 {
+    let dx = abs(p1.x - p2.x);
+    let x_dist = min(dx, params.world_size.x - dx);
+    let dy = abs(p1.y - p2.y);
+    let y_dist = min(dy, params.world_size.y - dy);
+    return x_dist * x_dist + y_dist * y_dist;
+}
+
+// Called only by the thread that won a death claim. The slot waits on the pending-free list
+// (freelist[max_agents..]) until the merge after the birth pass, so a newborn never lands in
+// the slot of a creature that died this sub-tick.
+fn push_pending_free(slot: u32) {
+    let pending = atomicAdd(&queue_buffer.telemetry.pending_free_count, 1u);
+    if (pending < params.max_agents) {
+        freelist[params.max_agents + pending] = slot;
+    }
+}
+
 @compute @workgroup_size(64)
 fn agent_main(@builtin(global_invocation_id) id: vec3u) {
     let agent_idx = id.x;
@@ -289,10 +308,7 @@ fn agent_main(@builtin(global_invocation_id) id: vec3u) {
         if (claim_death.exchanged) {
             atomicAdd(&queue_buffer.telemetry.starvations, 1u);
             atomicAdd(&queue_buffer.telemetry.total_deaths, 1u);
-            let free_slot = atomicAdd(&queue_buffer.telemetry.freelist_top, 1u);
-            if (free_slot < params.max_agents) {
-                freelist[free_slot] = agent_idx;
-            }
+            push_pending_free(agent_idx);
             deposit_food_radius2(pos, 0.6);
             deposit_taint_radius1(pos, 0.1);
         }
@@ -312,7 +328,7 @@ fn agent_main(@builtin(global_invocation_id) id: vec3u) {
     let tr3 = agent_states[agent_idx].traits[0][3]; // armor
     let tr4 = agent_states[agent_idx].traits[1][0];
     let tr5 = agent_states[agent_idx].traits[1][1]; // carnivory
-    let a_root = m_flags & 0x0Fu;
+    let a_root = agent_states[agent_idx].root;
     var a_cooldown = (m_flags >> 4u) & 0x03u;
     var a_birth = (m_flags >> 6u) & 0x7Fu;
     var a_kills = (m_flags >> 14u) & 0x3FFFFu;
@@ -343,66 +359,49 @@ fn agent_main(@builtin(global_invocation_id) id: vec3u) {
     let here_taint   = probe_here.g;
     let scent_diff   = probe_forward.b - probe_here.b;
 
-    // Spatial Grid 9-Cell Moore Neighborhood Query (Exact match to clank_core & HTML near())
-    var best_dist = 999999.0;
+    // Nearest neighbour and density, as the reference near(): the 3×3 cells first (density
+    // counts d² < 10000), then every live creature when nothing is within 100 px. A creature
+    // outside the 3×3 cells is at least 100 px away, so the result is the true nearest.
+    // spatial_keys: [0, N) sorted keys, [N, N + 54) cell table, [N + 54, ...) cell_slots.
+    var best_d2 = 1e30;
     var best_neighbor = 0xFFFFFFFFu;
     var density = 0.0;
-
-    let sight_radius = 100.0 + 70.0 * tr2;
-
-    if (params.agent_count > 1u) {
-        let cell_w = params.world_size.x / 9.0;
-        let cell_h = params.world_size.y / 6.0;
-        let gx = i32(min(u32(max(0.0, pos.x) / cell_w), 8u));
-        let gy = i32(min(u32(max(0.0, pos.y) / cell_h), 5u));
-
+    let n_keys = params.max_agents;
+    {
+        let gx = i32(min(u32(max(0.0, pos.x) / (params.world_size.x / 9.0)), 8u));
+        let gy = i32(min(u32(max(0.0, pos.y) / (params.world_size.y / 6.0)), 5u));
         for (var dy = -1; dy <= 1; dy++) {
             let n_gy = (gy + dy + 6) % 6;
             for (var dx = -1; dx <= 1; dx++) {
                 let n_gx = (gx + dx + 9) % 9;
-                let n_cell = u32(n_gy * 9 + n_gx);
-
-                var curr = atomicLoad(&cell_offsets[n_cell]);
-                var loop_count = 0u;
-                while (curr != 0xFFFFFFFFu && loop_count < 128u) {
-                    if (curr != agent_idx) {
-                        let other_meta = agent_states[curr].meta_flags;
-                        if ((other_meta & (1u << 13u)) == 0u) {
-                            let other_pos = agent_states[curr].pos_vel.xy;
-                            let d = toroidal_dist(pos, other_pos);
-                            if (d <= 100.0) {
-                                density += 1.0;
-                            }
-                            if (d < best_dist || (d == best_dist && curr < best_neighbor)) {
-                                best_dist = d;
-                                best_neighbor = curr;
-                            }
-                        }
+                let range = spatial_keys[n_keys + u32(n_gy * 9 + n_gx)];
+                if (range.x == 0xFFFFFFFFu) { continue; }
+                for (var k = 0u; k < range.y; k += 1u) {
+                    let other = spatial_keys[n_keys + 54u + range.x + k].x;
+                    if (other == agent_idx || (agent_states[other].meta_flags & (1u << 13u)) != 0u) { continue; }
+                    let d2 = toroidal_dist2(pos, agent_states[other].pos_vel.xy);
+                    if (d2 < 10000.0) { density += 1.0; }
+                    if (d2 < best_d2 || (d2 == best_d2 && other < best_neighbor)) {
+                        best_d2 = d2;
+                        best_neighbor = other;
                     }
-                    curr = spatial_keys[curr].x;
-                    loop_count += 1u;
                 }
             }
         }
-
-        // Fallback global scan if no neighbor within 100px (guaranteeing 100% parity with HTML near() lines 1154-1170)
-        if (best_neighbor == 0xFFFFFFFFu) {
-            let scan_limit = min(params.agent_count, params.max_capacity);
-            for (var k = 0u; k < scan_limit; k += 1u) {
-                if (k != agent_idx) {
-                    let other_meta = agent_states[k].meta_flags;
-                    if ((other_meta & (1u << 13u)) == 0u) {
-                        let other_pos = agent_states[k].pos_vel.xy;
-                        let d = toroidal_dist(pos, other_pos);
-                        if (d < best_dist || (d == best_dist && k < best_neighbor)) {
-                            best_dist = d;
-                            best_neighbor = k;
-                        }
-                    }
+        if (best_d2 >= 10000.0) {
+            let live_count = min(atomicLoad(&queue_buffer.telemetry.live_count), n_keys);
+            for (var i = 0u; i < live_count; i += 1u) {
+                let other = spatial_keys[i].y;
+                if (other == agent_idx || (agent_states[other].meta_flags & (1u << 13u)) != 0u) { continue; }
+                let d2 = toroidal_dist2(pos, agent_states[other].pos_vel.xy);
+                if (d2 < best_d2 || (d2 == best_d2 && other < best_neighbor)) {
+                    best_d2 = d2;
+                    best_neighbor = other;
                 }
             }
         }
     }
+    let best_dist = sqrt(best_d2);
 
     // 15 Canonical Sensory Inputs (matching clankolution.html lines 1334-1362)
     var sensory_inputs: array<f32, 15>;
@@ -509,16 +508,16 @@ fn agent_main(@builtin(global_invocation_id) id: vec3u) {
     let cy = min(u32(max(0.0, new_pos.y) / cell_h), params.soil_grid.y - 1u);
     let cell_idx = cy * params.soil_grid.x + cx;
     let intake_cap = (0.016 + 0.064 * a_feed) * (0.7 + tr4);
-    let cur_food_milli = atomicLoad(&soil_buffer[cell_idx].food_milli);
-    let cur_food_float = max(0.0, f32(cur_food_milli) * 0.001);
+    let cur_food_micro = atomicLoad(&soil_buffer[cell_idx].food_micro);
+    let cur_food_float = max(0.0, f32(cur_food_micro) / SOIL_SCALE);
     let eaten_float = min(intake_cap, cur_food_float);
-    let eaten_milli = i32(eaten_float * 1000.0);
-    if (eaten_milli > 0) {
-        let prev_food = atomicSub(&soil_buffer[cell_idx].food_milli, eaten_milli);
-        if (prev_food < eaten_milli) {
-            atomicStore(&soil_buffer[cell_idx].food_milli, 0);
+    let eaten_micro = i32(round(eaten_float * SOIL_SCALE));
+    if (eaten_micro > 0) {
+        let prev_food = atomicSub(&soil_buffer[cell_idx].food_micro, eaten_micro);
+        if (prev_food < eaten_micro) {
+            atomicStore(&soil_buffer[cell_idx].food_micro, 0);
         }
-        atomicAdd(&queue_buffer.telemetry.food_grazed_milli, u32(eaten_milli));
+        atomicAdd(&queue_buffer.telemetry.food_grazed_milli, u32(round(eaten_float * 1000.0)));
     }
 
     // 2. Scent emission (HTML line 1394, radius 1)
@@ -530,7 +529,7 @@ fn agent_main(@builtin(global_invocation_id) id: vec3u) {
     let energy_gain = eaten_float * (9.0 + 9.0 * tr4);
     let basal_cost = 0.10 + 0.12 * tr0 + 0.07 * tr1 + 0.035 * tr2 + 0.055 * tr3 + 0.035 * a_attack + 0.014 * a_signal;
     let thrust_cost = thrust * 0.06;
-    let post_taint = f32(atomicLoad(&soil_buffer[cell_idx].taint_milli)) * 0.001;
+    let post_taint = f32(atomicLoad(&soil_buffer[cell_idx].taint_micro)) / SOIL_SCALE;
     let taint_cost = post_taint * (0.10 + 0.18 * (1.0 - tr3));
     let internal_delta_milli = i32((energy_gain - basal_cost - thrust_cost - taint_cost) * 1000.0);
     atomicAdd(&agent_atomics[agent_idx].energy_milli, internal_delta_milli);
@@ -555,7 +554,6 @@ fn agent_main(@builtin(global_invocation_id) id: vec3u) {
             if (old_energy_milli > 0 && old_energy_milli <= damage_milli) {
                 a_kills += 1u;
                 atomicAdd(&queue_buffer.telemetry.kills, 1u);
-                atomicAdd(&queue_buffer.telemetry.total_deaths, 1u);
                 let kill_bonus = min(9.0, 8.0 * tr5);
                 atomicAdd(&agent_atomics[agent_idx].energy_milli, i32(kill_bonus * 1000.0));
 
@@ -577,13 +575,11 @@ fn agent_main(@builtin(global_invocation_id) id: vec3u) {
                     }
                 }
 
-                // Atomic CAS death ownership
+                // Atomic CAS death ownership: only the winner counts the death and frees the slot
                 let claim_death = atomicCompareExchangeWeak(&agent_atomics[victim_idx].dead_claimed, 0u, 1u);
                 if (claim_death.exchanged) {
-                    let free_slot = atomicAdd(&queue_buffer.telemetry.freelist_top, 1u);
-                    if (free_slot < params.max_agents) {
-                        freelist[free_slot] = victim_idx;
-                    }
+                    atomicAdd(&queue_buffer.telemetry.total_deaths, 1u);
+                    push_pending_free(victim_idx);
 
                     // Multi-cell corpse deposition from victim (HTML line 1210: food radius 2, taint radius 1)
                     let vpos = agent_states[victim_idx].pos_vel.xy;
@@ -607,16 +603,9 @@ fn agent_main(@builtin(global_invocation_id) id: vec3u) {
         if (best_neighbor != 0xFFFFFFFFu && best_dist < 18.0) {
             let partner_idx = best_neighbor;
             let partner_e_milli = atomicLoad(&agent_atomics[partner_idx].energy_milli);
-            let partner_root = agent_states[partner_idx].meta_flags & 0x0Fu;
+            let partner_root = agent_states[partner_idx].root;
             if (partner_e_milli > 42000 && partner_root != a_root) {
-                if (ENABLE_SEXUAL_SELECTION) {
-                    let my_energy_milli = u32(max(0.0, current_pre_birth_e) * 1000.0);
-                    let prev_bid = atomicMax(&agent_atomics[partner_idx].mate_energy_milli, my_energy_milli);
-                    if (my_energy_milli > prev_bid) {
-                        atomicStore(&agent_atomics[partner_idx].mate_claim, agent_idx + 1u);
-                    }
-                    mate_partner = partner_idx;
-                } else if (pcg_float(agent_idx, 99u, params.tick) < 0.15) {
+                if (pcg_float(agent_idx, 99u, params.tick) < 0.15) {
                     let partner_id = agent_states[partner_idx].id;
                     let my_id = agent_states[agent_idx].id;
                     if (partner_id > my_id) {
@@ -665,10 +654,7 @@ fn agent_main(@builtin(global_invocation_id) id: vec3u) {
             if (claim_death.exchanged) {
                 atomicAdd(&queue_buffer.telemetry.starvations, 1u);
                 atomicAdd(&queue_buffer.telemetry.total_deaths, 1u);
-                let free_slot = atomicAdd(&queue_buffer.telemetry.freelist_top, 1u);
-                if (free_slot < params.max_agents) {
-                    freelist[free_slot] = agent_idx;
-                }
+                push_pending_free(agent_idx);
 
                 // Corpse deposition into soil (HTML line 1210: food radius 2, taint radius 1)
                 let corpse_food = clamp(f32(max(0, current_energy_milli)) * 0.000016 + 0.6, 0.3, 2.0);
@@ -689,7 +675,6 @@ fn agent_main(@builtin(global_invocation_id) id: vec3u) {
     // Telemetry instantaneous population census on final sub-tick
     if (params.sub_tick == params.sub_ticks_per_frame - 1u) {
         atomicAdd(&queue_buffer.telemetry.population, 1u);
-        atomicAdd(&queue_buffer.telemetry.lineage_counts[a_root % 16u], 1u);
     }
 
     // Commit state
@@ -699,7 +684,7 @@ fn agent_main(@builtin(global_invocation_id) id: vec3u) {
     agent_states[agent_idx].hidden[0] = vec4f(new_h[0], new_h[1], new_h[2], new_h[3]);
     agent_states[agent_idx].hidden[1] = vec4f(new_h[4], new_h[5], new_h[6], new_h[7]);
     agent_states[agent_idx].hidden_tail = vec2f(new_h[8], new_h[9]);
-    agent_states[agent_idx].meta_flags = (a_root & 0x0Fu) | (a_cooldown << 4u) | (a_birth << 6u) | (a_kills << 14u);
+    agent_states[agent_idx].meta_flags = (a_cooldown << 4u) | (a_birth << 6u) | (a_kills << 14u);
     agent_states[agent_idx].age_gen = (a_age & 0xFFFFu) | (a_gen << 16u);
 
     // Pack visual_cache: radius_u8 (0..7), glow_u8/signal (8..15), energy_u8 (16..23), is_attacking (24: a_attack > 0.5), birth_val (25..31)

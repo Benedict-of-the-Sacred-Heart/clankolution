@@ -1,15 +1,15 @@
 use clank_app::gpu::soil_pipeline::{
-    GpuSoilPipeline, SoilParams, GRID_WIDTH, GRID_HEIGHT, CELL_COUNT,
+    GpuSoilPipeline, SoilParams, CELL_COUNT, GRID_HEIGHT, GRID_WIDTH,
 };
 
 #[test]
 fn test_soil_atomic_buffer_and_texture_bounds() {
-    // 1. GpuSoilCell fixed-point conversions (millifood, millitaint, milliscent)
+    // 1. GpuSoilCell fixed-point conversions (micro-units, SOIL_FIXED_SCALE)
     let initial_cell = GpuSoilPipeline::from_physics(1.234, 0.567, 0.891);
-    assert_eq!(initial_cell.food_milli, 1234);
-    assert_eq!(initial_cell.taint_milli, 567);
-    assert_eq!(initial_cell.scent_milli, 891);
-    assert_eq!(initial_cell.fertility_milli, 1000);
+    assert_eq!(initial_cell.food_micro, 1_234_000);
+    assert_eq!(initial_cell.taint_micro, 567_000);
+    assert_eq!(initial_cell.scent_micro, 891_000);
+    assert_eq!(initial_cell.fertility_micro, 1_000_000);
 
     let (f, t, s) = GpuSoilPipeline::to_physics(&initial_cell);
     assert!((f - 1.234).abs() < 1e-4);
@@ -32,14 +32,11 @@ fn test_soil_atomic_buffer_and_texture_bounds() {
     assert!((t_new - expected_t).abs() < 1e-3);
     assert!((s_new - expected_s).abs() < 1e-3);
 
-    // 4. Output textures: soil_data (raw floats) and soil_display (colormap) match 75x50 rgba16float format
+    // 4. Output texture: soil_display (colormap) is 75x50
     assert_eq!(GRID_WIDTH, 75);
     assert_eq!(GRID_HEIGHT, 50);
     assert_eq!(CELL_COUNT, 3750);
     assert_eq!(std::mem::size_of::<SoilParams>(), 16);
-
-    let raw_sample = GpuSoilPipeline::evaluate_soil_data(1.5, 0.2, 0.1);
-    assert_eq!(raw_sample, [1.5, 0.2, 0.1, 1.0]);
 
     let col_sample = GpuSoilPipeline::evaluate_soil_color(1.5, 0.2, 0.1);
     assert!(col_sample[0] >= 0.0 && col_sample[0] <= 1.0);

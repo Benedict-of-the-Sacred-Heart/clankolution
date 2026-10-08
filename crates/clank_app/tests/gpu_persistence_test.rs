@@ -1,6 +1,6 @@
-use clank_app::gpu::compute_driver::GpuComputeDriver;
 use clank_app::gpu::bridge::sync_rust_to_gpu;
-use clank_app::sim::{SimWorld, ActiveEngine};
+use clank_app::gpu::compute_driver::GpuComputeDriver;
+use clank_app::sim::{ActiveEngine, SimWorld};
 
 #[test]
 fn test_gpu_persistence_across_frames() {
@@ -35,7 +35,11 @@ fn test_gpu_persistence_across_frames() {
 
         // Telemetry-only readback (128 bytes)
         let telem = driver.readback_telemetry();
-        assert!(telem.population > 0, "Population should remain alive in VRAM at frame {}", frame);
+        assert!(
+            telem.population > 0,
+            "Population should remain alive in VRAM at frame {}",
+            frame
+        );
     }
 
     // 3. Verify final VRAM state has evolved dynamically without CPU state re-upload
@@ -51,5 +55,9 @@ fn test_gpu_persistence_across_frames() {
             }
         }
     }
-    assert!(moved_count > 5, "Agents in VRAM must move dynamically without CPU re-upload; moved: {}", moved_count);
+    assert!(
+        moved_count > 5,
+        "Agents in VRAM must move dynamically without CPU re-upload; moved: {}",
+        moved_count
+    );
 }

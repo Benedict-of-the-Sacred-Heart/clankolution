@@ -136,17 +136,20 @@ fn test_specimen_unpack_and_inspector_fields_parity() {
         return;
     }
     let driver = driver.unwrap();
-    let (states, genomes, atomics, soil, params) =
-        clank_app::gpu::bridge::sync_rust_to_gpu(&sim);
+    let (states, genomes, atomics, soil, params) = clank_app::gpu::bridge::sync_rust_to_gpu(&sim);
     driver.upload_state(&states, &genomes, &atomics, &soil, &params);
     driver.set_initialized(true);
 
     // Read back slot 0
     let slot_data = driver.readback_agent_slot(0);
-    assert!(slot_data.is_some(), "readback_agent_slot(0) must return valid data");
+    assert!(
+        slot_data.is_some(),
+        "readback_agent_slot(0) must return valid data"
+    );
     let (state, genome, atomic) = slot_data.unwrap();
 
-    let unpacked = clank_app::gpu::bridge::unpack_gpu_agent_to_agent_data(&state, &genome, Some(&atomic));
+    let unpacked =
+        clank_app::gpu::bridge::unpack_gpu_agent_to_agent_data(&state, &genome, Some(&atomic));
     assert_eq!(unpacked.id, sim.world.agents[0].id);
     assert_eq!(unpacked.dead, 0);
     assert!(unpacked.energy > 0.0);
@@ -156,7 +159,12 @@ fn test_specimen_unpack_and_inspector_fields_parity() {
     }
     assert_eq!(unpacked.h.len(), 10);
     for (i, &val) in unpacked.h.iter().enumerate() {
-        assert!(val >= -1.0 && val <= 1.0, "Hidden state {} out of range: {}", i, val);
+        assert!(
+            val >= -1.0 && val <= 1.0,
+            "Hidden state {} out of range: {}",
+            i,
+            val
+        );
     }
     assert_eq!(unpacked.genes.len(), 326);
 }
@@ -173,8 +181,7 @@ fn test_carrying_capacity_saturation_and_underflow_guard() {
         return;
     }
     let driver = driver.unwrap();
-    let (states, genomes, atomics, soil, params) =
-        clank_app::gpu::bridge::sync_rust_to_gpu(&sim);
+    let (states, genomes, atomics, soil, params) = clank_app::gpu::bridge::sync_rust_to_gpu(&sim);
     driver.upload_state(&states, &genomes, &atomics, &soil, &params);
     driver.set_initialized(true);
 
@@ -203,7 +210,7 @@ fn test_carrying_capacity_saturation_and_underflow_guard() {
             epoch: 0,
         };
         driver.update_params(&params);
-        driver.dispatch_sub_ticks_with_mods(2, &params, false, false, false);
+        driver.dispatch_sub_ticks(2, &params);
         let telem = driver.readback_telemetry();
         sim.world.tick += 2;
         sim.gpu_population = telem.population;

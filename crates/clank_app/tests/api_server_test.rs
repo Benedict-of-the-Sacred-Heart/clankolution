@@ -1,7 +1,7 @@
-use std::net::TcpStream;
-use std::io::{Read, Write};
-use std::time::Duration;
 use clank_app::api::*;
+use std::io::{Read, Write};
+use std::net::TcpStream;
+use std::time::Duration;
 
 #[test]
 fn test_http_api_endpoints() {
@@ -32,9 +32,14 @@ fn test_http_api_endpoints() {
 
     // 1. Request GET /metrics
     {
-        let mut stream = TcpStream::connect(format!("127.0.0.1:{}", port)).expect("connect /metrics");
-        stream.set_read_timeout(Some(Duration::from_secs(2))).unwrap();
-        stream.write_all(b"GET /metrics HTTP/1.1\r\nHost: localhost\r\n\r\n").expect("write");
+        let mut stream =
+            TcpStream::connect(format!("127.0.0.1:{}", port)).expect("connect /metrics");
+        stream
+            .set_read_timeout(Some(Duration::from_secs(2)))
+            .unwrap();
+        stream
+            .write_all(b"GET /metrics HTTP/1.1\r\nHost: localhost\r\n\r\n")
+            .expect("write");
         let mut response = String::new();
         stream.read_to_string(&mut response).expect("read");
         assert!(response.contains("HTTP/1.1 200 OK"));
@@ -45,8 +50,12 @@ fn test_http_api_endpoints() {
     // 2. Request GET /state
     {
         let mut stream = TcpStream::connect(format!("127.0.0.1:{}", port)).expect("connect /state");
-        stream.set_read_timeout(Some(Duration::from_secs(2))).unwrap();
-        stream.write_all(b"GET /state HTTP/1.1\r\nHost: localhost\r\n\r\n").expect("write");
+        stream
+            .set_read_timeout(Some(Duration::from_secs(2)))
+            .unwrap();
+        stream
+            .write_all(b"GET /state HTTP/1.1\r\nHost: localhost\r\n\r\n")
+            .expect("write");
         let mut response = String::new();
         stream.read_to_string(&mut response).expect("read");
         assert!(response.contains("HTTP/1.1 200 OK"));
@@ -56,8 +65,11 @@ fn test_http_api_endpoints() {
     // 3. Request POST /settings
     {
         let payload = r#"{"speed":4.0,"paused":true}"#;
-        let mut stream = TcpStream::connect(format!("127.0.0.1:{}", port)).expect("connect /settings");
-        stream.set_read_timeout(Some(Duration::from_secs(2))).unwrap();
+        let mut stream =
+            TcpStream::connect(format!("127.0.0.1:{}", port)).expect("connect /settings");
+        stream
+            .set_read_timeout(Some(Duration::from_secs(2)))
+            .unwrap();
         let request = format!(
             "POST /settings HTTP/1.1\r\nHost: localhost\r\nContent-Length: {}\r\n\r\n{}",
             payload.len(),
@@ -68,7 +80,9 @@ fn test_http_api_endpoints() {
         stream.read_to_string(&mut response).expect("read");
         assert!(response.contains("HTTP/1.1 200 OK"));
 
-        let cmd = rx.recv_timeout(Duration::from_secs(1)).expect("receive command");
+        let cmd = rx
+            .recv_timeout(Duration::from_secs(1))
+            .expect("receive command");
         match cmd {
             ApiCommand::UpdateSettings(s) => {
                 assert_eq!(s.speed, Some(4.0));
@@ -83,7 +97,11 @@ fn test_http_api_endpoints() {
 fn test_concurrent_http_requests() {
     let port = 9337;
     let (_server, _rx, shared) = create_test_api_server(port);
-    shared.write().unwrap().metrics.update(100.0, 10.0, 1, 10, 1.0);
+    shared
+        .write()
+        .unwrap()
+        .metrics
+        .update(100.0, 10.0, 1, 10, 1.0);
 
     // Stream 1 connects but does not send data (hanging connection)
     let _slow_stream = TcpStream::connect(format!("127.0.0.1:{}", port)).expect("connect slow");
@@ -91,15 +109,23 @@ fn test_concurrent_http_requests() {
     // Stream 2 connects and immediately queries /metrics
     let start = std::time::Instant::now();
     let mut stream2 = TcpStream::connect(format!("127.0.0.1:{}", port)).expect("connect stream 2");
-    stream2.set_read_timeout(Some(Duration::from_millis(500))).unwrap();
-    stream2.write_all(b"GET /metrics HTTP/1.1\r\nHost: localhost\r\n\r\n").expect("write");
+    stream2
+        .set_read_timeout(Some(Duration::from_millis(500)))
+        .unwrap();
+    stream2
+        .write_all(b"GET /metrics HTTP/1.1\r\nHost: localhost\r\n\r\n")
+        .expect("write");
     let mut response = String::new();
     let res = stream2.read_to_string(&mut response);
     let elapsed = start.elapsed();
 
     assert!(res.is_ok(), "Stream 2 timed out or failed: {:?}", res);
     assert!(response.contains("HTTP/1.1 200 OK"));
-    assert!(elapsed < Duration::from_millis(500), "Concurrent request blocked for {:?}", elapsed);
+    assert!(
+        elapsed < Duration::from_millis(500),
+        "Concurrent request blocked for {:?}",
+        elapsed
+    );
 }
 
 #[test]
@@ -109,7 +135,9 @@ fn test_settings_active_engine_switching() {
 
     let payload = r#"{"active_engine":"gpu"}"#;
     let mut stream = TcpStream::connect(format!("127.0.0.1:{}", port)).expect("connect /settings");
-    stream.set_read_timeout(Some(Duration::from_secs(2))).unwrap();
+    stream
+        .set_read_timeout(Some(Duration::from_secs(2)))
+        .unwrap();
     let request = format!(
         "POST /settings HTTP/1.1\r\nHost: localhost\r\nContent-Length: {}\r\n\r\n{}",
         payload.len(),
@@ -120,7 +148,9 @@ fn test_settings_active_engine_switching() {
     stream.read_to_string(&mut response).expect("read");
     assert!(response.contains("HTTP/1.1 200 OK"));
 
-    let cmd = rx.recv_timeout(Duration::from_secs(1)).expect("receive command");
+    let cmd = rx
+        .recv_timeout(Duration::from_secs(1))
+        .expect("receive command");
     match cmd {
         ApiCommand::UpdateSettings(s) => {
             assert_eq!(s.active_engine.as_deref(), Some("gpu"));
@@ -128,4 +158,3 @@ fn test_settings_active_engine_switching() {
         _ => panic!("unexpected command variant"),
     }
 }
-

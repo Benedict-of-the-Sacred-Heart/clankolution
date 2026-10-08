@@ -50,93 +50,86 @@ struct GpuAgentState {
     meta_flags: u32,
     age_gen: u32,
     morton_code: u32,
-    packed_color: u32,
+    root: u32,
     visual_cache: u32,
 }
 
-@group(0) @binding(0) var<storage, read> spatial_keys: array<vec2u>; // (morton_key, agent_id)
-@group(0) @binding(1) var<storage, read_write> lbvh_nodes: array<GpuLbvhNode>;
+@group(0) @binding(0) var<storage, read> spatial_keys: array<vec2u>; // sorted (morton, slot), live first
+// GpuLbvhNode as 12 words, so every access can be atomic (field word offsets below).
+@group(0) @binding(1) var<storage, read_write> lbvh_words: array<atomic<u32>>;
 @group(0) @binding(2) var<storage, read_write> node_flags: array<atomic<u32>>;
 @group(0) @binding(3) var<storage, read> agent_states: array<GpuAgentState>;
 @group(0) @binding(4) var<uniform> params: GpuSimParams;
+@group(0) @binding(5) var<storage, read_write> queue_words: array<atomic<u32>>;
 
+const LIVE_COUNT_WORD: u32 = 16u; // GpuTelemetry.live_count, written by the spatial sort
+
+const NODE_WORDS: u32 = 12u;
+const MIN_X: u32 = 0u;
+const MIN_Y: u32 = 1u;
+const MAX_X: u32 = 2u;
+const MAX_Y: u32 = 3u;
+const COM_X: u32 = 4u;
+const COM_Y: u32 = 5u;
+const COUNT: u32 = 6u;
+const DOMINANT: u32 = 7u;
+const LEFT: u32 = 8u;
+const RIGHT: u32 = 9u;
+const PARENT: u32 = 10u;
+const LEAF: u32 = 11u;
+const NONE: u32 = 0xFFFFFFFFu;
+
+fn word(node: u32, field: u32) -> u32 { return node * NODE_WORDS + field; }
+
+// Phase 2: each live creature writes its leaf, then climbs, growing each ancestor's box with
+// atomicMin/atomicMax. The result does not depend on which thread arrives first (a child's box
+// written by another workgroup is never read, which WGSL could not order). A thread stops once
+// it changes nothing at a node: whoever set that node's extreme value climbs on with it.
+// Box coordinates are clamped to be non-negative, so u32 order is float order; a box only has
+// to contain its creatures' centres for picking to prune correctly.
 @compute @workgroup_size(64)
 fn fit_lbvh_aabbs(@builtin(global_invocation_id) id: vec3u) {
-    let n = params.agent_count;
+    let n = atomicLoad(&queue_words[LIVE_COUNT_WORD]);
     if (id.x >= n) { return; }
 
-    let agent_idx = id.x;
+    // Leaf id.x is the id.x-th live creature in Morton order.
+    let agent_idx = spatial_keys[id.x].y;
+    let a = agent_states[agent_idx];
+    let r = 2.0 + 3.0 * a.traits[0][0];
+    let bmin = max(vec2f(0.0, 0.0), a.pos_vel.xy - vec2f(r, r));
+    let bmax = a.pos_vel.xy + vec2f(r, r);
+    let lo = vec2u(bitcast<u32>(bmin.x), bitcast<u32>(bmin.y));
+    let hi = vec2u(bitcast<u32>(bmax.x), bitcast<u32>(bmax.y));
 
-    // Degenerate N=1 guard
+    // Degenerate N = 1: the root is the leaf.
+    let leaf = select(n - 1u + id.x, 0u, n == 1u);
+    atomicStore(&lbvh_words[word(leaf, MIN_X)], lo.x);
+    atomicStore(&lbvh_words[word(leaf, MIN_Y)], lo.y);
+    atomicStore(&lbvh_words[word(leaf, MAX_X)], hi.x);
+    atomicStore(&lbvh_words[word(leaf, MAX_Y)], hi.y);
+    atomicStore(&lbvh_words[word(leaf, COM_X)], bitcast<u32>(a.pos_vel.x));
+    atomicStore(&lbvh_words[word(leaf, COM_Y)], bitcast<u32>(a.pos_vel.y));
+    atomicStore(&lbvh_words[word(leaf, COUNT)], 1u);
+    atomicStore(&lbvh_words[word(leaf, DOMINANT)], a.root);
+    atomicStore(&lbvh_words[word(leaf, LEFT)], NONE);
+    atomicStore(&lbvh_words[word(leaf, RIGHT)], NONE);
+    atomicStore(&lbvh_words[word(leaf, LEAF)], agent_idx);
     if (n == 1u) {
-        let a = agent_states[agent_idx];
-        let r = 2.0 + 3.0 * a.traits[0][0];
-        lbvh_nodes[0].aabb_min = a.pos_vel.xy - vec2f(r, r);
-        lbvh_nodes[0].aabb_max = a.pos_vel.xy + vec2f(r, r);
-        lbvh_nodes[0].center_of_mass = a.pos_vel.xy;
-        lbvh_nodes[0].count = 1u;
-        lbvh_nodes[0].dominant_lineage = a.meta_flags & 0x0Fu;
-        lbvh_nodes[0].left_child = 0xFFFFFFFFu;
-        lbvh_nodes[0].right_child = 0xFFFFFFFFu;
-        lbvh_nodes[0].parent = 0xFFFFFFFFu;
-        lbvh_nodes[0].leaf_idx = agent_idx;
+        atomicStore(&lbvh_words[word(leaf, PARENT)], NONE);
         return;
     }
 
-    let num_internal = n - 1u;
-    let leaf_node_idx = num_internal + id.x;
-
-    let a = agent_states[agent_idx];
-    let r = 2.0 + 3.0 * a.traits[0][0];
-    lbvh_nodes[leaf_node_idx].aabb_min = a.pos_vel.xy - vec2f(r, r);
-    lbvh_nodes[leaf_node_idx].aabb_max = a.pos_vel.xy + vec2f(r, r);
-    lbvh_nodes[leaf_node_idx].center_of_mass = a.pos_vel.xy;
-    lbvh_nodes[leaf_node_idx].count = 1u;
-    lbvh_nodes[leaf_node_idx].dominant_lineage = a.meta_flags & 0x0Fu;
-    lbvh_nodes[leaf_node_idx].left_child = 0xFFFFFFFFu;
-    lbvh_nodes[leaf_node_idx].right_child = 0xFFFFFFFFu;
-    lbvh_nodes[leaf_node_idx].leaf_idx = agent_idx;
-
-    // Climb tree towards root
-    var curr = lbvh_nodes[leaf_node_idx].parent;
+    // Parents were written by phase 1, in the previous dispatch. A Karras tree over 32-bit keys with
+    // a 32-bit tie-break is at most 65 levels deep.
+    var curr = atomicLoad(&lbvh_words[word(leaf, PARENT)]);
     var steps = 0u;
-    while (curr != 0xFFFFFFFFu && steps < 64u) {
+    while (curr < n - 1u && steps < 66u) {
         steps += 1u;
-        let flag = atomicAdd(&node_flags[curr], 1u);
-        if (flag < 1u) {
-            // First child arrived; terminate thread to let second child process parent
-            break;
-        }
-
-        // Second child arrived: compute bounding box and metrics from left and right children
-        let left = lbvh_nodes[curr].left_child;
-        let right = lbvh_nodes[curr].right_child;
-
-        let min_x = min(lbvh_nodes[left].aabb_min.x, lbvh_nodes[right].aabb_min.x);
-        let min_y = min(lbvh_nodes[left].aabb_min.y, lbvh_nodes[right].aabb_min.y);
-        let max_x = max(lbvh_nodes[left].aabb_max.x, lbvh_nodes[right].aabb_max.x);
-        let max_y = max(lbvh_nodes[left].aabb_max.y, lbvh_nodes[right].aabb_max.y);
-
-        lbvh_nodes[curr].aabb_min = vec2f(min_x, min_y);
-        lbvh_nodes[curr].aabb_max = vec2f(max_x, max_y);
-
-        let c_left = lbvh_nodes[left].count;
-        let c_right = lbvh_nodes[right].count;
-        let total_count = c_left + c_right;
-        lbvh_nodes[curr].count = total_count;
-
-        let com = (lbvh_nodes[left].center_of_mass * f32(c_left) + lbvh_nodes[right].center_of_mass * f32(c_right)) / max(1.0, f32(total_count));
-        lbvh_nodes[curr].center_of_mass = com;
-
-        if (c_left >= c_right) {
-            lbvh_nodes[curr].dominant_lineage = lbvh_nodes[left].dominant_lineage;
-        } else {
-            lbvh_nodes[curr].dominant_lineage = lbvh_nodes[right].dominant_lineage;
-        }
-
-        if (curr == 0u) {
-            break;
-        }
-        curr = lbvh_nodes[curr].parent;
+        var changed = atomicMin(&lbvh_words[word(curr, MIN_X)], lo.x) > lo.x;
+        changed = (atomicMin(&lbvh_words[word(curr, MIN_Y)], lo.y) > lo.y) || changed;
+        changed = (atomicMax(&lbvh_words[word(curr, MAX_X)], hi.x) < hi.x) || changed;
+        changed = (atomicMax(&lbvh_words[word(curr, MAX_Y)], hi.y) < hi.y) || changed;
+        if (!changed || curr == 0u) { break; }
+        curr = atomicLoad(&lbvh_words[word(curr, PARENT)]);
     }
 }

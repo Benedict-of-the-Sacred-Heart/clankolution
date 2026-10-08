@@ -5,8 +5,6 @@
 // Pass-Decoupled Freelist allocation (Zero ABA / Push-Pop Race)
 // Workgroup-Uniform Bounds Guard
 
-override ENABLE_EXPANDED_CORTEX: bool = false;
-
 struct GpuSimParams {
     tick: u32,
     agent_count: u32,
@@ -44,7 +42,7 @@ struct GpuAgentState {
     meta_flags: u32,
     age_gen: u32,
     morton_code: u32,
-    packed_color: u32,
+    root: u32,
     visual_cache: u32,
 }
 
@@ -75,8 +73,11 @@ struct GpuTelemetry {
     total_births: atomic<u32>,
     total_deaths: atomic<u32>,
     max_generation: atomic<u32>,
-    extinctions: atomic<u32>,
-    lineage_counts: array<atomic<u32>, 16>,
+    living_lineages: atomic<u32>,
+    live_count: atomic<u32>,
+    pending_free_count: atomic<u32>,
+    available_slots: atomic<u32>,
+    reserved1: array<u32, 13>,
 }
 
 struct BirthEvent {
@@ -268,9 +269,8 @@ fn birth_main(@builtin(workgroup_id) wg_id: vec3u, @builtin(local_invocation_id)
         agent_states[child_idx].hidden[1] = vec4f(0.0);
         agent_states[child_idx].hidden_tail = vec2f(0.0);
 
-        let parent_meta = agent_states[parent_a].meta_flags;
-        let child_root = parent_meta & 0x0Fu;
-        agent_states[child_idx].meta_flags = (child_root & 0x0Fu); // root, birth = 0, dead = 0
+        agent_states[child_idx].root = agent_states[parent_a].root;
+        agent_states[child_idx].meta_flags = 0u; // birth = 0, dead = 0
 
         let parent_gen = agent_states[parent_a].age_gen >> 16u;
         var max_parent_gen = parent_gen;
@@ -283,10 +283,32 @@ fn birth_main(@builtin(workgroup_id) wg_id: vec3u, @builtin(local_invocation_id)
         agent_states[child_idx].age_gen = (child_gen & 0xFFFFu) << 16u;
         agent_states[child_idx].id = atomicAdd(&queue_buffer.telemetry.apex_agent_id, 1u);
         agent_states[child_idx].morton_code = 0u;
-        agent_states[child_idx].packed_color = agent_states[parent_a].packed_color;
 
         let child_r_u8 = u32(clamp(agent_states[child_idx].traits[0][0], 0.0, 1.0) * 255.0);
         let child_e_u8 = u32(clamp(24.0 / 100.0, 0.0, 1.0) * 255.0);
         agent_states[child_idx].visual_cache = child_r_u8 | (child_e_u8 << 16u);
+    }
+}
+
+var<workgroup> merge_base: u32;
+var<workgroup> merge_count: u32;
+
+// After the birth pass: moves this sub-tick's deaths from the pending-free list
+// (freelist[max_agents..]) onto the stack, so a slot freed this sub-tick is reused only on
+// the next one. One workgroup: thread 0 reserves the stack range, all threads copy.
+@compute @workgroup_size(64)
+fn merge_pending_free_main(@builtin(local_invocation_id) local_id: vec3u) {
+    if (local_id.x == 0u) {
+        let base = atomicLoad(&queue_buffer.telemetry.freelist_top);
+        let count = min(atomicLoad(&queue_buffer.telemetry.pending_free_count), params.max_agents - min(base, params.max_agents));
+        merge_base = base;
+        merge_count = count;
+        atomicStore(&queue_buffer.telemetry.freelist_top, base + count);
+        atomicStore(&queue_buffer.telemetry.pending_free_count, 0u);
+    }
+    let count = workgroupUniformLoad(&merge_count);
+    let base = workgroupUniformLoad(&merge_base);
+    for (var i = local_id.x; i < count; i += 64u) {
+        freelist[base + i] = freelist[params.max_agents + i];
     }
 }

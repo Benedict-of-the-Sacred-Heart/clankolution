@@ -23,8 +23,9 @@ pub fn expand_bits(mut v: u32) -> u32 {
 /// Computes a 32-bit Morton code (Z-order curve) by interleaving X and Y coordinates with dynamic world bounds.
 #[inline]
 pub fn compute_morton_32_with_size(pos: [f32; 2], world_size: [f32; 2]) -> u32 {
-    let x_norm = ((pos[0] / world_size[0]).clamp(0.0, 1.0) * 65535.0).round() as u32;
-    let y_norm = ((pos[1] / world_size[1]).clamp(0.0, 1.0) * 65535.0).round() as u32;
+    // floor, as the WGSL encoder's u32() conversion does.
+    let x_norm = ((pos[0] / world_size[0]).clamp(0.0, 1.0) * 65535.0).floor() as u32;
+    let y_norm = ((pos[1] / world_size[1]).clamp(0.0, 1.0) * 65535.0).floor() as u32;
     expand_bits(x_norm) | (expand_bits(y_norm) << 1)
 }
 
@@ -84,7 +85,11 @@ impl CellOffsetsTable {
     }
 
     /// Populates cell offsets table from sorted spatial keys `(morton_key, agent_slot_idx)`.
-    pub fn populate_from_keys(&mut self, keys: &[[u32; 2]], agents: &[crate::gpu::types::GpuAgentState]) {
+    pub fn populate_from_keys(
+        &mut self,
+        keys: &[[u32; 2]],
+        agents: &[crate::gpu::types::GpuAgentState],
+    ) {
         self.clear();
         if keys.is_empty() {
             return;
@@ -122,4 +127,3 @@ impl CellOffsetsTable {
         }
     }
 }
-

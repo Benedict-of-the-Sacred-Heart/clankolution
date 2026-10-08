@@ -54,8 +54,11 @@ struct GpuTelemetry {
     total_births: atomic<u32>,
     total_deaths: atomic<u32>,
     max_generation: atomic<u32>,
-    extinctions: atomic<u32>,
-    lineage_counts: array<atomic<u32>, 16>,
+    living_lineages: atomic<u32>,
+    live_count: atomic<u32>,
+    pending_free_count: atomic<u32>,
+    available_slots: atomic<u32>,
+    reserved1: array<u32, 13>,
 }
 
 struct BirthEvent {
@@ -79,7 +82,6 @@ struct ConsolidatedQueue {
 
 @group(0) @binding(0) var<storage, read_write> agent_atomics: array<GpuAgentAtomic>;
 @group(0) @binding(1) var<storage, read_write> queue_buffer: ConsolidatedQueue;
-@group(0) @binding(2) var<storage, read_write> cell_offsets: array<atomic<u32>>;
 @group(1) @binding(0) var<uniform> params: GpuSimParams;
 
 @compute @workgroup_size(64)
@@ -92,6 +94,8 @@ fn preamble_main(@builtin(global_invocation_id) id: vec3u) {
     if (id.x == 0u) {
         // Active queue depth reset (runs every sub-tick for birth processing):
         atomicStore(&queue_buffer.telemetry.birth_count, 0u);
+        // The spatial sort's first pass counts the live keys into it.
+        atomicStore(&queue_buffer.telemetry.live_count, 0u);
 
         // Frame-level counter reset (strictly at frame start on sub-tick 0):
         if (params.sub_tick == 0u) {
@@ -112,12 +116,5 @@ fn preamble_main(@builtin(global_invocation_id) id: vec3u) {
         if (id.x == 0u) {
             atomicStore(&queue_buffer.telemetry.population, 0u);
         }
-        if (id.x < 16u) {
-            atomicStore(&queue_buffer.telemetry.lineage_counts[id.x], 0u);
-        }
-    }
-
-    if (id.x < 54u) {
-        atomicStore(&cell_offsets[id.x], 0xFFFFFFFFu);
     }
 }

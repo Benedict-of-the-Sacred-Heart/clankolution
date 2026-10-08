@@ -1,6 +1,6 @@
 use clank_app::gpu::types::{
-    GpuAgentState, GpuAgentGenome, GpuSimParams, GpuLbvhNode, GpuAgentAtomic, BirthEvent,
-    GpuSoilCell, AudioVoice, GpuTelemetry, ConsolidatedQueue,
+    AudioVoice, BirthEvent, ConsolidatedQueue, GpuAgentAtomic, GpuAgentGenome, GpuAgentState,
+    GpuLbvhNode, GpuSimParams, GpuSoilCell, GpuTelemetry,
 };
 
 #[test]
@@ -65,22 +65,22 @@ fn test_repurposed_functional_fields() {
     assert_eq!(birth.birth_tick, 500);
 
     let soil = GpuSoilCell {
-        food_milli: 100,
-        taint_milli: 200,
-        scent_milli: 300,
-        fertility_milli: 400,
+        food_micro: 100,
+        taint_micro: 200,
+        scent_micro: 300,
+        fertility_micro: 400,
     };
-    assert_eq!(soil.fertility_milli, 400);
+    assert_eq!(soil.fertility_micro, 400);
 
     let telem = GpuTelemetry {
         total_births: 10,
         total_deaths: 5,
         max_generation: 12,
-        extinctions: 2,
+        living_lineages: 2,
         ..Default::default()
     };
     assert_eq!(telem.total_births, 10);
     assert_eq!(telem.total_deaths, 5);
     assert_eq!(telem.max_generation, 12);
-    assert_eq!(telem.extinctions, 2);
+    assert_eq!(telem.living_lineages, 2);
 }

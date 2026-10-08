@@ -1,7 +1,5 @@
 use clank_app::gpu::bridge::sync_rust_to_gpu;
 use clank_app::gpu::compute_driver::GpuComputeDriver;
-use clank_app::gpu::types::*;
-use clank_app::rendering::*;
 use clank_app::sim::SimWorld;
 use clank_core::soil::SoilGrid;
 
@@ -9,8 +7,12 @@ use clank_core::soil::SoilGrid;
 fn test_soil_deposit_stencils_parity() {
     let mut soil = SoilGrid::new();
     // Zero out food, taint, scent
-    for cell in &mut soil.food { *cell = 0.0; }
-    for cell in &mut soil.taint { *cell = 0.0; }
+    for cell in &mut soil.food {
+        *cell = 0.0;
+    }
+    for cell in &mut soil.taint {
+        *cell = 0.0;
+    }
 
     // 1. Test Radius 1 deposit at cell (10, 10)
     let center_x = 10.0 * 12.0 + 6.0;
@@ -25,12 +27,30 @@ fn test_soil_deposit_stencils_parity() {
     let idx_right = 10 * 75 + 11;
     let idx_diag = 9 * 75 + 9;
 
-    assert!((soil.food[idx_c] - 1.0).abs() < 1e-4, "Center must receive full val");
-    assert!((soil.food[idx_up] - (1.0 / 1.8)).abs() < 1e-4, "Up neighbor must receive val / 1.8");
-    assert!((soil.food[idx_down] - (1.0 / 1.8)).abs() < 1e-4, "Down neighbor must receive val / 1.8");
-    assert!((soil.food[idx_left] - (1.0 / 1.8)).abs() < 1e-4, "Left neighbor must receive val / 1.8");
-    assert!((soil.food[idx_right] - (1.0 / 1.8)).abs() < 1e-4, "Right neighbor must receive val / 1.8");
-    assert_eq!(soil.food[idx_diag], 0.0, "Diagonal neighbor in radius 1 must receive ZERO");
+    assert!(
+        (soil.food[idx_c] - 1.0).abs() < 1e-4,
+        "Center must receive full val"
+    );
+    assert!(
+        (soil.food[idx_up] - (1.0 / 1.8)).abs() < 1e-4,
+        "Up neighbor must receive val / 1.8"
+    );
+    assert!(
+        (soil.food[idx_down] - (1.0 / 1.8)).abs() < 1e-4,
+        "Down neighbor must receive val / 1.8"
+    );
+    assert!(
+        (soil.food[idx_left] - (1.0 / 1.8)).abs() < 1e-4,
+        "Left neighbor must receive val / 1.8"
+    );
+    assert!(
+        (soil.food[idx_right] - (1.0 / 1.8)).abs() < 1e-4,
+        "Right neighbor must receive val / 1.8"
+    );
+    assert_eq!(
+        soil.food[idx_diag], 0.0,
+        "Diagonal neighbor in radius 1 must receive ZERO"
+    );
 
     // 2. Test Radius 2 deposit at cell (30, 30)
     let c2_x = 30.0 * 12.0 + 6.0;
@@ -43,72 +63,25 @@ fn test_soil_deposit_stencils_parity() {
     let idx2_d2_1 = 31 * 75 + 32; // dx=2, dy=1, rr=5 > 4.5 -> MUST BE 0!
     let idx2_d2_2 = 32 * 75 + 32; // dx=2, dy=2, rr=8 > 4.5 -> MUST BE 0!
 
-    assert!((soil.food[idx2_c] - 1.0).abs() < 1e-4, "Radius 2 center must receive full val");
-    assert!((soil.food[idx2_d1_0] - (1.0 / 1.8)).abs() < 1e-4, "Radius 2 (1,0) must receive 1.0 / 1.8");
-    assert!((soil.food[idx2_d1_1] - (1.0 / 2.6)).abs() < 1e-4, "Radius 2 (1,1) must receive 1.0 / 2.6");
-    assert_eq!(soil.food[idx2_d2_1], 0.0, "Radius 2 (2,1) rr=5 > 4.5 must receive ZERO");
-    assert_eq!(soil.food[idx2_d2_2], 0.0, "Radius 2 (2,2) rr=8 > 4.5 must receive ZERO");
-}
-
-#[test]
-fn test_rendering_mesh_layer_depths_and_segments() {
-    let dummy_instance = GpuDartInstance {
-        pos_angle: [100.0, 100.0, 0.0],
-        pad0: 0.5,
-        vis_data: [
-            0xFF50E0A0,
-            // radius=128 (0.5), glow=128 (0.5), energy=128, attacking=0, birth=0
-            128 | (128 << 8) | (128 << 16),
-        ],
-        pad1: [1, 0],
-    };
-
-    let mut glow_pos = Vec::new();
-    let mut glow_col = Vec::new();
-    generate_glow_mesh_from_instances(&[dummy_instance], 600.0, &mut glow_pos, &mut glow_col);
-
-    // Glow mesh must have at least 20 segments (20 triangles * 3 = 60 vertices)
     assert!(
-        glow_pos.len() >= 60,
-        "Glow mesh must have >= 20 segments (expected >= 60 vertices, got {})",
-        glow_pos.len()
+        (soil.food[idx2_c] - 1.0).abs() < 1e-4,
+        "Radius 2 center must receive full val"
     );
-
-    // Glow mesh must be positioned at z = -2.2 (behind trails at -2.05 and darts at -2.0)
-    for p in &glow_pos {
-        assert!(
-            (p[2] - (-2.2)).abs() < 1e-4,
-            "Glow mesh vertices must be at z = -2.2, got {}",
-            p[2]
-        );
-    }
-
-    // Swarm trail mesh layer testing
-    let mut tracker = AgentTrailsTracker::default();
-    let mut queue = std::collections::VecDeque::new();
-    queue.push_back(bevy::prelude::Vec2::new(100.0, 100.0));
-    queue.push_back(bevy::prelude::Vec2::new(105.0, 105.0));
-    tracker.trails.insert(1, queue);
-
-    let mut trail_pos = Vec::new();
-    let mut trail_col = Vec::new();
-    generate_swarm_trails_from_tracker(&tracker, &[dummy_instance], 900.0, 600.0, &mut trail_pos, &mut trail_col);
-
-    assert!(!trail_pos.is_empty(), "Trail mesh must have vertices");
-    for p in &trail_pos {
-        assert!(
-            (p[2] - (-2.05)).abs() < 1e-4,
-            "Swarm trails must be at z = -2.05 (in front of glow at -2.2, behind darts at -2.0), got {}",
-            p[2]
-        );
-    }
-
-    // Trail alpha must be vibrant (up to >= 0.45)
-    let max_alpha = trail_col.iter().map(|c| c[3]).fold(0.0f32, f32::max);
     assert!(
-        max_alpha >= 0.45,
-        "Swarm trail alpha must be vibrant (>= 0.45), got {}",
-        max_alpha
+        (soil.food[idx2_d1_0] - (1.0 / 1.8)).abs() < 1e-4,
+        "Radius 2 (1,0) must receive 1.0 / 1.8"
+    );
+    assert!(
+        (soil.food[idx2_d1_1] - (1.0 / 2.6)).abs() < 1e-4,
+        "Radius 2 (1,1) must receive 1.0 / 2.6"
+    );
+    assert_eq!(
+        soil.food[idx2_d2_1], 0.0,
+        "Radius 2 (2,1) rr=5 > 4.5 must receive ZERO"
+    );
+    assert_eq!(
+        soil.food[idx2_d2_2], 0.0,
+        "Radius 2 (2,2) rr=8 > 4.5 must receive ZERO"
     );
 }
 
@@ -201,9 +174,18 @@ fn test_observe_tool_empty_space_deselection() {
         sim.selected_agent_cache = None;
     }
 
-    assert!(sim.selected_agent_id.is_none(), "Observe click on empty space must clear selected_agent_id");
-    assert!(sim.selected_agent_slot.is_none(), "Observe click on empty space must clear selected_agent_slot");
-    assert!(sim.selected_agent_cache.is_none(), "Observe click on empty space must clear selected_agent_cache");
+    assert!(
+        sim.selected_agent_id.is_none(),
+        "Observe click on empty space must clear selected_agent_id"
+    );
+    assert!(
+        sim.selected_agent_slot.is_none(),
+        "Observe click on empty space must clear selected_agent_slot"
+    );
+    assert!(
+        sim.selected_agent_cache.is_none(),
+        "Observe click on empty space must clear selected_agent_cache"
+    );
 }
 
 #[test]
@@ -242,4 +224,3 @@ fn test_corpse_deposit_stencil_formulas() {
     assert_eq!(r2_weights(2, 1), 0.0, "dx=2, dy=1 -> rr=5 > 4.5 must be 0");
     assert_eq!(r2_weights(2, 2), 0.0, "dx=2, dy=2 -> rr=8 > 4.5 must be 0");
 }
-

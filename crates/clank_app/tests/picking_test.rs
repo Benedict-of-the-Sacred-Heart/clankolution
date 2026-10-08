@@ -1,6 +1,6 @@
 use bevy::prelude::*;
-use clank_app::sim::SimWorld;
 use clank_app::rendering::find_agent_at_position;
+use clank_app::sim::SimWorld;
 
 #[test]
 fn test_find_agent_at_position() {

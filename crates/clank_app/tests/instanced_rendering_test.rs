@@ -1,5 +1,7 @@
 use clank_app::gpu::compute_driver::GpuComputeDriver;
-use clank_app::gpu::types::{GpuAgentState, GpuAgentGenome, GpuAgentAtomic, GpuSoilCell, GpuSimParams};
+use clank_app::gpu::types::{
+    GpuAgentAtomic, GpuAgentGenome, GpuAgentState, GpuSimParams, GpuSoilCell,
+};
 
 #[test]
 fn test_instanced_dart_rendering_zero_cpu_vertices() {
@@ -13,7 +15,7 @@ fn test_instanced_dart_rendering_zero_cpu_vertices() {
     let mut states = Vec::new();
     let mut atomics = Vec::new();
 
-    // Living visible agent: centered at [450, 300], angle 0.0, color cyan (0x00FFFF)
+    // Living visible agent: centered at [450, 300], angle 0.0, lineage 0
     let a0 = GpuAgentState {
         pos_vel: [450.0, 300.0, 0.0, 0.0],
         angle_energy: [0.0, 50.0, 0.0, 0.0],
@@ -23,14 +25,32 @@ fn test_instanced_dart_rendering_zero_cpu_vertices() {
         meta_flags: 0,
         age_gen: 0,
         morton_code: 0,
-        packed_color: 0xFFFFFF00, // RGBA cyan/yellow
+        root: 0,
         visual_cache: 0x00FF00FF, // alive, radius 128
     };
     states.push(a0);
-    atomics.push(GpuAgentAtomic { energy_milli: 50000, mate_claim: 0, mate_energy_milli: 0, dead_claimed: 0 });
+    atomics.push(GpuAgentAtomic {
+        energy_milli: 50000,
+        mate_claim: 0,
+        mate_energy_milli: 0,
+        dead_claimed: 0,
+    });
 
-    let genomes = vec![GpuAgentGenome { packed_genes: [0; 88] }; 1];
-    let soil = vec![GpuSoilCell { food_milli: 0, taint_milli: 0, scent_milli: 0, fertility_milli: 1000 }; 75 * 50];
+    let genomes = vec![
+        GpuAgentGenome {
+            packed_genes: [0; 88]
+        };
+        1
+    ];
+    let soil = vec![
+        GpuSoilCell {
+            food_micro: 0,
+            taint_micro: 0,
+            scent_micro: 0,
+            fertility_micro: 1_000_000
+        };
+        75 * 50
+    ];
 
     let params = GpuSimParams {
         tick: 1,
@@ -53,7 +73,11 @@ fn test_instanced_dart_rendering_zero_cpu_vertices() {
     // 2. Execute GPU instanced rendering pass into target texture directly from VRAM
     let target_tex = driver.device.create_texture(&wgpu::TextureDescriptor {
         label: Some("test_render_target"),
-        size: wgpu::Extent3d { width: 900, height: 600, depth_or_array_layers: 1 },
+        size: wgpu::Extent3d {
+            width: 900,
+            height: 600,
+            depth_or_array_layers: 1,
+        },
         mip_level_count: 1,
         sample_count: 1,
         dimension: wgpu::TextureDimension::D2,

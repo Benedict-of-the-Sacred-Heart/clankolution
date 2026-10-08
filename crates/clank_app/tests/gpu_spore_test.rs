@@ -1,5 +1,7 @@
 use clank_app::gpu::compute_driver::GpuComputeDriver;
-use clank_app::gpu::types::{GpuAgentState, GpuAgentGenome, GpuAgentAtomic, GpuSoilCell, GpuSimParams};
+use clank_app::gpu::types::{
+    GpuAgentAtomic, GpuAgentGenome, GpuAgentState, GpuSimParams, GpuSoilCell,
+};
 
 #[test]
 fn test_direct_gpu_spore_seeding_in_vram() {
@@ -13,7 +15,15 @@ fn test_direct_gpu_spore_seeding_in_vram() {
     let states: Vec<GpuAgentState> = Vec::new();
     let genomes: Vec<GpuAgentGenome> = Vec::new();
     let atomics: Vec<GpuAgentAtomic> = Vec::new();
-    let soil = vec![GpuSoilCell { food_milli: 1000, taint_milli: 0, scent_milli: 0, fertility_milli: 1000 }; 75 * 50];
+    let soil = vec![
+        GpuSoilCell {
+            food_micro: 1_000_000,
+            taint_micro: 0,
+            scent_micro: 0,
+            fertility_micro: 1_000_000
+        };
+        75 * 50
+    ];
 
     let params = GpuSimParams {
         tick: 1,
@@ -34,7 +44,11 @@ fn test_direct_gpu_spore_seeding_in_vram() {
     assert_eq!(telem.freelist_top, 100);
 
     // Seed 3 spores directly into VRAM
-    let spore_positions = vec![(150.0f32, 200.0f32), (300.0f32, 400.0f32), (450.0f32, 100.0f32)];
+    let spore_positions = vec![
+        (150.0f32, 200.0f32),
+        (300.0f32, 400.0f32),
+        (450.0f32, 100.0f32),
+    ];
     let spawned_slots = driver.seed_spores_gpu(&spore_positions);
     assert_eq!(spawned_slots.len(), 3);
 
@@ -51,7 +65,15 @@ fn test_direct_gpu_spore_seeding_in_vram() {
         let agent = &states_readback[slot as usize];
         let is_dead = (agent.meta_flags & (1 << 13)) != 0;
         assert!(!is_dead, "Spore at slot {} should be living", slot);
-        assert!(agent.angle_energy[1] > 20.0, "Spore should have positive energy: {}", agent.angle_energy[1]);
-        assert!(agent.id > 0, "Spore should have valid non-zero ID: {}", agent.id);
+        assert!(
+            agent.angle_energy[1] > 20.0,
+            "Spore should have positive energy: {}",
+            agent.angle_energy[1]
+        );
+        assert!(
+            agent.id > 0,
+            "Spore should have valid non-zero ID: {}",
+            agent.id
+        );
     }
 }

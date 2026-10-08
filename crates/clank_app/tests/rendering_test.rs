@@ -1,7 +1,7 @@
 use bevy::prelude::*;
 use clank_app::rendering::{
-    sim_to_bevy_coord, bevy_to_sim_coord, lineage_color, agent_body_color,
-    agent_triangle_vertices, extract_agent_render_data, generate_soil_rgba,
+    agent_body_color, agent_triangle_vertices, bevy_to_sim_coord, extract_agent_render_data,
+    generate_soil_rgba, lineage_color, sim_to_bevy_coord,
 };
 use clank_app::sim::SimWorld;
 
@@ -129,47 +129,33 @@ fn test_vignette_rgba_generation() {
     // Center pixel should be nearly transparent (alpha ~ 0..30)
     let center_idx = ((size / 2) * size + (size / 2)) * 4;
     let center_alpha = buf[center_idx + 3];
-    assert!(center_alpha < 40, "Center should have low vignette alpha, got {}", center_alpha);
+    assert!(
+        center_alpha < 40,
+        "Center should have low vignette alpha, got {}",
+        center_alpha
+    );
 
     // Corner pixel (0, 0) should be heavily shadowed (alpha > 150)
     let corner_alpha = buf[3];
-    assert!(corner_alpha > 150, "Corner should have high vignette alpha, got {}", corner_alpha);
-}
-
-#[test]
-fn test_dart_triangles_generation() {
-    use clank_app::rendering::generate_dart_mesh_data;
-    let sim = SimWorld::new(42);
-    let mut positions = Vec::new();
-    let mut colors = Vec::new();
-
-    generate_dart_mesh_data(&sim, &mut positions, &mut colors);
-
-    // 72 creatures, each creature has:
-    // 6 vertices for body (2 triangles) forming a 4-vertex concave dart
-    assert_eq!(positions.len(), 72 * 6);
-    assert_eq!(colors.len(), 72 * 6);
-
-    // Body vertices must have non-zero alpha
-    for c in &colors {
-        assert!(c[3] > 0.05, "Alpha must be positive");
-    }
+    assert!(
+        corner_alpha > 150,
+        "Corner should have high vignette alpha, got {}",
+        corner_alpha
+    );
 }
 
 #[test]
 fn test_particle_physics_simulation() {
-    use clank_app::rendering::{SparkParticle, step_particles};
-    let mut particles = vec![
-        SparkParticle {
-            x: 100.0,
-            y: 100.0,
-            vx: 2.0,
-            vy: -1.0,
-            life: 2.0,
-            max_life: 20.0,
-            color: Color::WHITE,
-        }
-    ];
+    use clank_app::rendering::{step_particles, SparkParticle};
+    let mut particles = vec![SparkParticle {
+        x: 100.0,
+        y: 100.0,
+        vx: 2.0,
+        vy: -1.0,
+        life: 2.0,
+        max_life: 20.0,
+        color: Color::WHITE,
+    }];
 
     step_particles(&mut particles);
     assert_eq!(particles.len(), 1);
@@ -184,7 +170,9 @@ fn test_particle_physics_simulation() {
 
 #[test]
 fn test_particle_mesh_quad_generation() {
-    use clank_app::rendering::{SparkParticle, ParticleSystemResource, generate_particle_mesh_data};
+    use clank_app::rendering::{
+        generate_particle_mesh_data, ParticleSystemResource, SparkParticle,
+    };
     let mut res = ParticleSystemResource::default();
     res.particles.push(SparkParticle {
         x: 200.0,
@@ -210,37 +198,21 @@ fn test_particle_mesh_quad_generation() {
     assert_eq!(positions[0][2], 5.0);
 }
 
+/// The creature layers keep the CPU meshes' depths and per-creature vertex budgets: 20 glow
+/// fan triangles, 8 trail segments, 2 body triangles, and 4 outline edges + 2 antennae + 16
+/// halo segments. Their pixels are compared with the old meshes in `creature_render_test`.
 #[test]
-fn test_generate_mesh_from_dart_instances() {
-    use clank_app::rendering::{generate_dart_mesh_from_instances, generate_outline_mesh_from_instances};
-    use clank_app::gpu::types::GpuDartInstance;
-
-    let instances = vec![
-        GpuDartInstance {
-            pos_angle: [100.0, 150.0, 0.0],
-            pad0: 0.5,
-            vis_data: [0xFF00FF00, 0x00FF00FF], // living green dart
-            pad1: [0.5f32.to_bits(), 0.8f32.to_bits()],
-        },
-    ];
-
-    let mut dart_positions = Vec::new();
-    let mut dart_colors = Vec::new();
-    generate_dart_mesh_from_instances(&instances, 600.0, &mut dart_positions, &mut dart_colors);
-
-    // 1 agent = 2 triangles = 6 vertices
-    assert_eq!(dart_positions.len(), 6);
-    assert_eq!(dart_colors.len(), 6);
-    // Depth must be -2.0
-    assert_eq!(dart_positions[0][2], -2.0);
-
-    let mut outline_positions = Vec::new();
-    let mut outline_colors = Vec::new();
-    generate_outline_mesh_from_instances(&instances, 600.0, &mut outline_positions, &mut outline_colors);
-
-    // 1 agent with sight > 0.56 = 8 body line vertices + 4 antennae vertices = 12 vertices
-    assert_eq!(outline_positions.len(), 12);
-    assert_eq!(outline_colors.len(), 12);
-    // Depth must be -1.9
-    assert_eq!(outline_positions[0][2], -1.9);
+fn test_creature_layers_order_and_vertex_budgets() {
+    use clank_app::gpu::creature_render::CreatureLayerKind;
+    let z: Vec<f32> = CreatureLayerKind::ALL.iter().map(|k| k.sort_z()).collect();
+    assert_eq!(
+        z,
+        vec![-2.2, -2.05, -2.0, -1.9],
+        "glow, trail, body, outline back to front"
+    );
+    let verts: Vec<u32> = CreatureLayerKind::ALL
+        .iter()
+        .map(|k| k.vertices_per_instance())
+        .collect();
+    assert_eq!(verts, vec![60, 16, 6, 8 + 4 + 32]);
 }

@@ -50,32 +50,35 @@ struct GpuAgentState {
     meta_flags: u32,
     age_gen: u32,
     morton_code: u32,
-    packed_color: u32,
+    root: u32,
     visual_cache: u32,
 }
 
-@group(0) @binding(0) var<storage, read> spatial_keys: array<vec2u>; // (morton_key, agent_id)
+@group(0) @binding(0) var<storage, read> spatial_keys: array<vec2u>; // sorted (morton, slot), live first
 @group(0) @binding(1) var<storage, read_write> lbvh_nodes: array<GpuLbvhNode>;
 @group(0) @binding(2) var<storage, read_write> node_flags: array<atomic<u32>>;
 @group(0) @binding(3) var<storage, read> agent_states: array<GpuAgentState>;
 @group(0) @binding(4) var<uniform> params: GpuSimParams;
+@group(0) @binding(5) var<storage, read_write> queue_words: array<atomic<u32>>;
+
+const LIVE_COUNT_WORD: u32 = 16u; // GpuTelemetry.live_count, written by the spatial sort
 
 fn common_prefix_length(i: i32, j: i32, n: u32) -> i32 {
     if (j < 0 || j >= i32(n)) { return -1; }
-    let key_i = agent_states[i].morton_code;
-    let key_j = agent_states[j].morton_code;
+    let key_i = spatial_keys[i].x;
+    let key_j = spatial_keys[j].x;
     if (key_i != key_j) {
         return i32(countLeadingZeros(key_i ^ key_j));
     }
-    // Tie-break with unique agent slot id:
-    let id_i = agent_states[i].id;
-    let id_j = agent_states[j].id;
+    // Tie-break with the unique slot:
+    let id_i = spatial_keys[i].y;
+    let id_j = spatial_keys[j].y;
     return 32 + i32(countLeadingZeros(id_i ^ id_j));
 }
 
 @compute @workgroup_size(64)
 fn build_lbvh_hierarchy(@builtin(global_invocation_id) id: vec3u) {
-    let n = params.agent_count;
+    let n = atomicLoad(&queue_words[LIVE_COUNT_WORD]);
     if (n < 2u || id.x >= n - 1u) { return; } // Guard N <= 1
 
     if (id.x == 0u) {
@@ -134,6 +137,13 @@ fn build_lbvh_hierarchy(@builtin(global_invocation_id) id: vec3u) {
     lbvh_nodes[id.x].left_child = left;
     lbvh_nodes[id.x].right_child = right;
     lbvh_nodes[id.x].leaf_idx = 0xFFFFFFFFu;
+    // An empty box for fit_lbvh_aabbs to grow with atomicMin/atomicMax (box coordinates are
+    // never negative, so float order is u32 order). Only boxes are maintained above the leaves.
+    lbvh_nodes[id.x].aabb_min = vec2f(3.0e38, 3.0e38);
+    lbvh_nodes[id.x].aabb_max = vec2f(0.0, 0.0);
+    lbvh_nodes[id.x].count = u32(last - first + 1);
+    lbvh_nodes[id.x].center_of_mass = vec2f(0.0, 0.0);
+    lbvh_nodes[id.x].dominant_lineage = 0u;
     lbvh_nodes[left].parent = id.x;
     lbvh_nodes[right].parent = id.x;
 }

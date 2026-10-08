@@ -19,21 +19,21 @@ fn test_rust_core_vs_gpu_pipeline_exact_brain_parity() {
 
     // 15 sensory inputs matching simulation ranges
     let sensory_inputs: [f64; 15] = [
-        0.25,   // in0: energy
-        0.80,   // in1: here food
-        -0.30,  // in2: forward - left
-        0.45,   // in3: forward - right
-        0.10,   // in4: forward - here
-        0.05,   // in5: taint
-        -0.12,  // in6: scent diff
-        0.707,  // in7: sin bearing
-        0.707,  // in8: cos bearing
-        0.85,   // in9: distance perception
-        0.33,   // in10: density
-        0.15,   // in11: age
-        -0.42,  // in12: temporal sine
-        0.55,   // in13: forward velocity
-        -0.20,  // in14: neighbor energy
+        0.25,  // in0: energy
+        0.80,  // in1: here food
+        -0.30, // in2: forward - left
+        0.45,  // in3: forward - right
+        0.10,  // in4: forward - here
+        0.05,  // in5: taint
+        -0.12, // in6: scent diff
+        0.707, // in7: sin bearing
+        0.707, // in8: cos bearing
+        0.85,  // in9: distance perception
+        0.33,  // in10: density
+        0.15,  // in11: age
+        -0.42, // in12: temporal sine
+        0.55,  // in13: forward velocity
+        -0.20, // in14: neighbor energy
     ];
 
     let sensory_f32: [f32; 15] = sensory_inputs.map(|v| v as f32);
@@ -141,7 +141,10 @@ fn test_gpu_compute_driver_brain_dispatch_matches_cpu() {
         assert!(
             diff < 0.05,
             "Hidden unit {} differs: CPU {}, GPU {} (diff {})",
-            j, cpu_h[j], gpu_h[j], diff
+            j,
+            cpu_h[j],
+            gpu_h[j],
+            diff
         );
     }
 }

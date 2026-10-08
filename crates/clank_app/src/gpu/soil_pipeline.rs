@@ -1,11 +1,9 @@
 //! GPU Soil Simulation Pipeline & Direct Texture Generation
 //!
-//! Manages the persistent 60 KB atomic soil storage buffer (3,750 cells)
-//! and direct rasterization into dual `rgba16float` textures:
-//! 1. `soil_data`: Raw physics scalars [f, t, s, 1.0] for zero-ALU bilinear feeler sensing.
-//! 2. `soil_display`: Colormapped RGBA display for direct Bevy SoilSprite presentation.
+//! Manages the persistent 60 KB atomic soil storage buffer (3,750 cells), which creatures
+//! read with point loads, and `soil_display`, the colormap copied into the Bevy SoilSprite.
 
-use super::types::GpuSoilCell;
+use super::types::{GpuSoilCell, SOIL_FIXED_SCALE};
 
 pub const GRID_WIDTH: u32 = 75;
 pub const GRID_HEIGHT: u32 = 50;
@@ -26,14 +24,14 @@ pub struct SoilParams {
 pub struct GpuSoilPipeline;
 
 impl GpuSoilPipeline {
-    /// Converts raw continuous physics values to fixed-point integer millijoules/milligrams.
+    /// Converts raw continuous physics values to fixed-point cell values (`SOIL_FIXED_SCALE`).
     #[inline]
     pub fn from_physics(food: f32, taint: f32, scent: f32) -> GpuSoilCell {
         GpuSoilCell {
-            food_milli: (food * 1000.0).round() as i32,
-            taint_milli: (taint * 1000.0).round() as i32,
-            scent_milli: (scent * 1000.0).round() as i32,
-            fertility_milli: 1000,
+            food_micro: (food * SOIL_FIXED_SCALE).round() as i32,
+            taint_micro: (taint * SOIL_FIXED_SCALE).round() as i32,
+            scent_micro: (scent * SOIL_FIXED_SCALE).round() as i32,
+            fertility_micro: SOIL_FIXED_SCALE as i32,
         }
     }
 
@@ -41,9 +39,9 @@ impl GpuSoilPipeline {
     #[inline]
     pub fn to_physics(cell: &GpuSoilCell) -> (f32, f32, f32) {
         (
-            cell.food_milli as f32 * 0.001,
-            cell.taint_milli as f32 * 0.001,
-            cell.scent_milli as f32 * 0.001,
+            cell.food_micro as f32 / SOIL_FIXED_SCALE,
+            cell.taint_micro as f32 / SOIL_FIXED_SCALE,
+            cell.scent_micro as f32 / SOIL_FIXED_SCALE,
         )
     }
 
@@ -82,12 +80,6 @@ impl GpuSoilPipeline {
 
             *cell = Self::from_physics(f, t, s);
         }
-    }
-
-    /// Evaluates raw physics output for `soil_data` texture (`rgba16float`).
-    #[inline]
-    pub fn evaluate_soil_data(food: f32, taint: f32, scent: f32) -> [f32; 4] {
-        [food, taint, scent, 1.0]
     }
 
     /// Evaluates display colormap for `soil_display` texture (`rgba16float`).

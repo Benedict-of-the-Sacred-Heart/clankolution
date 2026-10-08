@@ -58,17 +58,21 @@ fn test_long_run_gpu_behavior() {
             assert!(
                 telem.population <= 340,
                 "Tick {}: Population {} exceeded carrying capacity 340",
-                tick, telem.population
+                tick,
+                telem.population
             );
             assert!(
                 telem.population >= 15,
                 "Tick {}: Population {} collapsed below threshold 15",
-                tick, telem.population
+                tick,
+                telem.population
             );
             assert!(
                 telem.freelist_top <= driver.max_agents,
                 "Tick {}: Freelist top {} exceeded max agents {}",
-                tick, telem.freelist_top, driver.max_agents
+                tick,
+                telem.freelist_top,
+                driver.max_agents
             );
         }
     }

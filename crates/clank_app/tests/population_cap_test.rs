@@ -1,36 +1,30 @@
+use bytemuck::Zeroable;
 use clank_app::gpu::bridge::{sync_gpu_to_rust, sync_rust_to_gpu};
 use clank_app::gpu::types::*;
 use clank_app::sim::SimWorld;
 use clank_core::World;
-use bytemuck::Zeroable;
 
 #[test]
-fn test_core_seed_life_at_strict_capacity() {
+fn test_core_seed_life_at_follows_original_cap_rule() {
+    // Original seed tool (clankolution.html @ dfe8dc6): `if (agents.length < CAP)` spawn two.
     let mut world = World::new(12345);
     world.set_max_capacity(15);
     assert_eq!(world.max_cap, 15);
-    assert!(world.agents.len() <= 15);
+    assert_eq!(world.agents.len(), 15);
 
-    // Living agents is 15. Calling seed_life_at should NOT increase agents above 15
+    // At the cap: nothing is seeded.
     world.seed_life_at(100.0, 100.0);
-    let living = world.agents.iter().filter(|a| a.dead == 0).count();
-    assert_eq!(living, 15);
+    assert_eq!(world.agents.len(), 15);
 
-    // Kill 2 agents
-    world.agents[0].dead = 1;
-    world.agents[1].dead = 1;
-    let living_before = world.agents.iter().filter(|a| a.dead == 0).count();
-    assert_eq!(living_before, 13);
-
-    // Now seed_life_at (which tries to seed 2) should increase to exactly 15, not exceed
+    // One below the cap: two are seeded, ending at CAP + 1.
+    world.agents.truncate(14);
+    world.sync_pos_cache();
     world.seed_life_at(100.0, 100.0);
-    let living_after = world.agents.iter().filter(|a| a.dead == 0).count();
-    assert_eq!(living_after, 15);
+    assert_eq!(world.agents.len(), 16);
 
-    // Call seed_life_at again when already at 15
+    // Above the cap: nothing is seeded.
     world.seed_life_at(100.0, 100.0);
-    let living_capped = world.agents.iter().filter(|a| a.dead == 0).count();
-    assert_eq!(living_capped, 15);
+    assert_eq!(world.agents.len(), 16);
 }
 
 #[test]

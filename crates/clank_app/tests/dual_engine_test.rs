@@ -37,12 +37,12 @@ fn test_dual_engine_live_hotswap_parity() {
     let restored_count = sim2.world.agents.iter().filter(|a| a.dead == 0).count();
     assert_eq!(restored_count, initial_agent_count);
 
-    // 3. Roots (0..15), generations, IDs preserved
+    // 3. Full-width roots, generations, IDs preserved
     for (a1, a2) in sim.world.agents.iter().zip(sim2.world.agents.iter()) {
         assert_eq!(a1.id, a2.id);
         assert_eq!(a1.dead, a2.dead);
         if a1.dead == 0 {
-            assert_eq!(a1.root % 16, a2.root);
+            assert_eq!(a1.root, a2.root);
             assert_eq!(a1.gen, a2.gen);
             assert!((a1.energy - a2.energy).abs() < 1e-2);
         }
@@ -50,7 +50,7 @@ fn test_dual_engine_live_hotswap_parity() {
 }
 
 #[test]
-fn test_gpu_telemetry_and_extinction_detection() {
+fn test_gpu_telemetry_fields() {
     let telemetry = GpuTelemetry {
         population: 150,
         kills: 12,
@@ -67,16 +67,13 @@ fn test_gpu_telemetry_and_extinction_detection() {
         total_births: 8,
         total_deaths: 17,
         max_generation: 15,
-        extinctions: 3,
-        lineage_counts: [10, 0, 15, 20, 0, 5, 8, 12, 14, 0, 11, 9, 13, 16, 7, 10],
+        living_lineages: 12,
+        ..Default::default()
     };
 
     assert_eq!(std::mem::size_of::<GpuTelemetry>(), 128);
     assert_eq!(telemetry.apex_record_milli, 85_400);
-
-    // Check extinction detection via zero-search:
-    let extinct_roots = GpuSimBridge::detect_extinct_lineages(&telemetry.lineage_counts);
-    assert_eq!(extinct_roots, vec![1, 4, 9]);
+    assert_eq!(telemetry.living_lineages, 12);
 }
 
 #[test]
@@ -90,7 +87,7 @@ fn test_two_tier_uncapped_picking_disambiguation() {
         meta_flags: 0,
         age_gen: 0,
         morton_code: 0,
-        packed_color: 0,
+        root: 0,
         visual_cache: 1,
     };
 
@@ -103,7 +100,7 @@ fn test_two_tier_uncapped_picking_disambiguation() {
         meta_flags: 0,
         age_gen: 0,
         morton_code: 0,
-        packed_color: 0,
+        root: 0,
         visual_cache: 1,
     };
 
@@ -126,16 +123,8 @@ fn test_two_tier_uncapped_picking_disambiguation() {
 }
 
 #[test]
-fn test_mating_canonical_symmetry_and_sexual_selection_mod() {
-    // 1. Canonical Symmetry: suitor ID must be < partner ID (or partner_id > agent_id)
+fn test_mating_canonical_symmetry() {
+    // Canonical Symmetry: suitor ID must be < partner ID (or partner_id > agent_id)
     assert!(GpuSimBridge::should_propose_mating(10, 20)); // 10 proposes to 20
     assert!(!GpuSimBridge::should_propose_mating(20, 10)); // 20 does NOT propose to 10 (cuts bus contention 50%)
-
-    // 2. Mod 3 Sexual Selection Tournament: suitor bid comparison
-    let current_bid = 50_000u32; // 50.0 energy
-    let lower_bid = 40_000u32;
-    let higher_bid = 65_000u32;
-
-    assert!(!GpuSimBridge::tournament_bid_wins(lower_bid, current_bid));
-    assert!(GpuSimBridge::tournament_bid_wins(higher_bid, current_bid));
 }

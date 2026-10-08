@@ -3,8 +3,8 @@
 //! Consumes the GPU consolidated 256-voice queue and plays granular audio
 //! events (bite/attack, kill, birth) with toroidal seam culling and zoom-modulated volume.
 
-use bevy::prelude::*;
 use crate::gpu::types::AudioVoice;
+use bevy::prelude::*;
 
 /// Event type constants matching WGSL audio emitter:
 pub const EVENT_ATTACK: u32 = 0;

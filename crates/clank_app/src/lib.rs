@@ -1,9 +1,10 @@
-pub mod sim;
-pub mod persistence;
-pub mod camera;
-pub mod rendering;
-pub mod ui;
-pub mod theme;
 pub mod api;
-pub mod gpu;
 pub mod audio;
+pub mod camera;
+pub mod creature_pass;
+pub mod gpu;
+pub mod persistence;
+pub mod rendering;
+pub mod sim;
+pub mod theme;
+pub mod ui;

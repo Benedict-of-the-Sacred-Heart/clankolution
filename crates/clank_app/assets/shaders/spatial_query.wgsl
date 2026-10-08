@@ -50,7 +50,7 @@ struct GpuAgentState {
     meta_flags: u32,
     age_gen: u32,
     morton_code: u32,
-    packed_color: u32,
+    root: u32,
     visual_cache: u32,
 }
 
@@ -70,8 +70,11 @@ struct GpuTelemetry {
     total_births: u32,
     total_deaths: u32,
     max_generation: u32,
-    extinctions: u32,
-    lineage_counts: array<u32, 16>,
+    living_lineages: u32,
+    live_count: u32,
+    pending_free_count: u32,
+    available_slots: u32,
+    reserved1: array<u32, 13>,
 }
 
 struct BirthEvent {
@@ -155,7 +158,9 @@ fn spatial_query_main(@builtin(global_invocation_id) id: vec3u) {
     if (params.tool_type == 0u /* inspect/pick */) {
         if (id.x != 0u) { return; }
 
-        if (params.agent_count == 0u) {
+        // The tree holds this sub-tick's live keys (live_count, from the spatial sort).
+        let live_count = queue_buffer.telemetry.live_count;
+        if (live_count == 0u) {
             queue_buffer.telemetry.selected_agent_idx = 0xFFFFFFFFu;
             queue_buffer.telemetry.selected_agent_id = 0u;
             return;
@@ -163,7 +168,7 @@ fn spatial_query_main(@builtin(global_invocation_id) id: vec3u) {
 
         var search_r = clamp(16.0 * (params.camera_size[0] / params.world_size.x), 4.0, 24.0);
 
-        if (params.agent_count == 1u) {
+        if (live_count == 1u) {
             let slot = lbvh_nodes[0].leaf_idx;
             if (slot < params.max_agents) {
                 let agent_pos = agent_states[slot].pos_vel.xy;
@@ -192,9 +197,15 @@ fn spatial_query_main(@builtin(global_invocation_id) id: vec3u) {
         stack[stack_ptr] = 0u; // Root
         stack_ptr += 1u;
 
-        while (stack_ptr > 0u) {
+        // Bounded walk: a valid tree has 2n - 1 nodes, so more visits than that means a corrupt
+        // tree. Stop rather than loop (an unbounded walk on a cyclic tree froze the machine).
+        let node_count = 2u * live_count - 1u;
+        var visits = 0u;
+        while (stack_ptr > 0u && visits < node_count) {
+            visits += 1u;
             stack_ptr -= 1u;
             let node_idx = stack[stack_ptr];
+            if (node_idx >= node_count) { continue; }
             let node = lbvh_nodes[node_idx];
 
             let box_dist = distance_to_aabb(tool_pos, node.aabb_min, node.aabb_max);
@@ -244,9 +255,11 @@ fn spatial_query_main(@builtin(global_invocation_id) id: vec3u) {
         if ((m_flags & (1u << 13u)) != 0u) { return; }
 
         let pos = agent_states[agent_idx].pos_vel.xy;
-        let d = toroidal_dist(tool_pos, pos);
+        // Extinguish (World::extinguish_at): plain Math.hypot distance to the cursor as given,
+        // not toroidal and not wrapped, strictly inside the radius.
+        let d = distance(params.tool_pos, pos);
         let aoe_radius = select(params.tool_radius, 23.0, params.tool_radius <= 0.0);
-        if (d <= aoe_radius) {
+        if (d < aoe_radius) {
             if (params.tool_type == 3u) {
                 // Extinguish: kill agent by setting energy to 0.
                 // Standard atomic death resolution runs in agent_step (depositing corpse & pushing freelist).
@@ -300,7 +313,7 @@ fn frustum_cull_main(@builtin(global_invocation_id) id: vec3u) {
             let angle = state.angle_energy[0];
             dart_instances[slot].pos_angle = vec3f(pos.x, pos.y, angle);
             dart_instances[slot].pad0 = state.traits[0].w;
-            dart_instances[slot].vis_data = vec2u(state.packed_color, state.visual_cache);
+            dart_instances[slot].vis_data = vec2u(state.root, state.visual_cache);
             let carn_u8 = u32(clamp(state.traits[1].y, 0.0, 1.0) * 255.0);
             let packed_carn_id = (carn_u8 << 24u) | (state.id & 0x00FFFFFFu);
             dart_instances[slot].pad1 = vec2u(packed_carn_id, bitcast<u32>(state.traits[0].z));

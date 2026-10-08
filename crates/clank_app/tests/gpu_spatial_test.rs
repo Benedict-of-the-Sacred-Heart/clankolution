@@ -39,7 +39,7 @@ fn test_lbvh_degenerate_population_guard() {
         meta_flags: 0,
         age_gen: 0,
         morton_code: compute_morton_32([450.0, 300.0]),
-        packed_color: 0,
+        root: 0,
         visual_cache: 0,
     };
 
@@ -70,7 +70,14 @@ fn test_lbvh_uncapped_mouse_picking_with_dynamic_radius_shrinking() {
     // Agent 1 at (102.5, 100.0) with trait 0.0 (visual_r = 2.0) - halo candidate for cursor at (100.0, 100.0)
     // Agent 2 far away at (500.0, 500.0)
     let mut agents = Vec::new();
-    for (i, &(x, y)) in [(100.0f32, 100.0f32), (102.5f32, 100.0f32), (500.0f32, 500.0f32)].iter().enumerate() {
+    for (i, &(x, y)) in [
+        (100.0f32, 100.0f32),
+        (102.5f32, 100.0f32),
+        (500.0f32, 500.0f32),
+    ]
+    .iter()
+    .enumerate()
+    {
         agents.push(GpuAgentState {
             pos_vel: [x, y, 0.0, 0.0],
             angle_energy: [0.0, 100.0, 0.0, 0.0],
@@ -80,7 +87,7 @@ fn test_lbvh_uncapped_mouse_picking_with_dynamic_radius_shrinking() {
             meta_flags: 0,
             age_gen: 0,
             morton_code: compute_morton_32([x, y]),
-            packed_color: 0,
+            root: 0,
             visual_cache: 0,
         });
     }
@@ -106,7 +113,12 @@ fn test_lbvh_uncapped_mouse_picking_with_dynamic_radius_shrinking() {
 #[test]
 fn test_lbvh_aoe_tool_bounding_box_query() {
     let mut agents = Vec::new();
-    for &(x, y) in &[(100.0f32, 100.0f32), (120.0f32, 100.0f32), (150.0f32, 100.0f32), (400.0f32, 400.0f32)] {
+    for &(x, y) in &[
+        (100.0f32, 100.0f32),
+        (120.0f32, 100.0f32),
+        (150.0f32, 100.0f32),
+        (400.0f32, 400.0f32),
+    ] {
         agents.push(GpuAgentState {
             pos_vel: [x, y, 0.0, 0.0],
             angle_energy: [0.0, 100.0, 0.0, 0.0],
@@ -116,7 +128,7 @@ fn test_lbvh_aoe_tool_bounding_box_query() {
             meta_flags: 0,
             age_gen: 0,
             morton_code: compute_morton_32([x, y]),
-            packed_color: 0,
+            root: 0,
             visual_cache: 0,
         });
     }
@@ -132,18 +144,21 @@ fn test_lbvh_aoe_tool_bounding_box_query() {
 
 #[test]
 fn test_spatial_query_single_agent_non_zero_slot() {
-    let mut agents = vec![GpuAgentState {
-        pos_vel: [0.0; 4],
-        angle_energy: [0.0; 4],
-        traits: [0.0; 8],
-        hidden: [0.0; 10],
-        id: 0,
-        meta_flags: 1 << 13, // dead tombstone
-        age_gen: 0,
-        morton_code: 0,
-        packed_color: 0,
-        visual_cache: 0,
-    }; 100];
+    let mut agents = vec![
+        GpuAgentState {
+            pos_vel: [0.0; 4],
+            angle_energy: [0.0; 4],
+            traits: [0.0; 8],
+            hidden: [0.0; 10],
+            id: 0,
+            meta_flags: 1 << 13, // dead tombstone
+            age_gen: 0,
+            morton_code: 0,
+            root: 0,
+            visual_cache: 0,
+        };
+        100
+    ];
 
     // Single living agent at slot 42
     agents[42] = GpuAgentState {
@@ -155,7 +170,7 @@ fn test_spatial_query_single_agent_non_zero_slot() {
         meta_flags: 0, // alive
         age_gen: 0,
         morton_code: compute_morton_32([200.0, 200.0]),
-        packed_color: 0,
+        root: 0,
         visual_cache: 0,
     };
 
@@ -185,7 +200,7 @@ fn test_cell_offsets_population_from_sorted_keys() {
             meta_flags: 0,
             age_gen: 0,
             morton_code: compute_morton_32([50.0, 50.0]),
-            packed_color: 0,
+            root: 0,
             visual_cache: 0,
         });
         keys.push([agents[i].morton_code, i as u32]);
@@ -201,7 +216,7 @@ fn test_cell_offsets_population_from_sorted_keys() {
         meta_flags: 0,
         age_gen: 0,
         morton_code: compute_morton_32([150.0, 50.0]),
-        packed_color: 0,
+        root: 0,
         visual_cache: 0,
     });
     keys.push([agents[2].morton_code, 2u32]);
@@ -236,7 +251,7 @@ fn test_lbvh_phase2_aabb_fitting_correctness() {
             meta_flags: (i as u32) % 4,
             age_gen: 0,
             morton_code: compute_morton_32(pos),
-            packed_color: 0,
+            root: 0,
             visual_cache: 0,
         });
     }
@@ -279,7 +294,7 @@ fn test_lbvh_minimap_lod_clusters() {
             meta_flags: i as u32 % 4,
             age_gen: 0,
             morton_code: compute_morton_32([(i as f32) * 50.0, 100.0]),
-            packed_color: 0,
+            root: 0,
             visual_cache: 0,
         });
     }
@@ -304,7 +319,7 @@ fn test_lbvh_camera_frustum_culling() {
         meta_flags: 0,
         age_gen: 0,
         morton_code: compute_morton_32([200.0, 200.0]),
-        packed_color: 0,
+        root: 0,
         visual_cache: 1,
     });
     // Agent 1 outside viewport [700..800, 500..600]
@@ -317,7 +332,7 @@ fn test_lbvh_camera_frustum_culling() {
         meta_flags: 0,
         age_gen: 0,
         morton_code: compute_morton_32([750.0, 550.0]),
-        packed_color: 0,
+        root: 0,
         visual_cache: 1,
     });
 
@@ -325,6 +340,3 @@ fn test_lbvh_camera_frustum_culling() {
     let visible = tree.cull_frustum([100.0, 100.0], [300.0, 300.0], &agents);
     assert_eq!(visible, vec![0]);
 }
-
-
-

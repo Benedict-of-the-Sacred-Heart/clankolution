@@ -1,9 +1,9 @@
-use std::fs;
-use serde::Deserialize;
 use clank_app::gpu::compute_driver::GpuComputeDriver;
 use clank_app::gpu::types::*;
 use clank_core::agent::AgentData;
 use clank_core::world::World;
+use serde::Deserialize;
+use std::fs;
 
 #[derive(Deserialize)]
 struct ExportAgent {
@@ -97,9 +97,15 @@ fn test_html_vs_rust_vs_gpu_triple_parity() {
         ad.kills = a.kills;
         ad.dead = a.dead;
         ad.last_victim = a.last_victim;
-        for i in 0..6 { ad.tr[i] = a.tr[i]; }
-        for i in 0..10 { ad.h[i] = a.h[i]; }
-        for i in 0..326 { ad.genes[i] = a.genes[i]; }
+        for i in 0..6 {
+            ad.tr[i] = a.tr[i];
+        }
+        for i in 0..10 {
+            ad.h[i] = a.h[i];
+        }
+        for i in 0..326 {
+            ad.genes[i] = a.genes[i];
+        }
         rust_world.agents.push(ad);
     }
     rust_world.sync_pos_cache();
@@ -119,13 +125,24 @@ fn test_html_vs_rust_vs_gpu_triple_parity() {
         let mut st = GpuAgentState {
             pos_vel: [a.x as f32, a.y as f32, a.vx as f32, a.vy as f32],
             angle_energy: [a.angle as f32, a.energy as f32, 0.0, 0.0],
-            traits: [a.tr[0] as f32, a.tr[1] as f32, a.tr[2] as f32, a.tr[3] as f32, a.tr[4] as f32, a.tr[5] as f32, 0.0, a.last_victim as f32],
-            hidden: [a.h[0], a.h[1], a.h[2], a.h[3], a.h[4], a.h[5], a.h[6], a.h[7], a.h[8], a.h[9]],
+            traits: [
+                a.tr[0] as f32,
+                a.tr[1] as f32,
+                a.tr[2] as f32,
+                a.tr[3] as f32,
+                a.tr[4] as f32,
+                a.tr[5] as f32,
+                0.0,
+                a.last_victim as f32,
+            ],
+            hidden: [
+                a.h[0], a.h[1], a.h[2], a.h[3], a.h[4], a.h[5], a.h[6], a.h[7], a.h[8], a.h[9],
+            ],
             id: a.id,
             meta_flags: (a.root & 0xF) | (a.cooldown << 4) | (a.birth << 6) | (a.kills << 14),
             age_gen: (a.age & 0xFFFF) | (a.gen << 16),
             morton_code: 0,
-            packed_color: 0,
+            root: 0,
             visual_cache: 0,
         };
         let r_u8 = ((a.tr[0].clamp(0.0, 1.0)) * 255.0) as u32;
@@ -133,7 +150,9 @@ fn test_html_vs_rust_vs_gpu_triple_parity() {
         st.visual_cache = r_u8 | (e_u8 << 16);
         gpu_states.push(st);
 
-        let mut gen = GpuAgentGenome { packed_genes: [0u32; 88] };
+        let mut gen = GpuAgentGenome {
+            packed_genes: [0u32; 88],
+        };
         for w in 0..82 {
             let mut word = 0u32;
             for b in 0..4 {
@@ -166,11 +185,13 @@ fn test_html_vs_rust_vs_gpu_triple_parity() {
             meta_flags: 1 << 13, // dead
             age_gen: 0,
             morton_code: 0,
-            packed_color: 0,
+            root: 0,
             visual_cache: 0,
         };
         gpu_states.push(st);
-        gpu_genomes.push(GpuAgentGenome { packed_genes: [0; 88] });
+        gpu_genomes.push(GpuAgentGenome {
+            packed_genes: [0; 88],
+        });
         gpu_atomics.push(GpuAgentAtomic {
             energy_milli: 0,
             mate_claim: 0,
@@ -182,10 +203,10 @@ fn test_html_vs_rust_vs_gpu_triple_parity() {
     let mut soil_cells = Vec::with_capacity(3750);
     for i in 0..3750 {
         soil_cells.push(GpuSoilCell {
-            food_milli: (export.initial_food[i] * 1000.0) as i32,
-            taint_milli: (export.initial_taint[i] * 1000.0) as i32,
-            scent_milli: (export.initial_scent[i] * 1000.0) as i32,
-            fertility_milli: 0,
+            food_micro: (export.initial_food[i] * SOIL_FIXED_SCALE).round() as i32,
+            taint_micro: (export.initial_taint[i] * SOIL_FIXED_SCALE).round() as i32,
+            scent_micro: (export.initial_scent[i] * SOIL_FIXED_SCALE).round() as i32,
+            fertility_micro: 0,
         });
     }
 
@@ -211,7 +232,13 @@ fn test_html_vs_rust_vs_gpu_triple_parity() {
         epoch: 72,
     };
 
-    driver.upload_state(&gpu_states, &gpu_genomes, &gpu_atomics, &soil_cells, &gpu_params);
+    driver.upload_state(
+        &gpu_states,
+        &gpu_genomes,
+        &gpu_atomics,
+        &soil_cells,
+        &gpu_params,
+    );
 
     println!("\n==========================================================================");
     println!("TRIPLE PARITY TEST: HTML (GROUND TRUTH) VS RUST CPU VS GPU COMPUTE");
@@ -250,8 +277,12 @@ fn test_html_vs_rust_vs_gpu_triple_parity() {
             let gx = g_agent.pos_vel[0] as f64;
             let gy = g_agent.pos_vel[1] as f64;
 
-            let hr_dx = (h_agent.x - r_agent.x).abs().min(900.0 - (h_agent.x - r_agent.x).abs());
-            let hr_dy = (h_agent.y - r_agent.y).abs().min(600.0 - (h_agent.y - r_agent.y).abs());
+            let hr_dx = (h_agent.x - r_agent.x)
+                .abs()
+                .min(900.0 - (h_agent.x - r_agent.x).abs());
+            let hr_dy = (h_agent.y - r_agent.y)
+                .abs()
+                .min(600.0 - (h_agent.y - r_agent.y).abs());
             let hr_pos = (hr_dx * hr_dx + hr_dy * hr_dy).sqrt();
 
             let hg_dx = (h_agent.x - gx).abs().min(900.0 - (h_agent.x - gx).abs());
@@ -266,7 +297,8 @@ fn test_html_vs_rust_vs_gpu_triple_parity() {
             html_gpu_max_pos = html_gpu_max_pos.max(hg_pos);
             rust_gpu_max_pos = rust_gpu_max_pos.max(rg_pos);
 
-            html_rust_max_energy = html_rust_max_energy.max((h_agent.energy - r_agent.energy).abs());
+            html_rust_max_energy =
+                html_rust_max_energy.max((h_agent.energy - r_agent.energy).abs());
             html_gpu_max_energy = html_gpu_max_energy.max((h_agent.energy - g_energy).abs());
             rust_gpu_max_energy = rust_gpu_max_energy.max((r_agent.energy - g_energy).abs());
         }
@@ -304,17 +336,20 @@ fn test_html_vs_rust_vs_gpu_triple_parity() {
         assert!(
             html_rust_max_pos < 2.0,
             "Tick {}: HTML vs Rust pos divergence must stay < 2.0px, got {}",
-            t, html_rust_max_pos
+            t,
+            html_rust_max_pos
         );
         assert!(
             html_gpu_max_pos < 5.0,
             "Tick {}: HTML vs GPU pos divergence must stay < 5.0px, got {}",
-            t, html_gpu_max_pos
+            t,
+            html_gpu_max_pos
         );
         assert!(
             html_gpu_max_energy < 8.0,
             "Tick {}: HTML vs GPU energy divergence must stay < 8.0, got {}",
-            t, html_gpu_max_energy
+            t,
+            html_gpu_max_energy
         );
     }
 }
@@ -322,7 +357,9 @@ fn test_html_vs_rust_vs_gpu_triple_parity() {
 #[test]
 fn test_tick1_agent_breakdown() {
     let export_path = "../../scratch/html_sim_export.json";
-    if !std::path::Path::new(export_path).exists() { return; }
+    if !std::path::Path::new(export_path).exists() {
+        return;
+    }
     let json_str = fs::read_to_string(export_path).unwrap();
     let export: ExportRoot = serde_json::from_str(&json_str).unwrap();
     let driver = GpuComputeDriver::create_default().unwrap();
@@ -332,20 +369,39 @@ fn test_tick1_agent_breakdown() {
     rust_world.agents.clear();
     for a in &export.initial_agents {
         let mut ad = AgentData::default();
-        ad.id = a.id; ad.x = a.x; ad.y = a.y; ad.vx = a.vx; ad.vy = a.vy;
-        ad.angle = a.angle; ad.energy = a.energy; ad.root = a.root; ad.gen = a.gen;
-        ad.age = a.age; ad.cooldown = a.cooldown; ad.birth = a.birth; ad.kills = a.kills;
-        ad.dead = a.dead; ad.last_victim = a.last_victim;
-        for i in 0..6 { ad.tr[i] = a.tr[i]; }
-        for i in 0..10 { ad.h[i] = a.h[i]; }
-        for i in 0..326 { ad.genes[i] = a.genes[i]; }
+        ad.id = a.id;
+        ad.x = a.x;
+        ad.y = a.y;
+        ad.vx = a.vx;
+        ad.vy = a.vy;
+        ad.angle = a.angle;
+        ad.energy = a.energy;
+        ad.root = a.root;
+        ad.gen = a.gen;
+        ad.age = a.age;
+        ad.cooldown = a.cooldown;
+        ad.birth = a.birth;
+        ad.kills = a.kills;
+        ad.dead = a.dead;
+        ad.last_victim = a.last_victim;
+        for i in 0..6 {
+            ad.tr[i] = a.tr[i];
+        }
+        for i in 0..10 {
+            ad.h[i] = a.h[i];
+        }
+        for i in 0..326 {
+            ad.genes[i] = a.genes[i];
+        }
         rust_world.agents.push(ad);
     }
     rust_world.sync_pos_cache();
     rust_world.soil.food.copy_from_slice(&export.initial_food);
     rust_world.soil.taint.copy_from_slice(&export.initial_taint);
     rust_world.soil.scent.copy_from_slice(&export.initial_scent);
-    rust_world.growth = 100.0; rust_world.hostility = 100.0; rust_world.mutation = 16.0;
+    rust_world.growth = 100.0;
+    rust_world.hostility = 100.0;
+    rust_world.mutation = 16.0;
 
     let mut gpu_states = Vec::new();
     let mut gpu_genomes = Vec::new();
@@ -355,19 +411,34 @@ fn test_tick1_agent_breakdown() {
         let mut st = GpuAgentState {
             pos_vel: [a.x as f32, a.y as f32, a.vx as f32, a.vy as f32],
             angle_energy: [a.angle as f32, a.energy as f32, 0.0, 0.0],
-            traits: [a.tr[0] as f32, a.tr[1] as f32, a.tr[2] as f32, a.tr[3] as f32, a.tr[4] as f32, a.tr[5] as f32, 0.0, a.last_victim as f32],
-            hidden: [a.h[0], a.h[1], a.h[2], a.h[3], a.h[4], a.h[5], a.h[6], a.h[7], a.h[8], a.h[9]],
+            traits: [
+                a.tr[0] as f32,
+                a.tr[1] as f32,
+                a.tr[2] as f32,
+                a.tr[3] as f32,
+                a.tr[4] as f32,
+                a.tr[5] as f32,
+                0.0,
+                a.last_victim as f32,
+            ],
+            hidden: [
+                a.h[0], a.h[1], a.h[2], a.h[3], a.h[4], a.h[5], a.h[6], a.h[7], a.h[8], a.h[9],
+            ],
             id: a.id,
             meta_flags: (a.root & 0xF) | (a.cooldown << 4) | (a.birth << 6) | (a.kills << 14),
             age_gen: (a.age & 0xFFFF) | (a.gen << 16),
-            morton_code: 0, packed_color: 0, visual_cache: 0,
+            morton_code: 0,
+            root: 0,
+            visual_cache: 0,
         };
         let r_u8 = ((a.tr[0].clamp(0.0, 1.0)) * 255.0) as u32;
         let e_u8 = ((a.energy / 100.0).clamp(0.0, 1.0) * 255.0) as u32;
         st.visual_cache = r_u8 | (e_u8 << 16);
         gpu_states.push(st);
 
-        let mut gen = GpuAgentGenome { packed_genes: [0u32; 88] };
+        let mut gen = GpuAgentGenome {
+            packed_genes: [0u32; 88],
+        };
         for w in 0..82 {
             let mut word = 0u32;
             for b in 0..4 {
@@ -382,38 +453,75 @@ fn test_tick1_agent_breakdown() {
         gpu_genomes.push(gen);
         gpu_atomics.push(GpuAgentAtomic {
             energy_milli: (a.energy * 1000.0) as i32,
-            mate_claim: 0, mate_energy_milli: 0, dead_claimed: 0,
+            mate_claim: 0,
+            mate_energy_milli: 0,
+            dead_claimed: 0,
         });
     }
 
     for _ in n..10000 {
         gpu_states.push(GpuAgentState {
-            pos_vel: [0.0; 4], angle_energy: [0.0; 4], traits: [0.0; 8], hidden: [0.0; 10],
-            id: 0, meta_flags: 1 << 13, age_gen: 0, morton_code: 0, packed_color: 0, visual_cache: 0,
+            pos_vel: [0.0; 4],
+            angle_energy: [0.0; 4],
+            traits: [0.0; 8],
+            hidden: [0.0; 10],
+            id: 0,
+            meta_flags: 1 << 13,
+            age_gen: 0,
+            morton_code: 0,
+            root: 0,
+            visual_cache: 0,
         });
-        gpu_genomes.push(GpuAgentGenome { packed_genes: [0; 88] });
-        gpu_atomics.push(GpuAgentAtomic { energy_milli: 0, mate_claim: 0, mate_energy_milli: 0, dead_claimed: 1 });
+        gpu_genomes.push(GpuAgentGenome {
+            packed_genes: [0; 88],
+        });
+        gpu_atomics.push(GpuAgentAtomic {
+            energy_milli: 0,
+            mate_claim: 0,
+            mate_energy_milli: 0,
+            dead_claimed: 1,
+        });
     }
 
     let mut soil_cells = Vec::new();
     for i in 0..3750 {
         soil_cells.push(GpuSoilCell {
-            food_milli: (export.initial_food[i] * 1000.0) as i32,
-            taint_milli: (export.initial_taint[i] * 1000.0) as i32,
-            scent_milli: (export.initial_scent[i] * 1000.0) as i32,
-            fertility_milli: 0,
+            food_micro: (export.initial_food[i] * SOIL_FIXED_SCALE).round() as i32,
+            taint_micro: (export.initial_taint[i] * SOIL_FIXED_SCALE).round() as i32,
+            scent_micro: (export.initial_scent[i] * SOIL_FIXED_SCALE).round() as i32,
+            fertility_micro: 0,
         });
     }
 
     let params = GpuSimParams {
-        tick: 0, agent_count: n as u32, max_agents: 10000, max_capacity: 340,
-        hostility: 1.0, mut_rate: 0.16, speed: 1.0, renewal: 1.0,
-        sub_tick: 0, sub_ticks_per_frame: 1, tool_type: 0xFFFFFFFF, tool_radius: 45.0,
-        tool_pos: [0.0, 0.0], camera_pos: [450.0, 300.0], camera_size: [900.0, 600.0],
-        world_size: [900.0, 600.0], soil_grid: [75, 50], eclipse: 0, epoch: 72,
+        tick: 0,
+        agent_count: n as u32,
+        max_agents: 10000,
+        max_capacity: 340,
+        hostility: 1.0,
+        mut_rate: 0.16,
+        speed: 1.0,
+        renewal: 1.0,
+        sub_tick: 0,
+        sub_ticks_per_frame: 1,
+        tool_type: 0xFFFFFFFF,
+        tool_radius: 45.0,
+        tool_pos: [0.0, 0.0],
+        camera_pos: [450.0, 300.0],
+        camera_size: [900.0, 600.0],
+        world_size: [900.0, 600.0],
+        soil_grid: [75, 50],
+        eclipse: 0,
+        epoch: 72,
     };
 
-    driver.upload_state(&gpu_states, &gpu_genomes, &gpu_atomics, &soil_cells, &params);
+    driver.upload_state(
+        &gpu_states,
+        &gpu_genomes,
+        &gpu_atomics,
+        &soil_cells,
+        &params,
+    );
 
     rust_world.evolve();
     driver.dispatch_sub_ticks(1, &params);
@@ -430,18 +538,52 @@ fn test_tick1_agent_breakdown() {
         let ge = (g_atomics[i].energy_milli as f64) * 0.001;
 
         println!("Agent {}:", i);
-        println!("  X:     HTML={:.6}, Rust={:.6}, GPU={:.6}", h.x, r.x, g.pos_vel[0]);
-        println!("  Y:     HTML={:.6}, Rust={:.6}, GPU={:.6}", h.y, r.y, g.pos_vel[1]);
-        println!("  VX:    HTML={:.6}, Rust={:.6}, GPU={:.6}", h.vx, r.vx, g.pos_vel[2]);
-        println!("  VY:    HTML={:.6}, Rust={:.6}, GPU={:.6}", h.vy, r.vy, g.pos_vel[3]);
-        println!("  Angle: HTML={:.6}, Rust={:.6}, GPU={:.6}", h.angle, r.angle, g.angle_energy[0]);
-        println!("  E:     HTML={:.6}, Rust={:.6}, GPU={:.6} (diff={:.6})", h.energy, r.energy, ge, (r.energy - ge).abs());
-        println!("  Feed:  HTML={:.6}, Rust={:.6}, GPU={:.6}", h.feeding, r.feeding, g.angle_energy[2]);
-        println!("  Atk:   HTML={:.6}, Rust={:.6}, GPU={:.6}", h.attack, r.attack, g.angle_energy[3]);
+        println!(
+            "  X:     HTML={:.6}, Rust={:.6}, GPU={:.6}",
+            h.x, r.x, g.pos_vel[0]
+        );
+        println!(
+            "  Y:     HTML={:.6}, Rust={:.6}, GPU={:.6}",
+            h.y, r.y, g.pos_vel[1]
+        );
+        println!(
+            "  VX:    HTML={:.6}, Rust={:.6}, GPU={:.6}",
+            h.vx, r.vx, g.pos_vel[2]
+        );
+        println!(
+            "  VY:    HTML={:.6}, Rust={:.6}, GPU={:.6}",
+            h.vy, r.vy, g.pos_vel[3]
+        );
+        println!(
+            "  Angle: HTML={:.6}, Rust={:.6}, GPU={:.6}",
+            h.angle, r.angle, g.angle_energy[0]
+        );
+        println!(
+            "  E:     HTML={:.6}, Rust={:.6}, GPU={:.6} (diff={:.6})",
+            h.energy,
+            r.energy,
+            ge,
+            (r.energy - ge).abs()
+        );
+        println!(
+            "  Feed:  HTML={:.6}, Rust={:.6}, GPU={:.6}",
+            h.feeding, r.feeding, g.angle_energy[2]
+        );
+        println!(
+            "  Atk:   HTML={:.6}, Rust={:.6}, GPU={:.6}",
+            h.attack, r.attack, g.angle_energy[3]
+        );
         if i == 0 {
             println!("  Hidden states for Agent 0:");
             for k in 0..10 {
-                println!("    h[{}]: HTML={:.6}, Rust={:.6}, GPU={:.6} (diff={:.6})", k, h.h[k], r.h[k], g.hidden[k], (r.h[k] - g.hidden[k]).abs());
+                println!(
+                    "    h[{}]: HTML={:.6}, Rust={:.6}, GPU={:.6} (diff={:.6})",
+                    k,
+                    h.h[k],
+                    r.h[k],
+                    g.hidden[k],
+                    (r.h[k] - g.hidden[k]).abs()
+                );
             }
         }
     }

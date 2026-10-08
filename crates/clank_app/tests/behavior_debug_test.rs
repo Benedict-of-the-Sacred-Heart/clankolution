@@ -1,6 +1,6 @@
-use clank_app::sim::SimWorld;
-use clank_app::gpu::compute_driver::GpuComputeDriver;
 use clank_app::gpu::bridge::sync_rust_to_gpu;
+use clank_app::gpu::compute_driver::GpuComputeDriver;
+use clank_app::sim::SimWorld;
 
 #[test]
 fn test_behavior_divergence_debug() {
@@ -14,9 +14,15 @@ fn test_behavior_divergence_debug() {
     let mut sim_rust = SimWorld::new(42);
     let mut sim_gpu = SimWorld::new(42);
     let n = 50;
-    sim_rust.world.agents.resize(n, clank_core::agent::AgentData::default());
+    sim_rust
+        .world
+        .agents
+        .resize(n, clank_core::agent::AgentData::default());
     sim_rust.world.max_cap = 340;
-    sim_gpu.world.agents.resize(n, clank_core::agent::AgentData::default());
+    sim_gpu
+        .world
+        .agents
+        .resize(n, clank_core::agent::AgentData::default());
     sim_gpu.world.max_cap = 340;
 
     for i in 0..n {
@@ -59,8 +65,14 @@ fn test_behavior_divergence_debug() {
     sim_rust.world.evolve();
     let r0 = &sim_rust.world.agents[0];
     let r1 = &sim_rust.world.agents[1];
-    println!("Post-Tick 1 Rust A0: pos=({:.3}, {:.3}) energy={:.3} cooldown={} attack={:.3}", r0.x, r0.y, r0.energy, r0.cooldown, r0.attack);
-    println!("Post-Tick 1 Rust A1: pos=({:.3}, {:.3}) energy={:.3}", r1.x, r1.y, r1.energy);
+    println!(
+        "Post-Tick 1 Rust A0: pos=({:.3}, {:.3}) energy={:.3} cooldown={} attack={:.3}",
+        r0.x, r0.y, r0.energy, r0.cooldown, r0.attack
+    );
+    println!(
+        "Post-Tick 1 Rust A1: pos=({:.3}, {:.3}) energy={:.3}",
+        r1.x, r1.y, r1.energy
+    );
 
     // Step GPU 1 tick
     params.tick = 0;
@@ -98,8 +110,14 @@ fn test_behavior_divergence_debug() {
     sim_rust.world.evolve();
     let r0 = &sim_rust.world.agents[0];
     let r1 = &sim_rust.world.agents[1];
-    println!("Post-Combat Rust A0: energy={:.3} kills={} cooldown={} attack={:.3}", r0.energy, r0.kills, r0.cooldown, r0.attack);
-    println!("Post-Combat Rust A1: dead={} energy={:.3}", r1.dead, r1.energy);
+    println!(
+        "Post-Combat Rust A0: energy={:.3} kills={} cooldown={} attack={:.3}",
+        r0.energy, r0.kills, r0.cooldown, r0.attack
+    );
+    println!(
+        "Post-Combat Rust A1: dead={} energy={:.3}",
+        r1.dead, r1.energy
+    );
 
     params.tick = 1;
     params.sub_tick = 0;
@@ -117,6 +135,12 @@ fn test_behavior_divergence_debug() {
     let g0_kills = (g0.meta_flags >> 14) & 0x3FFFF;
     let g0_cooldown = (g0.meta_flags >> 4) & 0x03;
     let g1_dead = (g1.meta_flags & (1 << 13)) != 0;
-    println!("Post-Combat GPU  A0: energy={:.3} kills={} cooldown={} attack={:.3} telem_kills={}", g0_energy, g0_kills, g0_cooldown, g0.angle_energy[3], telem.kills);
-    println!("Post-Combat GPU  A1: dead={} energy={:.3}", g1_dead, g1_energy);
+    println!(
+        "Post-Combat GPU  A0: energy={:.3} kills={} cooldown={} attack={:.3} telem_kills={}",
+        g0_energy, g0_kills, g0_cooldown, g0.angle_energy[3], telem.kills
+    );
+    println!(
+        "Post-Combat GPU  A1: dead={} energy={:.3}",
+        g1_dead, g1_energy
+    );
 }

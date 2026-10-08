@@ -42,7 +42,7 @@ fn create_mock_agents(n: usize) -> (Vec<GpuAgentState>, Vec<GpuAgentGenome>) {
             meta_flags: (i as u32 % 16),
             age_gen: ((i as u32 % 50) << 16) | (i as u32 % 1000),
             morton_code: morton,
-            packed_color: 0xFF223344,
+            root: i as u32 % 72,
             visual_cache: 0x01020304,
         });
 
@@ -175,7 +175,8 @@ fn bench_morton_encoding_and_sorting(scales: &[usize]) {
             format!("{:.1} µs", elapsed_sort.as_nanos() as f64 / 1000.0)
         };
 
-        let total_throughput_mops = (n as f64 / (elapsed_enc + elapsed_sort).as_secs_f64()) / 1_000_000.0;
+        let total_throughput_mops =
+            (n as f64 / (elapsed_enc + elapsed_sort).as_secs_f64()) / 1_000_000.0;
 
         println!(
             "| {:>14} | {:>12} | {:>11.2} ns | {:>10} | {:>10.2} M/s |",
@@ -230,7 +231,11 @@ fn bench_lbvh_construction(scales: &[usize]) {
 
         println!(
             "| {:>14} | {:>16} | {:>13.2} ns | {:>8.2} M/s | {:>10} |",
-            n, total_str, per_node_ns, build_rate_mops, 2 * n - 1
+            n,
+            total_str,
+            per_node_ns,
+            build_rate_mops,
+            2 * n - 1
         );
     }
 }
@@ -340,7 +345,15 @@ fn bench_soil_diffusion_and_grazing() {
     println!("| Component | Total Time | Per-Cell Latency | Throughput |");
     println!("| :--- | :--- | :--- | :--- |");
 
-    let mut cells = vec![GpuSoilCell { food_milli: 1000, taint_milli: 0, scent_milli: 0, fertility_milli: 1000 }; 3750];
+    let mut cells = vec![
+        GpuSoilCell {
+            food_micro: 1_000_000,
+            taint_micro: 0,
+            scent_micro: 0,
+            fertility_micro: 1_000_000
+        };
+        3750
+    ];
     let bloom_table = vec![1.0f32; 3750];
     let iters = 5_000;
 
@@ -355,7 +368,9 @@ fn bench_soil_diffusion_and_grazing() {
 
     println!(
         "| Soil Decay & Diffusion | {:>7.2} µs | {:>13.2} ns | {:>8.2} M/s |",
-        elapsed.as_nanos() as f64 / 1000.0, per_cell_ns, throughput
+        elapsed.as_nanos() as f64 / 1000.0,
+        per_cell_ns,
+        throughput
     );
 }
 
@@ -369,7 +384,9 @@ fn bench_state_hotswap_bridge(scales: &[usize]) {
             continue; // Live sim bridge max capacity
         }
         let mut sim = SimWorld::new(42);
-        sim.world.agents.resize(n, clank_core::agent::AgentData::default());
+        sim.world
+            .agents
+            .resize(n, clank_core::agent::AgentData::default());
         sim.world.max_cap = n;
 
         let iters = if n >= 32_768 { 5 } else { 30 };

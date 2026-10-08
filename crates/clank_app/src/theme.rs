@@ -1,5 +1,7 @@
+use bevy_egui::egui::{
+    self, Color32, CornerRadius, FontData, FontDefinitions, FontFamily, Stroke, Visuals,
+};
 use std::sync::Arc;
-use bevy_egui::egui::{self, Color32, CornerRadius, FontData, FontDefinitions, FontFamily, Stroke, Visuals};
 
 pub const COLOR_BG: Color32 = Color32::from_rgb(7, 16, 18);
 pub const COLOR_TOP_BG: Color32 = Color32::from_rgb(11, 23, 25);
@@ -64,18 +66,25 @@ pub fn setup_clank_theme(ctx: &egui::Context) {
         "/usr/share/fonts/truetype/georgia/georgia.ttf",
     ] {
         if let Ok(bytes) = std::fs::read(path) {
-            fonts.font_data.insert(
-                "Georgia".to_owned(),
-                Arc::new(FontData::from_owned(bytes)),
-            );
-            fonts.families.entry(FontFamily::Name("Georgia".into())).or_default().push("Georgia".to_owned());
+            fonts
+                .font_data
+                .insert("Georgia".to_owned(), Arc::new(FontData::from_owned(bytes)));
+            fonts
+                .families
+                .entry(FontFamily::Name("Georgia".into()))
+                .or_default()
+                .push("Georgia".to_owned());
             break;
         }
     }
 
     // Fallback for Georgia family to ensure it never panics if missing
     if let Some(prop) = fonts.families.get(&FontFamily::Proportional).cloned() {
-        fonts.families.entry(FontFamily::Name("Georgia".into())).or_default().extend(prop);
+        fonts
+            .families
+            .entry(FontFamily::Name("Georgia".into()))
+            .or_default()
+            .extend(prop);
     }
 
     // 2. Try Monaco / Menlo for crisp monospace
@@ -89,7 +98,11 @@ pub fn setup_clank_theme(ctx: &egui::Context) {
                 "CustomMono".to_owned(),
                 Arc::new(FontData::from_owned(bytes)),
             );
-            fonts.families.entry(FontFamily::Monospace).or_default().insert(0, "CustomMono".to_owned());
+            fonts
+                .families
+                .entry(FontFamily::Monospace)
+                .or_default()
+                .insert(0, "CustomMono".to_owned());
             break;
         }
     }

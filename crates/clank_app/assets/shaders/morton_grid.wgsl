@@ -1,5 +1,5 @@
 // crates/clank_app/assets/shaders/morton_grid.wgsl
-// Hybrid Morton Grid Spatial Indexing & Cell Offset Table Generation
+// Morton keys for the spatial sort (radix_sort.wgsl builds the grid table from them)
 
 struct GpuSimParams {
     tick: u32,
@@ -38,13 +38,12 @@ struct GpuAgentState {
     meta_flags: u32,
     age_gen: u32,
     morton_code: u32,
-    packed_color: u32,
+    root: u32,
     visual_cache: u32,
 }
 
 @group(0) @binding(0) var<storage, read_write> agent_states: array<GpuAgentState>;
-@group(0) @binding(1) var<storage, read_write> spatial_keys: array<vec2u>; // (grid_next, cell_id)
-@group(0) @binding(2) var<storage, read_write> cell_offsets: array<atomic<u32>>;
+@group(0) @binding(1) var<storage, read_write> spatial_keys: array<vec2u>; // (morton, slot), sorted next
 @group(0) @binding(3) var<uniform> params: GpuSimParams;
 
 fn expand_bits(v_in: u32) -> u32 {
@@ -56,48 +55,27 @@ fn expand_bits(v_in: u32) -> u32 {
     return v;
 }
 
+// floor quantization (u32() truncates), as spatial_index::compute_morton_32_with_size.
 fn compute_morton_32(pos: vec2f) -> u32 {
     let x_norm = u32(clamp(pos.x / params.world_size.x, 0.0, 1.0) * 65535.0);
     let y_norm = u32(clamp(pos.y / params.world_size.y, 0.0, 1.0) * 65535.0);
     return expand_bits(x_norm) | (expand_bits(y_norm) << 1u);
 }
 
-@compute @workgroup_size(64)
-fn clear_cell_offsets(@builtin(global_invocation_id) id: vec3u) {
-    if (id.x < 54u) {
-        atomicStore(&cell_offsets[id.x], 0xFFFFFFFFu);
-    }
-}
-
-fn get_cell_id(pos: vec2f) -> u32 {
-    let cell_w = params.world_size.x / 9.0;
-    let cell_h = params.world_size.y / 6.0;
-    let gx = min(u32(max(0.0, pos.x) / cell_w), 8u);
-    let gy = min(u32(max(0.0, pos.y) / cell_h), 5u);
-    return gy * 9u + gx;
-}
-
+// Keys in slot order for the radix sort. Dead slots get the 0xFFFFFFFF sentinel, so they sort
+// to the tail and stay out of the grid table and the LBVH.
 @compute @workgroup_size(64)
 fn morton_encode(@builtin(global_invocation_id) id: vec3u) {
     let agent_idx = id.x;
     if (agent_idx >= params.max_agents) { return; }
     let is_dead = (agent_states[agent_idx].meta_flags & (1u << 13u)) != 0u;
     if (is_dead) {
-        spatial_keys[agent_idx] = vec2u(0xFFFFFFFFu, 0xFFFFFFFFu);
+        spatial_keys[agent_idx] = vec2u(0xFFFFFFFFu, agent_idx);
         return;
     }
-
-    let pos = agent_states[agent_idx].pos_vel.xy;
-    let code = compute_morton_32(pos);
+    // A creature exactly on the far corner (the wrap can land on the edge) would get the
+    // all-ones code and sort among the dead; keep live codes below the sentinel.
+    let code = min(compute_morton_32(agent_states[agent_idx].pos_vel.xy), 0xFFFFFFFEu);
     agent_states[agent_idx].morton_code = code;
-
-    let cell_id = get_cell_id(pos);
-    let old_head = atomicExchange(&cell_offsets[cell_id], agent_idx);
-    spatial_keys[agent_idx] = vec2u(old_head, cell_id);
+    spatial_keys[agent_idx] = vec2u(code, agent_idx);
 }
-
-@compute @workgroup_size(64)
-fn populate_cell_offsets(@builtin(global_invocation_id) id: vec3u) {
-    // Spatial grid linked list populated atomically in morton_encode
-}
-

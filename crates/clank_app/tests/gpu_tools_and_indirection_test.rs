@@ -10,7 +10,7 @@
 use bevy::prelude::*;
 use clank_app::api::{api_dispatch_system, ApiCommand, ApiReceiverResource, ApiToolRequest};
 use clank_app::gpu::compute_driver::GpuComputeDriver;
-use clank_app::gpu::types::{GpuAgentAtomic, GpuSimParams};
+use clank_app::gpu::types::{GpuAgentAtomic, GpuSimParams, SOIL_FIXED_SCALE};
 use clank_app::sim::{ActiveEngine, GpuDriverResource, SimWorld};
 use clank_app::ui::UiState;
 use clank_core::agent::AgentData;
@@ -47,20 +47,33 @@ fn quiet_world(agents: Vec<AgentData>, food: f32) -> SimWorld {
     sim.world.sync_pos_cache();
     sim.world.growth = 0.0;
     sim.world.hostility = 0.0;
-    for v in sim.world.soil.food.iter_mut() { *v = food; }
-    for v in sim.world.soil.taint.iter_mut() { *v = 0.0; }
-    for v in sim.world.soil.scent.iter_mut() { *v = 0.0; }
+    for v in sim.world.soil.food.iter_mut() {
+        *v = food;
+    }
+    for v in sim.world.soil.taint.iter_mut() {
+        *v = 0.0;
+    }
+    for v in sim.world.soil.scent.iter_mut() {
+        *v = 0.0;
+    }
     sim
 }
 
 fn upload(driver: &GpuComputeDriver, sim: &SimWorld) -> GpuSimParams {
-    let (states, genomes, atomics, soil, mut params) = clank_app::gpu::bridge::sync_rust_to_gpu(sim);
+    let (states, genomes, atomics, soil, mut params) =
+        clank_app::gpu::bridge::sync_rust_to_gpu(sim);
     params.max_agents = driver.max_agents;
     driver.upload_state(&states, &genomes, &atomics, &soil, &params);
     params
 }
 
-fn run_one_tick(driver: &GpuComputeDriver, mut params: GpuSimParams, tool_type: u32, pos: [f32; 2], radius: f32) {
+fn run_one_tick(
+    driver: &GpuComputeDriver,
+    mut params: GpuSimParams,
+    tool_type: u32,
+    pos: [f32; 2],
+    radius: f32,
+) {
     params.tool_type = tool_type;
     params.tool_pos = pos;
     params.tool_radius = radius;
@@ -84,7 +97,10 @@ fn driver() -> Option<GpuComputeDriver> {
 fn test_gpu_extinguish_returns_slot_to_freelist_and_deposits_corpse() {
     let Some(driver) = driver() else { return };
     let sim = quiet_world(
-        vec![quiet_agent(1, 450.0, 300.0, 20.0), quiet_agent(2, 480.0, 300.0, 20.0)],
+        vec![
+            quiet_agent(1, 450.0, 300.0, 20.0),
+            quiet_agent(2, 480.0, 300.0, 20.0),
+        ],
         0.0,
     );
     let params = upload(&driver, &sim);
@@ -101,19 +117,32 @@ fn test_gpu_extinguish_returns_slot_to_freelist_and_deposits_corpse() {
 
     let atomics = driver.readback_atomics(2);
     let states = driver.readback_agent_states(2);
-    assert_ne!(atomics[0].dead_claimed, 0, "victim inside r=23 must be dead");
-    assert_ne!(states[0].meta_flags & (1 << 13), 0, "victim must carry the tombstone flag");
-    assert_eq!(atomics[1].dead_claimed, 0, "creature 30px away is outside HTML erase radius 23 and must survive");
+    assert_ne!(
+        atomics[0].dead_claimed, 0,
+        "victim inside r=23 must be dead"
+    );
+    assert_ne!(
+        states[0].meta_flags & (1 << 13),
+        0,
+        "victim must carry the tombstone flag"
+    );
+    assert_eq!(
+        atomics[1].dead_claimed, 0,
+        "creature 30px away is outside HTML erase radius 23 and must survive"
+    );
 
     let soil = driver.readback_soil();
     let c = cell(450.0, 300.0);
-    let food = soil[c].food_milli as f32 * 0.001;
-    let taint = soil[c].taint_milli as f32 * 0.001;
+    let food = soil[c].food_micro as f32 / SOIL_FIXED_SCALE;
+    let taint = soil[c].taint_micro as f32 / SOIL_FIXED_SCALE;
     assert!(
         (food - 0.6).abs() < 0.02,
         "die() with energy 0 deposits food 0.6 at the corpse cell, got {food}"
     );
-    assert!(taint > 0.08, "die() deposits taint 0.1 at the corpse cell, got {taint}");
+    assert!(
+        taint > 0.08,
+        "die() deposits taint 0.1 at the corpse cell, got {taint}"
+    );
 }
 
 #[test]
@@ -128,7 +157,10 @@ fn test_api_extinguish_uses_html_erase_radius() {
     .unwrap();
     app.update();
     let sim = app.world().resource::<SimWorld>();
-    let pt = sim.pending_tool.as_ref().expect("GPU extinguish must queue a pending tool");
+    let pt = sim
+        .pending_tool
+        .as_ref()
+        .expect("GPU extinguish must queue a pending tool");
     assert_eq!(pt.tool_type, 3);
     assert_eq!(pt.tool_radius, 23.0, "HTML erase radius is 23px");
 }
@@ -139,7 +171,15 @@ fn test_api_extinguish_uses_html_erase_radius() {
 
 /// Runs the same quiet world twice (with/without the tool) and returns
 /// (soil_without, soil_with, energy_without, energy_with) for agent slot 0.
-fn tool_ab(tool_type: u32, food: f32) -> Option<(Vec<clank_app::gpu::types::GpuSoilCell>, Vec<clank_app::gpu::types::GpuSoilCell>, i32, i32)> {
+fn tool_ab(
+    tool_type: u32,
+    food: f32,
+) -> Option<(
+    Vec<clank_app::gpu::types::GpuSoilCell>,
+    Vec<clank_app::gpu::types::GpuSoilCell>,
+    i32,
+    i32,
+)> {
     let driver = driver()?;
     // Creature 40px from the brush centre: inside the old 45px AoE, nearly outside the r=3 deposit.
     let sim = quiet_world(vec![quiet_agent(1, 490.0, 300.0, 20.0)], food);
@@ -158,12 +198,20 @@ fn tool_ab(tool_type: u32, food: f32) -> Option<(Vec<clank_app::gpu::types::GpuS
 
 #[test]
 fn test_gpu_nourish_deposits_food_and_does_not_feed_creatures() {
-    let Some((soil_a, soil_b, e_a, e_b)) = tool_ab(1, 0.0) else { return };
+    let Some((soil_a, soil_b, e_a, e_b)) = tool_ab(1, 0.0) else {
+        return;
+    };
     let c = cell(450.0, 300.0);
-    let d_center = (soil_b[c].food_milli - soil_a[c].food_milli) as f32 * 0.001;
-    let d_right = (soil_b[c + 1].food_milli - soil_a[c + 1].food_milli) as f32 * 0.001;
-    assert!((d_center - 0.28).abs() < 0.005, "nourish centre deposit 0.28, got {d_center}");
-    assert!((d_right - 0.28 / 1.8).abs() < 0.005, "nourish rr=1 deposit 0.28/1.8, got {d_right}");
+    let d_center = (soil_b[c].food_micro - soil_a[c].food_micro) as f32 / SOIL_FIXED_SCALE;
+    let d_right = (soil_b[c + 1].food_micro - soil_a[c + 1].food_micro) as f32 / SOIL_FIXED_SCALE;
+    assert!(
+        (d_center - 0.28).abs() < 0.005,
+        "nourish centre deposit 0.28, got {d_center}"
+    );
+    assert!(
+        (d_right - 0.28 / 1.8).abs() < 0.005,
+        "nourish rr=1 deposit 0.28/1.8, got {d_right}"
+    );
     assert!(
         (e_b - e_a).abs() < 1000,
         "HTML nourish never touches creature energy; energy delta was {} milli",
@@ -173,13 +221,21 @@ fn test_gpu_nourish_deposits_food_and_does_not_feed_creatures() {
 
 #[test]
 fn test_gpu_blight_deposits_taint_removes_food_and_does_not_drain_creatures() {
-    let Some((soil_a, soil_b, e_a, e_b)) = tool_ab(2, 1.0) else { return };
+    let Some((soil_a, soil_b, e_a, e_b)) = tool_ab(2, 1.0) else {
+        return;
+    };
     let c = cell(450.0, 300.0);
-    let taint = soil_b[c].taint_milli as f32 * 0.001;
-    let d_food = (soil_b[c].food_milli - soil_a[c].food_milli) as f32 * 0.001;
+    let taint = soil_b[c].taint_micro as f32 / SOIL_FIXED_SCALE;
+    let d_food = (soil_b[c].food_micro - soil_a[c].food_micro) as f32 / SOIL_FIXED_SCALE;
     // deposit 0.38 then one tick of decay: t * (1 - 0.006) - 0.0001
-    assert!((taint - (0.38 * 0.994 - 0.0001)).abs() < 0.005, "blight centre taint, got {taint}");
-    assert!((d_food + 0.14).abs() < 0.005, "blight centre food -0.14, got {d_food}");
+    assert!(
+        (taint - (0.38 * 0.994 - 0.0001)).abs() < 0.005,
+        "blight centre taint, got {taint}"
+    );
+    assert!(
+        (d_food + 0.14).abs() < 0.005,
+        "blight centre food -0.14, got {d_food}"
+    );
     assert!(
         (e_b - e_a).abs() < 1000,
         "HTML blight never drains creature energy directly; energy delta was {} milli",
@@ -213,7 +269,9 @@ fn test_api_gpu_nourish_does_not_overwrite_gpu_soil_with_stale_cpu_soil() {
     // CPU soil is stale while the GPU engine runs; make the staleness obvious.
     {
         let mut sim = app.world_mut().resource_mut::<SimWorld>();
-        for v in sim.world.soil.food.iter_mut() { *v = 0.0; }
+        for v in sim.world.soil.food.iter_mut() {
+            *v = 0.0;
+        }
     }
     tx.send(ApiCommand::ApplyTool(ApiToolRequest {
         tool: "nourish".into(),
@@ -224,9 +282,15 @@ fn test_api_gpu_nourish_does_not_overwrite_gpu_soil_with_stale_cpu_soil() {
     .unwrap();
     app.update();
 
-    let soil = app.world().resource::<GpuDriverResource>().driver.as_ref().unwrap().readback_soil();
+    let soil = app
+        .world()
+        .resource::<GpuDriverResource>()
+        .driver
+        .as_ref()
+        .unwrap()
+        .readback_soil();
     let edge = cell(450.0, 300.0) + 3; // inside the old 7x7 write-back window
-    let food = soil[edge].food_milli as f32 * 0.001;
+    let food = soil[edge].food_micro as f32 / SOIL_FIXED_SCALE;
     assert!(
         food > 0.99,
         "GPU soil cell was overwritten from stale CPU soil (food {food}, expected the GPU value 1.0)"
@@ -243,13 +307,23 @@ fn test_api_gpu_nourish_does_not_overwrite_gpu_soil_with_stale_cpu_soil() {
 fn test_frustum_cull_excludes_creatures_killed_this_tick() {
     let Some(driver) = driver() else { return };
     let sim = quiet_world(
-        vec![quiet_agent(1, 450.0, 300.0, 20.0), quiet_agent(2, 460.0, 300.0, 20.0)],
+        vec![
+            quiet_agent(1, 450.0, 300.0, 20.0),
+            quiet_agent(2, 460.0, 300.0, 20.0),
+        ],
         0.0,
     );
     let mut params = upload(&driver, &sim);
     // Creature 2 was killed by a predator this tick: CAS claimed, tombstone not yet written.
-    let killed = GpuAgentAtomic { energy_milli: 0, mate_claim: 0, mate_energy_milli: 0, dead_claimed: 1 };
-    driver.queue.write_buffer(&driver.agent_atomics_buf, 16, bytemuck::bytes_of(&killed));
+    let killed = GpuAgentAtomic {
+        energy_milli: 0,
+        mate_claim: 0,
+        mate_energy_milli: 0,
+        dead_claimed: 1,
+    };
+    driver
+        .queue
+        .write_buffer(&driver.agent_atomics_buf, 16, bytemuck::bytes_of(&killed));
     params.agent_count = 2;
     let visible = driver.dispatch_culling(&params);
     assert_eq!(visible, 1, "a claimed corpse must not be drawn");
@@ -259,7 +333,11 @@ fn test_frustum_cull_excludes_creatures_killed_this_tick() {
 fn test_cull_output_is_valid_draw_indirect_args() {
     let Some(driver) = driver() else { return };
     let sim = quiet_world(
-        vec![quiet_agent(1, 450.0, 300.0, 20.0), quiet_agent(2, 460.0, 300.0, 20.0), quiet_agent(3, 10.0, 10.0, 20.0)],
+        vec![
+            quiet_agent(1, 450.0, 300.0, 20.0),
+            quiet_agent(2, 460.0, 300.0, 20.0),
+            quiet_agent(3, 10.0, 10.0, 20.0),
+        ],
         0.0,
     );
     let mut params = upload(&driver, &sim);
@@ -288,7 +366,11 @@ fn test_instanced_darts_drawn_at_camera_relative_position() {
     let size = 256u32;
     let tex = driver.device.create_texture(&wgpu::TextureDescriptor {
         label: Some("test_target"),
-        size: wgpu::Extent3d { width: size, height: size, depth_or_array_layers: 1 },
+        size: wgpu::Extent3d {
+            width: size,
+            height: size,
+            depth_or_array_layers: 1,
+        },
         mip_level_count: 1,
         sample_count: 1,
         dimension: wgpu::TextureDimension::D2,
@@ -305,7 +387,9 @@ fn test_instanced_darts_drawn_at_camera_relative_position() {
         .map(|i| (i % size, i / size))
         .collect();
     assert!(!lit.is_empty(), "no dart pixels were drawn");
-    let (sx, sy) = lit.iter().fold((0u64, 0u64), |(ax, ay), (x, y)| (ax + *x as u64, ay + *y as u64));
+    let (sx, sy) = lit.iter().fold((0u64, 0u64), |(ax, ay), (x, y)| {
+        (ax + *x as u64, ay + *y as u64)
+    });
     let (cx, cy) = (sx as f32 / lit.len() as f32, sy as f32 / lit.len() as f32);
     let mid = size as f32 / 2.0;
     assert!(
@@ -324,18 +408,36 @@ fn read_texture(driver: &GpuComputeDriver, tex: &wgpu::Texture, size: u32) -> Ve
     });
     let mut enc = driver.device.create_command_encoder(&Default::default());
     enc.copy_texture_to_buffer(
-        wgpu::TexelCopyTextureInfo { texture: tex, mip_level: 0, origin: wgpu::Origin3d::ZERO, aspect: wgpu::TextureAspect::All },
+        wgpu::TexelCopyTextureInfo {
+            texture: tex,
+            mip_level: 0,
+            origin: wgpu::Origin3d::ZERO,
+            aspect: wgpu::TextureAspect::All,
+        },
         wgpu::TexelCopyBufferInfo {
             buffer: &buf,
-            layout: wgpu::TexelCopyBufferLayout { offset: 0, bytes_per_row: Some(bytes_per_row), rows_per_image: Some(size) },
+            layout: wgpu::TexelCopyBufferLayout {
+                offset: 0,
+                bytes_per_row: Some(bytes_per_row),
+                rows_per_image: Some(size),
+            },
         },
-        wgpu::Extent3d { width: size, height: size, depth_or_array_layers: 1 },
+        wgpu::Extent3d {
+            width: size,
+            height: size,
+            depth_or_array_layers: 1,
+        },
     );
     driver.queue.submit([enc.finish()]);
     let slice = buf.slice(..);
     let (tx, rx) = mpsc::channel();
-    slice.map_async(wgpu::MapMode::Read, move |r| { let _ = tx.send(r); });
-    driver.device.poll(wgpu::PollType::wait_indefinitely()).unwrap();
+    slice.map_async(wgpu::MapMode::Read, move |r| {
+        let _ = tx.send(r);
+    });
+    driver
+        .device
+        .poll(wgpu::PollType::wait_indefinitely())
+        .unwrap();
     rx.recv().unwrap().unwrap();
     let out = slice.get_mapped_range().to_vec();
     buf.unmap();
@@ -348,6 +450,12 @@ fn read_texture(driver: &GpuComputeDriver, tex: &wgpu::Texture, size: u32) -> Ve
 
 #[test]
 fn test_default_driver_matches_canonical_75x50_soil_grid() {
-    let Some(d) = GpuComputeDriver::create_default() else { return };
-    assert_eq!((d.soil_cols, d.soil_rows), (75, 50), "900x600 arena / 12px cells = 75x50");
+    let Some(d) = GpuComputeDriver::create_default() else {
+        return;
+    };
+    assert_eq!(
+        (d.soil_cols, d.soil_rows),
+        (75, 50),
+        "900x600 arena / 12px cells = 75x50"
+    );
 }

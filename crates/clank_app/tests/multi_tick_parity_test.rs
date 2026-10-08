@@ -71,8 +71,12 @@ fn test_multi_tick_lockstep_parity() {
             let g_dead = (g_agent.meta_flags & (1 << 13)) != 0;
             let r_dead = r_agent.dead != 0;
 
-            if !r_dead { alive_rust += 1; }
-            if !g_dead { alive_gpu += 1; }
+            if !r_dead {
+                alive_rust += 1;
+            }
+            if !g_dead {
+                alive_gpu += 1;
+            }
 
             if !r_dead && !g_dead {
                 let gx = g_agent.pos_vel[0] as f64;
@@ -81,21 +85,35 @@ fn test_multi_tick_lockstep_parity() {
                 let g_energy = (g_atomics[i].energy_milli as f64) * 0.001;
 
                 let mut dx = (r_agent.x - gx).abs();
-                if dx > 450.0 { dx = 900.0 - dx; }
+                if dx > 450.0 {
+                    dx = 900.0 - dx;
+                }
                 let mut dy = (r_agent.y - gy).abs();
-                if dy > 300.0 { dy = 600.0 - dy; }
+                if dy > 300.0 {
+                    dy = 600.0 - dy;
+                }
                 let pos_diff = (dx * dx + dy * dy).sqrt();
                 let angle_diff = (r_agent.angle - g_angle).abs();
                 let energy_diff = (r_agent.energy - g_energy).abs();
 
-                if pos_diff > max_pos_diff { max_pos_diff = pos_diff; }
-                if angle_diff > max_angle_diff { max_angle_diff = angle_diff; }
-                if energy_diff > max_energy_diff { max_energy_diff = energy_diff; }
+                if pos_diff > max_pos_diff {
+                    max_pos_diff = pos_diff;
+                }
+                if angle_diff > max_angle_diff {
+                    max_angle_diff = angle_diff;
+                }
+                if energy_diff > max_energy_diff {
+                    max_energy_diff = energy_diff;
+                }
                 total_pos_diff += pos_diff;
             }
         }
 
-        let mean_pos_diff = if alive_gpu > 0 { total_pos_diff / alive_gpu as f64 } else { 0.0 };
+        let mean_pos_diff = if alive_gpu > 0 {
+            total_pos_diff / alive_gpu as f64
+        } else {
+            0.0
+        };
         println!(
             "Tick {:2}: alive R={} G={} | pos diff max={:.4} mean={:.4} | angle diff max={:.4} | energy diff max={:.4}",
             tick, alive_rust, alive_gpu, max_pos_diff, mean_pos_diff, max_angle_diff, max_energy_diff

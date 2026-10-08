@@ -1,5 +1,5 @@
-use clank_core::archive::WorldSnapshot;
 use crate::sim::SimWorld;
+use clank_core::archive::WorldSnapshot;
 use rkyv::Deserialize;
 use serde::{Deserialize as SerdeDeserialize, Serialize as SerdeSerialize};
 
@@ -54,7 +54,9 @@ pub fn load_clank_snapshot(sim: &mut SimWorld, bytes: &[u8]) -> Result<(), Persi
         .map_err(|e| PersistenceError::InvalidArchive(format!("{:?}", e)))?;
 
     if archived.version != WorldSnapshot::CURRENT_VERSION {
-        return Err(PersistenceError::UnsupportedVersion(archived.version.into()));
+        return Err(PersistenceError::UnsupportedVersion(
+            archived.version.into(),
+        ));
     }
 
     let w = &mut sim.world;
@@ -63,8 +65,17 @@ pub fn load_clank_snapshot(sim: &mut SimWorld, bytes: &[u8]) -> Result<(), Persi
     let target_h: f64 = archived.height.into();
     let target_cols: u32 = archived.cols.into();
     let target_rows: u32 = archived.rows.into();
-    if w.w != target_w || w.h != target_h || w.soil.cols != target_cols as usize || w.soil.rows != target_rows as usize {
-        w.resize(target_w, target_h, target_cols as usize, target_rows as usize);
+    if w.w != target_w
+        || w.h != target_h
+        || w.soil.cols != target_cols as usize
+        || w.soil.rows != target_rows as usize
+    {
+        w.resize(
+            target_w,
+            target_h,
+            target_cols as usize,
+            target_rows as usize,
+        );
     }
 
     w.tick = archived.tick.into();
@@ -91,7 +102,8 @@ pub fn load_clank_snapshot(sim: &mut SimWorld, bytes: &[u8]) -> Result<(), Persi
         w.soil.scent[i] = archived.scent[i].into();
     }
 
-    let snap_agents: Vec<clank_core::agent::AgentData> = archived.agents
+    let snap_agents: Vec<clank_core::agent::AgentData> = archived
+        .agents
         .deserialize(&mut rkyv::Infallible)
         .map_err(|e| PersistenceError::Deserialization(format!("{:?}", e)))?;
 
@@ -105,6 +117,7 @@ pub fn load_clank_snapshot(sim: &mut SimWorld, bytes: &[u8]) -> Result<(), Persi
 
     sim.world_width = target_w;
     sim.world_height = target_h;
+    sim.gpu_resync_pending = true;
 
     Ok(())
 }
@@ -159,29 +172,37 @@ pub struct JsonWorld {
 
 pub fn save_json_world(sim: &SimWorld) -> Result<String, PersistenceError> {
     let w = &sim.world;
-    let json_agents = w.agents.iter().map(|a| JsonAgent {
-        id: a.id,
-        root: a.root,
-        gen: a.gen,
-        age: a.age,
-        cooldown: a.cooldown,
-        birth: a.birth,
-        kills: a.kills,
-        dead: a.dead != 0,
-        last_victim: if a.last_victim != 0 { Some(a.last_victim) } else { None },
-        x: a.x,
-        y: a.y,
-        vx: a.vx,
-        vy: a.vy,
-        angle: a.angle,
-        energy: a.energy,
-        feeding: a.feeding,
-        attack: a.attack,
-        signal: a.signal,
-        tr: a.tr.to_vec(),
-        w: a.genes.to_vec(),
-        h: a.h.to_vec(),
-    }).collect();
+    let json_agents = w
+        .agents
+        .iter()
+        .map(|a| JsonAgent {
+            id: a.id,
+            root: a.root,
+            gen: a.gen,
+            age: a.age,
+            cooldown: a.cooldown,
+            birth: a.birth,
+            kills: a.kills,
+            dead: a.dead != 0,
+            last_victim: if a.last_victim != 0 {
+                Some(a.last_victim)
+            } else {
+                None
+            },
+            x: a.x,
+            y: a.y,
+            vx: a.vx,
+            vy: a.vy,
+            angle: a.angle,
+            energy: a.energy,
+            feeding: a.feeding,
+            attack: a.attack,
+            signal: a.signal,
+            tr: a.tr.to_vec(),
+            w: a.genes.to_vec(),
+            h: a.h.to_vec(),
+        })
+        .collect();
 
     let json_world = JsonWorld {
         version: 1,
@@ -217,8 +238,17 @@ pub fn load_json_world(sim: &mut SimWorld, json_str: &str) -> Result<(), Persist
     }
 
     let w = &mut sim.world;
-    if w.w != data.width || w.h != data.height || w.soil.cols != data.cols as usize || w.soil.rows != data.rows as usize {
-        w.resize(data.width, data.height, data.cols as usize, data.rows as usize);
+    if w.w != data.width
+        || w.h != data.height
+        || w.soil.cols != data.cols as usize
+        || w.soil.rows != data.rows as usize
+    {
+        w.resize(
+            data.width,
+            data.height,
+            data.cols as usize,
+            data.rows as usize,
+        );
     }
 
     w.tick = data.tick;
@@ -265,29 +295,36 @@ pub fn load_json_world(sim: &mut SimWorld, json_str: &str) -> Result<(), Persist
         a.feeding = ja.feeding;
         a.attack = ja.attack;
         a.signal = ja.signal;
-        for (i, v) in ja.tr.iter().enumerate().take(6) { a.tr[i] = *v; }
-        for (i, v) in ja.w.iter().enumerate().take(clank_core::agent::GENES) { a.genes[i] = *v; }
-        for (i, v) in ja.h.iter().enumerate().take(10) { a.h[i] = *v; a.h_next[i] = *v; }
+        for (i, v) in ja.tr.iter().enumerate().take(6) {
+            a.tr[i] = *v;
+        }
+        for (i, v) in ja.w.iter().enumerate().take(clank_core::agent::GENES) {
+            a.genes[i] = *v;
+        }
+        for (i, v) in ja.h.iter().enumerate().take(10) {
+            a.h[i] = *v;
+            a.h_next[i] = *v;
+        }
         w.agents.push(a);
     }
 
     w.build_grid();
     sim.world_width = data.width;
     sim.world_height = data.height;
+    sim.gpu_resync_pending = true;
 
     Ok(())
 }
 
 pub fn save_clank_file(sim: &SimWorld, path: &str) -> Result<usize, PersistenceError> {
     let bytes = save_clank_snapshot(sim)?;
-    std::fs::write(path, &bytes)
-        .map_err(|e| PersistenceError::Serialization(e.to_string()))?;
+    std::fs::write(path, &bytes).map_err(|e| PersistenceError::Serialization(e.to_string()))?;
     Ok(bytes.len())
 }
 
 pub fn load_clank_file(sim: &mut SimWorld, path: &str) -> Result<(), PersistenceError> {
-    let bytes = std::fs::read(path)
-        .map_err(|e| PersistenceError::Deserialization(e.to_string()))?;
+    let bytes =
+        std::fs::read(path).map_err(|e| PersistenceError::Deserialization(e.to_string()))?;
     load_clank_snapshot(sim, &bytes)
 }
 

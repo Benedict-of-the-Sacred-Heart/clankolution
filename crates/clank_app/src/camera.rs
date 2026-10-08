@@ -1,7 +1,8 @@
-use bevy::prelude::*;
 use crate::sim::SimWorld;
+use bevy::prelude::*;
 
-#[derive(Component)]
+/// The arena camera. Extracted so the creature renderer can find its view in the render world.
+#[derive(Component, Clone, bevy::render::extract_component::ExtractComponent)]
 pub struct MainCamera;
 
 #[inline]
@@ -88,7 +89,9 @@ pub fn camera_viewport_sync_system(
     mut camera_query: Query<(&mut Camera, &mut Transform, &mut Projection), With<MainCamera>>,
     mut sim: Option<ResMut<SimWorld>>,
 ) {
-    let Ok(window) = window_query.single() else { return };
+    let Ok(window) = window_query.single() else {
+        return;
+    };
     let (vp, arena_size) = compute_arena_viewport(
         Vec2::new(window.width(), window.height()),
         window.scale_factor(),
@@ -112,9 +115,7 @@ pub fn camera_viewport_sync_system(
     }
 }
 
-pub fn camera_control_system(
-    mut camera_query: Query<&mut Projection, With<MainCamera>>,
-) {
+pub fn camera_control_system(mut camera_query: Query<&mut Projection, With<MainCamera>>) {
     let Ok(mut projection) = camera_query.single_mut() else {
         return;
     };

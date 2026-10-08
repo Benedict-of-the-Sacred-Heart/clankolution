@@ -1,5 +1,7 @@
 use clank_app::sim::SimWorld;
-use clank_app::ui::{UiState, trigger_spore_catastrophe, set_simulation_speed, toggle_pause, compute_cycle_subtitle};
+use clank_app::ui::{
+    compute_cycle_subtitle, set_simulation_speed, toggle_pause, trigger_spore_catastrophe, UiState,
+};
 
 #[test]
 fn test_ui_state_defaults() {
@@ -47,14 +49,19 @@ fn test_ui_set_speed() {
 #[test]
 fn test_persistence_filenames_and_status() {
     use clank_app::ui::{
-        compute_export_clank_filename, compute_export_json_filename,
-        compute_export_clank_status, compute_export_json_status,
-        compute_import_clank_status, compute_import_json_status,
-        WHAT_SAVES_NOTE, DEFAULT_SAVE_HINT,
+        compute_export_clank_filename, compute_export_clank_status, compute_export_json_filename,
+        compute_export_json_status, compute_import_clank_status, compute_import_json_status,
+        DEFAULT_SAVE_HINT, WHAT_SAVES_NOTE,
     };
 
-    assert_eq!(compute_export_clank_filename(123), "clankolution-cycle-123.clank");
-    assert_eq!(compute_export_json_filename(456), "clankolution-cycle-456.json");
+    assert_eq!(
+        compute_export_clank_filename(123),
+        "clankolution-cycle-123.clank"
+    );
+    assert_eq!(
+        compute_export_json_filename(456),
+        "clankolution-cycle-456.json"
+    );
 
     assert_eq!(
         compute_export_clank_status(123, 2048),
@@ -114,7 +121,10 @@ fn test_history_buffer_push() {
 fn test_living_roots_count() {
     let mut sim = SimWorld::new(42);
     // Genesis starts with 72 creatures, all root 1..72
-    let living_roots = sim.world.agents.iter()
+    let living_roots = sim
+        .world
+        .agents
+        .iter()
         .filter(|a| a.dead == 0)
         .map(|a| a.root)
         .collect::<std::collections::HashSet<_>>()
@@ -124,7 +134,10 @@ fn test_living_roots_count() {
     // If one agent dies, unique roots count should still reflect living roots
     let _killed_root = sim.world.agents[0].root;
     sim.world.agents[0].dead = 1;
-    let living_roots_after = sim.world.agents.iter()
+    let living_roots_after = sim
+        .world
+        .agents
+        .iter()
         .filter(|a| a.dead == 0)
         .map(|a| a.root)
         .collect::<std::collections::HashSet<_>>()
@@ -138,7 +151,10 @@ fn test_chronicle_event_formatting() {
     let mut state = UiState::default();
     state.add_chronicle("00100  Generation 2 opens in lineage 5.".to_string());
     assert_eq!(state.chronicle.len(), 2); // 1 default + 1 added
-    assert_eq!(state.chronicle[0], "00100  Generation 2 opens in lineage 5.");
+    assert_eq!(
+        state.chronicle[0],
+        "00100  Generation 2 opens in lineage 5."
+    );
 }
 
 #[test]
@@ -157,36 +173,29 @@ fn test_compute_cycle_subtitle() {
 
 #[test]
 fn test_compute_tool_hint() {
-    use clank_app::ui::{ActiveTool, compute_tool_hint};
-    assert_eq!(compute_tool_hint(ActiveTool::Observe), "Click a creature to inspect its lineage. Choose a tool, then paint on the world.");
-    assert_eq!(compute_tool_hint(ActiveTool::Nourish), "Drag on the world to grow food.");
-    assert_eq!(compute_tool_hint(ActiveTool::Blight), "Drag on the world to spread blight.");
-    assert_eq!(compute_tool_hint(ActiveTool::SeedLife), "Drag on the world to seed life.");
-    assert_eq!(compute_tool_hint(ActiveTool::Extinguish), "Drag on the world to extinguish creatures.");
-    assert_eq!(compute_tool_hint(ActiveTool::Eclipse), "Click a creature to inspect its lineage. Choose a tool, then paint on the world.");
+    use clank_app::ui::{compute_tool_hint, ActiveTool};
+    assert_eq!(
+        compute_tool_hint(ActiveTool::Observe),
+        "Click a creature to inspect its lineage. Choose a tool, then paint on the world."
+    );
+    assert_eq!(
+        compute_tool_hint(ActiveTool::Nourish),
+        "Drag on the world to grow food."
+    );
+    assert_eq!(
+        compute_tool_hint(ActiveTool::Blight),
+        "Drag on the world to spread blight."
+    );
+    assert_eq!(
+        compute_tool_hint(ActiveTool::SeedLife),
+        "Drag on the world to seed life."
+    );
+    assert_eq!(
+        compute_tool_hint(ActiveTool::Extinguish),
+        "Drag on the world to extinguish creatures."
+    );
+    assert_eq!(
+        compute_tool_hint(ActiveTool::Eclipse),
+        "Click a creature to inspect its lineage. Choose a tool, then paint on the world."
+    );
 }
-
-#[test]
-fn test_render_radar_minimap_clusters() {
-    use clank_app::gpu::lbvh::MinimapCluster;
-    use clank_app::ui::compute_minimap_cluster_disc;
-
-    let cluster = MinimapCluster {
-        center: [450.0, 300.0],
-        count: 10,
-        dominant_lineage: 3,
-        radius: 45.0,
-    };
-
-    let map_w = 300.0;
-    let map_h = 200.0;
-    let (pos, r, lineage) = compute_minimap_cluster_disc(&cluster, map_w, map_h);
-
-    // Center is (450/900 * 300, 300/600 * 200) = (150.0, 100.0)
-    assert!((pos[0] - 150.0).abs() < 1e-4);
-    assert!((pos[1] - 100.0).abs() < 1e-4);
-    // Radius is 45.0 * (300 / 900) = 15.0
-    assert!((r - 15.0).abs() < 1e-4);
-    assert_eq!(lineage, 3);
-}
-

@@ -50,8 +50,7 @@ fn test_sim_world_selection() {
 #[test]
 fn test_bevy_sim_plugin_step_system() {
     let mut app = App::new();
-    app.add_plugins(MinimalPlugins)
-        .add_plugins(ClankSimPlugin);
+    app.add_plugins(MinimalPlugins).add_plugins(ClankSimPlugin);
 
     // Initial update should register resource and step once (speed = 1)
     app.update();
@@ -87,15 +86,22 @@ fn test_bevy_sim_plugin_step_system() {
 fn test_sim_world_extinguish_tool() {
     let mut sim = SimWorld::new(42);
     let target_agent = &sim.world.agents[0];
+    let target_id = target_agent.id;
     let tx = target_agent.x;
     let ty = target_agent.y;
+    let initial_count = sim.world.agents.len();
     let initial_sparks = sim.world.spark_events.len();
 
     sim.world.extinguish_at(tx, ty, 25.0);
 
-    // Target agent must now be dead
-    let dead_count = sim.world.agents.iter().filter(|a| a.dead != 0).count();
-    assert!(dead_count >= 1);
+    // Target agent is removed immediately (original filters the array right after erasing)
+    assert!(sim.world.agents.len() < initial_count);
+    assert!(sim
+        .world
+        .agents
+        .iter()
+        .all(|a| a.id != target_id && a.dead == 0));
+    assert_eq!(sim.world.pos_x.len(), sim.world.agents.len());
     // Sparks must have been generated
     assert!(sim.world.spark_events.len() > initial_sparks);
 }

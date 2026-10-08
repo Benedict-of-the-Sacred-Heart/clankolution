@@ -1,7 +1,7 @@
 // crates/clank_app/assets/shaders/dart_instanced.wgsl
 // High-Throughput Instanced Dart & Outline Vertex/Fragment Shader
 //
-// Streams contiguous vec2u(packed_color, visual_cache) from Cache Line 1.
+// Streams contiguous vec2u(root, visual_cache) from Cache Line 1.
 // Bypasses Cache Line 0 (traits, kinematics) saving ~72 MB/frame vertex fetch bandwidth.
 // Zero-cost dead check: visual_cache == 0u collapses scale to 0.0 px (instant hardware cull).
 
@@ -12,7 +12,7 @@ struct VertexInput {
 
 struct InstanceInput {
     @location(2) pos_angle: vec3f, // x, y, angle
-    @location(3) vis_data: vec2u,  // (packed_color, visual_cache)
+    @location(3) vis_data: vec2u,  // (root, visual_cache)
 }
 
 struct VertexOutput {
@@ -28,12 +28,15 @@ struct ViewUniform {
 
 @group(0) @binding(0) var<uniform> view: ViewUniform;
 
+// theme::PALETTE, as 0xBBGGRR: a lineage's colour is PALETTE[root % 8].
+const PALETTE = array<u32, 8>(0xD2E591u, 0x78B8E6u, 0x6B78EEu, 0xD797BEu, 0xDFB87Fu, 0x8BDFD4u, 0xBBA3E4u, 0xA1C589u);
+
 @vertex
 fn vs_main(in_vertex: VertexInput, in_inst: InstanceInput) -> VertexOutput {
     var out: VertexOutput;
 
     let visual_cache = in_inst.vis_data.y;
-    let packed_color = in_inst.vis_data.x;
+    let packed_color = PALETTE[in_inst.vis_data.x % 8u];
 
     // Zero-Cost Dead State Invariant: Collapse to degenerate clip coordinates
     if (visual_cache == 0u) {
@@ -50,7 +53,7 @@ fn vs_main(in_vertex: VertexInput, in_inst: InstanceInput) -> VertexOutput {
     let energy_u8 = f32((visual_cache >> 16u) & 0xFFu);
     let is_attacking = (visual_cache & (1u << 24u)) != 0u;
 
-    // Unpack packed_color (rgba8unorm)
+    // Unpack the lineage colour (0xBBGGRR)
     let cr = f32(packed_color & 0xFFu) / 255.0;
     let cg = f32((packed_color >> 8u) & 0xFFu) / 255.0;
     let cb = f32((packed_color >> 16u) & 0xFFu) / 255.0;

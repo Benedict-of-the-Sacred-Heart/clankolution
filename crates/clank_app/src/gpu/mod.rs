@@ -1,9 +1,12 @@
-pub mod types;
-pub mod freelist;
-pub mod soil_pipeline;
-pub mod spatial_index;
-pub mod lbvh;
 pub mod agent_pipeline;
 pub mod birth_pipeline;
 pub mod bridge;
 pub mod compute_driver;
+pub mod creature_render;
+pub mod frame_readback;
+pub mod freelist;
+pub mod lbvh;
+pub mod radix_sort;
+pub mod soil_pipeline;
+pub mod spatial_index;
+pub mod types;

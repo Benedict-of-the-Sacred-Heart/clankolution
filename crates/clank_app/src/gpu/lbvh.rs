@@ -1,7 +1,7 @@
 //! Karras 2012 Linear Bounding Volume Hierarchy (LBVH)
 //!
 //! Provides $O(\log N)$ spatial queries for mouse specimen picking with dynamic radius shrinking,
-//! AoE tool application, and hierarchical Barnes-Hut / Minimap LOD clustering.
+//! and AoE tool application.
 
 use super::types::{GpuAgentState, GpuLbvhNode};
 
@@ -30,7 +30,11 @@ pub fn toroidal_aabb_dist_1d(p: f32, b_min: f32, b_max: f32, w: f32) -> f32 {
         return 0.0;
     }
     let direct = if p < b_min { b_min - p } else { p - b_max };
-    let wrapped = if p < b_min { w - b_max + p } else { w - p + b_min };
+    let wrapped = if p < b_min {
+        w - b_max + p
+    } else {
+        w - p + b_min
+    };
     direct.min(wrapped)
 }
 
@@ -87,7 +91,7 @@ impl LbvhTree {
                 aabb_max: [a.pos_vel[0] + r, a.pos_vel[1] + r],
                 center_of_mass: [a.pos_vel[0], a.pos_vel[1]],
                 count: 1,
-                dominant_lineage: a.meta_flags & 0x0F,
+                dominant_lineage: a.root,
                 left_child: 0xFFFFFFFF,
                 right_child: 0xFFFFFFFF,
                 parent: 0xFFFFFFFF,
@@ -126,7 +130,7 @@ impl LbvhTree {
                 aabb_max: [a.pos_vel[0] + r, a.pos_vel[1] + r],
                 center_of_mass: [a.pos_vel[0], a.pos_vel[1]],
                 count: 1,
-                dominant_lineage: a.meta_flags & 0x0F,
+                dominant_lineage: a.root,
                 left_child: 0xFFFFFFFF,
                 right_child: 0xFFFFFFFF,
                 parent: 0xFFFFFFFF,
@@ -435,7 +439,6 @@ impl LbvhTree {
     /// Extracts aggregated cluster discs from intermediate tree depths (e.g. depth 5–6)
     /// for hierarchical radar minimap LOD rendering.
     pub fn extract_minimap_clusters(&self, target_depth: usize) -> Vec<MinimapCluster> {
-
         let mut clusters = Vec::new();
         if self.nodes.is_empty() {
             return clusters;
@@ -490,4 +493,3 @@ impl std::ops::Index<usize> for LbvhTree {
         &self.nodes[index]
     }
 }
-

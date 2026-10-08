@@ -14,7 +14,6 @@ pub struct ApiSettingsRequest {
     pub active_engine: Option<String>,
 }
 
-
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ApiToolRequest {
     pub tool: String,
@@ -74,7 +73,14 @@ pub struct LiveMetrics {
 }
 
 impl LiveMetrics {
-    pub fn update(&mut self, fps: f64, frame_time: f64, tick: u32, population: usize, uptime_secs: f64) {
+    pub fn update(
+        &mut self,
+        fps: f64,
+        frame_time: f64,
+        tick: u32,
+        population: usize,
+        uptime_secs: f64,
+    ) {
         self.fps = fps;
         self.frame_time_ms = if frame_time <= 1.0 {
             frame_time * 1000.0
@@ -174,7 +180,8 @@ pub struct ApiServerHandle {
 
 impl Drop for ApiServerHandle {
     fn drop(&mut self) {
-        self.shutdown.store(true, std::sync::atomic::Ordering::SeqCst);
+        self.shutdown
+            .store(true, std::sync::atomic::Ordering::SeqCst);
         // Connect to unblock listener
         let _ = std::net::TcpStream::connect(format!("127.0.0.1:{}", self.port));
         if let Some(handle) = self.thread.take() {
@@ -332,30 +339,26 @@ fn handle_http_connection(
                 ("200 OK", "{}".to_string())
             }
         }
-        ("POST", "/settings") => {
-            match serde_json::from_slice::<ApiSettingsRequest>(&body_bytes) {
-                Ok(req) => {
-                    let _ = command_tx.send(ApiCommand::UpdateSettings(req));
-                    ("200 OK", r#"{"status":"ok"}"#.to_string())
-                }
-                Err(e) => (
-                    "400 Bad Request",
-                    format!(r#"{{"status":"error","message":"{}"}}"#, e),
-                ),
+        ("POST", "/settings") => match serde_json::from_slice::<ApiSettingsRequest>(&body_bytes) {
+            Ok(req) => {
+                let _ = command_tx.send(ApiCommand::UpdateSettings(req));
+                ("200 OK", r#"{"status":"ok"}"#.to_string())
             }
-        }
-        ("POST", "/tool") => {
-            match serde_json::from_slice::<ApiToolRequest>(&body_bytes) {
-                Ok(req) => {
-                    let _ = command_tx.send(ApiCommand::ApplyTool(req));
-                    ("200 OK", r#"{"status":"ok"}"#.to_string())
-                }
-                Err(e) => (
-                    "400 Bad Request",
-                    format!(r#"{{"status":"error","message":"{}"}}"#, e),
-                ),
+            Err(e) => (
+                "400 Bad Request",
+                format!(r#"{{"status":"error","message":"{}"}}"#, e),
+            ),
+        },
+        ("POST", "/tool") => match serde_json::from_slice::<ApiToolRequest>(&body_bytes) {
+            Ok(req) => {
+                let _ = command_tx.send(ApiCommand::ApplyTool(req));
+                ("200 OK", r#"{"status":"ok"}"#.to_string())
             }
-        }
+            Err(e) => (
+                "400 Bad Request",
+                format!(r#"{{"status":"error","message":"{}"}}"#, e),
+            ),
+        },
         ("POST", "/reset") => {
             let req: Result<ApiResetRequest, _> = serde_json::from_slice(&body_bytes);
             let seed = req.ok().and_then(|r| r.seed).unwrap_or_else(|| {
@@ -413,10 +416,9 @@ fn handle_http_connection(
                             response_tx: resp_tx,
                         });
                         match resp_rx.recv_timeout(Duration::from_secs(5)) {
-                            Ok(Ok(bytes)) => (
-                                "200 OK",
-                                format!(r#"{{"status":"ok","bytes":{}}}"#, bytes),
-                            ),
+                            Ok(Ok(bytes)) => {
+                                ("200 OK", format!(r#"{{"status":"ok","bytes":{}}}"#, bytes))
+                            }
                             Ok(Err(err)) => (
                                 "500 Internal Server Error",
                                 format!(r#"{{"status":"error","message":"{}"}}"#, err),
@@ -472,12 +474,12 @@ fn handle_http_connection(
     let _ = stream.flush();
 }
 
-use bevy::prelude::*;
-use bevy::diagnostic::{DiagnosticsStore, FrameTimeDiagnosticsPlugin};
-use bevy::render::view::screenshot::{Screenshot, ScreenshotCaptured};
+use crate::persistence::{load_clank_file, save_clank_file};
 use crate::sim::SimWorld;
-use crate::ui::{UiState, ActiveTool, trigger_spore_catastrophe};
-use crate::persistence::{save_clank_file, load_clank_file};
+use crate::ui::{trigger_spore_catastrophe, ActiveTool, UiState};
+use bevy::diagnostic::{DiagnosticsStore, FrameTimeDiagnosticsPlugin};
+use bevy::prelude::*;
+use bevy::render::view::screenshot::{Screenshot, ScreenshotCaptured};
 use std::sync::{Arc, Mutex, RwLock};
 
 #[derive(Resource)]
@@ -521,7 +523,11 @@ impl Plugin for ClankApiPlugin {
                 Some(server)
             }
             Err(e) => {
-                bevy::log::warn!("Could not bind Clankolution HTTP API on port {}: {}", self.port, e);
+                bevy::log::warn!(
+                    "Could not bind Clankolution HTTP API on port {}: {}",
+                    self.port,
+                    e
+                );
                 None
             }
         };
@@ -532,7 +538,11 @@ impl Plugin for ClankApiPlugin {
             .insert_resource(ApiServerResource(server_handle))
             .add_systems(
                 Update,
-                (api_dispatch_system, api_metrics_sync_system, api_state_sync_system),
+                (
+                    api_dispatch_system,
+                    api_metrics_sync_system,
+                    api_state_sync_system,
+                ),
             );
     }
 }
@@ -544,7 +554,9 @@ pub fn api_dispatch_system(
     mut ui_res: Option<ResMut<UiState>>,
     mut gpu_res: Option<ResMut<crate::sim::GpuDriverResource>>,
 ) {
-    let Some(rx_res) = rx_res else { return; };
+    let Some(rx_res) = rx_res else {
+        return;
+    };
     let rx = match rx_res.0.lock() {
         Ok(guard) => guard,
         Err(_) => return,
@@ -555,18 +567,21 @@ pub fn api_dispatch_system(
             ApiCommand::TakeScreenshot { path, response_tx } => {
                 let resp_tx = response_tx.clone();
                 let save_path = path.clone();
-                commands
-                    .spawn(Screenshot::primary_window())
-                    .observe(move |captured: On<ScreenshotCaptured>| {
-                        match captured.image.clone().try_into_dynamic() {
-                            Ok(dyn_img) => {
-                                let _ = save_screenshot_to_disk(&dyn_img, &save_path, resp_tx.clone());
-                            }
-                            Err(e) => {
-                                let _ = resp_tx.send(Err(format!("dynamic image conversion error: {}", e)));
-                            }
+                commands.spawn(Screenshot::primary_window()).observe(
+                    move |captured: On<ScreenshotCaptured>| match captured
+                        .image
+                        .clone()
+                        .try_into_dynamic()
+                    {
+                        Ok(dyn_img) => {
+                            let _ = save_screenshot_to_disk(&dyn_img, &save_path, resp_tx.clone());
                         }
-                    });
+                        Err(e) => {
+                            let _ =
+                                resp_tx.send(Err(format!("dynamic image conversion error: {}", e)));
+                        }
+                    },
+                );
             }
             ApiCommand::UpdateSettings(req) => {
                 if let Some(ref mut sim) = sim_res {
@@ -605,15 +620,23 @@ pub fn api_dispatch_system(
                             if sim.active_engine == crate::sim::ActiveEngine::Gpu {
                                 if let Some(ref gpu) = gpu_res {
                                     if let Some(ref driver) = gpu.driver {
-                                        let states = driver.readback_agent_states(driver.max_agents.min(500) as usize);
-                                        if let Some((idx, s)) = states.iter().enumerate().find(|(_, a)| (a.meta_flags & (1 << 13)) == 0 && a.visual_cache != 0) {
+                                        let states = driver.readback_agent_states(
+                                            driver.max_agents.min(500) as usize,
+                                        );
+                                        if let Some((idx, s)) =
+                                            states.iter().enumerate().find(|(_, a)| {
+                                                (a.meta_flags & (1 << 13)) == 0
+                                                    && a.visual_cache != 0
+                                            })
+                                        {
                                             sim.selected_agent_id = Some(s.id);
                                             sim.selected_agent_slot = Some(idx as u32);
                                         }
                                     }
                                 }
                             } else {
-                                sim.selected_agent_id = sim.world.agents.iter().find(|a| a.dead == 0).map(|a| a.id);
+                                sim.selected_agent_id =
+                                    sim.world.agents.iter().find(|a| a.dead == 0).map(|a| a.id);
                             }
                         } else if agent_id == 0xFFFFFFFF {
                             sim.selected_agent_id = None;
@@ -624,8 +647,14 @@ pub fn api_dispatch_system(
                             if sim.active_engine == crate::sim::ActiveEngine::Gpu {
                                 if let Some(ref gpu) = gpu_res {
                                     if let Some(ref driver) = gpu.driver {
-                                        let states = driver.readback_agent_states(driver.max_agents.min(500) as usize);
-                                        if let Some((idx, _)) = states.iter().enumerate().find(|(_, a)| a.id == agent_id && (a.meta_flags & (1 << 13)) == 0) {
+                                        let states = driver.readback_agent_states(
+                                            driver.max_agents.min(500) as usize,
+                                        );
+                                        if let Some((idx, _)) =
+                                            states.iter().enumerate().find(|(_, a)| {
+                                                a.id == agent_id && (a.meta_flags & (1 << 13)) == 0
+                                            })
+                                        {
                                             sim.selected_agent_slot = Some(idx as u32);
                                         } else {
                                             sim.selected_agent_slot = Some(agent_id);
@@ -683,7 +712,12 @@ pub fn api_dispatch_system(
                                         tool_radius: 25.0,
                                     });
                                 } else {
-                                    sim.selected_agent_id = crate::rendering::find_agent_at_position(&sim, Vec2::new(x as f32, y as f32), 25.0);
+                                    sim.selected_agent_id =
+                                        crate::rendering::find_agent_at_position(
+                                            &sim,
+                                            Vec2::new(x as f32, y as f32),
+                                            25.0,
+                                        );
                                 }
                             }
                         }
@@ -758,7 +792,10 @@ pub fn api_dispatch_system(
                         "eclipse" => {
                             trigger_spore_catastrophe(sim);
                             if let Some(ref mut ui) = ui_res {
-                                ui.add_chronicle(format!("{:05}  An eclipse consumes the harvest.", sim.world.tick));
+                                ui.add_chronicle(format!(
+                                    "{:05}  An eclipse consumes the harvest.",
+                                    sim.world.tick
+                                ));
                             }
                         }
                         _ => {}
@@ -767,15 +804,14 @@ pub fn api_dispatch_system(
             }
             ApiCommand::Reset { seed } => {
                 if let Some(ref mut sim) = sim_res {
-                    if let Some(ref mut gpu) = gpu_res {
-                        if let Some(ref d) = gpu.driver {
-                            d.set_initialized(false);
-                        }
-                    }
                     sim.world = clank_core::world::World::new(seed as u32);
                     sim.selected_agent_id = None;
+                    sim.gpu_resync_pending = true;
                     if let Some(ref mut ui) = ui_res {
-                        ui.add_chronicle(format!("{:05}  The first hunger begins.", sim.world.tick));
+                        ui.add_chronicle(format!(
+                            "{:05}  The first hunger begins.",
+                            sim.world.tick
+                        ));
                     }
                 }
             }
@@ -800,13 +836,11 @@ pub fn api_dispatch_system(
                 if let Some(ref mut sim) = sim_res {
                     let res = load_clank_file(sim, &path).map_err(|e| e.to_string());
                     if res.is_ok() {
-                        if let Some(ref mut gpu) = gpu_res {
-                            if let Some(ref d) = gpu.driver {
-                                d.set_initialized(false);
-                            }
-                        }
                         if let Some(ref mut ui) = ui_res {
-                            ui.add_chronicle(format!("{:05}  A world returns from its .clank record.", sim.world.tick));
+                            ui.add_chronicle(format!(
+                                "{:05}  A world returns from its .clank record.",
+                                sim.world.tick
+                            ));
                         }
                     }
                     let _ = response_tx.send(res);
@@ -823,7 +857,9 @@ pub fn api_state_sync_system(
     ui_res: Option<Res<UiState>>,
     shared: Option<Res<SharedApiResource>>,
 ) {
-    let (Some(sim), Some(shared)) = (sim_res, shared) else { return; };
+    let (Some(sim), Some(shared)) = (sim_res, shared) else {
+        return;
+    };
     let ui_tool = ui_res
         .as_ref()
         .map(|u| format!("{:?}", u.active_tool))
@@ -862,7 +898,9 @@ pub fn api_metrics_sync_system(
     sim_res: Option<Res<SimWorld>>,
     shared: Option<Res<SharedApiResource>>,
 ) {
-    let Some(shared) = shared else { return; };
+    let Some(shared) = shared else {
+        return;
+    };
     let fps = diagnostics
         .get(&FrameTimeDiagnosticsPlugin::FPS)
         .and_then(|d| d.smoothed().or_else(|| d.average()).or_else(|| d.value()))
@@ -877,6 +915,7 @@ pub fn api_metrics_sync_system(
         (0, 0)
     };
     if let Ok(mut lock) = shared.0.write() {
-        lock.metrics.update(fps, frame_time_ms, tick, pop, time.elapsed_secs_f64());
+        lock.metrics
+            .update(fps, frame_time_ms, tick, pop, time.elapsed_secs_f64());
     };
 }

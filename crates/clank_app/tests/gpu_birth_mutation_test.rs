@@ -43,26 +43,17 @@ fn test_stateless_pcg_triangular_distribution() {
 }
 
 #[test]
-fn test_mutate_word_with_expanded_cortex_masking() {
+fn test_mutate_word_masks_unused_genes() {
     use clank_app::gpu::birth_pipeline::mutate_word;
 
     let initial_word = 0x10203040u32;
-    // Word index 6 is the 7th word of hidden neuron 0 (w < 70 && w % 7 == 6)
-    // In baseline mode (expanded_cortex = false), upper 16 bits (bytes 2 and 3) must be masked to 0
-    let baseline_mutated = mutate_word(initial_word, 42, 6, 100, 0.15, false);
-    assert_eq!(baseline_mutated & 0xFFFF0000, 0);
+    // Word index 6 is the 7th word of hidden neuron 0 (w < 70 && w % 7 == 6):
+    // upper 16 bits (bytes 2 and 3) must be masked to 0
+    let mutated = mutate_word(initial_word, 42, 6, 100, 0.15);
+    assert_eq!(mutated & 0xFFFF0000, 0);
 
-    // In expanded cortex mode (expanded_cortex = true), upper 16 bits must be preserved/mutated
-    let expanded_mutated = mutate_word(initial_word, 42, 6, 100, 0.15, true);
-    assert_ne!(expanded_mutated & 0xFFFF0000, 0);
-
-    // Word index 72 is the 3rd word of output neuron 0 (w >= 70 && (72 - 70) % 3 == 2)
-    // In baseline mode, byte 3 (bits 24..31) must be masked to 0
-    let baseline_output = mutate_word(initial_word, 42, 72, 100, 0.15, false);
-    assert_eq!(baseline_output & 0xFF000000, 0);
-
-    // In expanded cortex mode, byte 3 is active
-    let expanded_output = mutate_word(initial_word, 42, 72, 100, 0.15, true);
-    assert_ne!(expanded_output & 0xFF000000, 0);
+    // Word index 72 is the 3rd word of output neuron 0 (w >= 70 && (72 - 70) % 3 == 2):
+    // byte 3 (bits 24..31) must be masked to 0
+    let output = mutate_word(initial_word, 42, 72, 100, 0.15);
+    assert_eq!(output & 0xFF000000, 0);
 }
-

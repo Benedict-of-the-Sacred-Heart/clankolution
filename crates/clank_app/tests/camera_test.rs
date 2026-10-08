@@ -1,5 +1,7 @@
 use bevy::prelude::*;
-use clank_app::camera::{ClankCameraPlugin, MainCamera, clamp_zoom, compute_camera_pan, track_target_position};
+use clank_app::camera::{
+    clamp_zoom, compute_camera_pan, track_target_position, ClankCameraPlugin, MainCamera,
+};
 
 #[test]
 fn test_zoom_clamping() {
@@ -49,7 +51,9 @@ fn test_camera_plugin_spawns_main_camera() {
 
     app.update();
 
-    let mut query = app.world_mut().query_filtered::<&Transform, With<MainCamera>>();
+    let mut query = app
+        .world_mut()
+        .query_filtered::<&Transform, With<MainCamera>>();
     let count = query.iter(app.world()).count();
     assert_eq!(count, 1);
 }
@@ -85,7 +89,9 @@ fn test_camera_locked_to_viewport() {
 
     app.update();
 
-    let mut query = app.world_mut().query_filtered::<(&Transform, &Projection), With<MainCamera>>();
+    let mut query = app
+        .world_mut()
+        .query_filtered::<(&Transform, &Projection), With<MainCamera>>();
     for (_transform, projection) in query.iter(app.world()) {
         if let Projection::Orthographic(ref ortho) = *projection {
             assert_eq!(ortho.scale, 1.0);

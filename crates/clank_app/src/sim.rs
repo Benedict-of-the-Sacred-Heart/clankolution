@@ -1,6 +1,6 @@
 use bevy::prelude::*;
-use clank_core::world::World;
 use clank_core::agent::AgentData;
+use clank_core::world::World;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Default, serde::Serialize, serde::Deserialize)]
 pub enum ActiveEngine {
@@ -23,6 +23,11 @@ pub struct SimWorld {
     pub world_height: f64,
     pub active_engine: ActiveEngine,
     pub gpu_population: u32,
+    /// Set when the CPU world was replaced (NEW WORLD, API reset, load); the GPU copy is
+    /// stale and must be re-uploaded rather than flushed back.
+    pub gpu_resync_pending: bool,
+    /// `world.births` at the last GPU upload; GPU telemetry counts births since then.
+    pub gpu_births_base: u32,
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -54,6 +59,8 @@ impl SimWorld {
             world_height: 600.0,
             active_engine: ActiveEngine::Rust,
             gpu_population: 0,
+            gpu_resync_pending: false,
+            gpu_births_base: 0,
         }
     }
 
@@ -86,6 +93,7 @@ impl SimWorld {
         self.selected_agent_slot = None;
         self.selected_agent_cache = None;
         self.pending_tool = None;
+        self.gpu_resync_pending = true;
     }
 
     pub fn get_selected_agent(&self) -> Option<&AgentData> {
@@ -103,7 +111,10 @@ pub struct GpuDriverResource {
     pub driver: Option<crate::gpu::compute_driver::GpuComputeDriver>,
 }
 
-pub fn flush_gpu_to_rust(sim: &mut SimWorld, driver: &crate::gpu::compute_driver::GpuComputeDriver) {
+pub fn flush_gpu_to_rust(
+    sim: &mut SimWorld,
+    driver: &crate::gpu::compute_driver::GpuComputeDriver,
+) {
     let telem = driver.readback_telemetry();
     let read_count = sim.world.max_cap.min(driver.max_agents as usize);
     let updated_states = driver.readback_agent_states(read_count);
@@ -127,13 +138,93 @@ pub fn flush_gpu_to_rust(sim: &mut SimWorld, driver: &crate::gpu::compute_driver
     );
 }
 
+/// Slots the app's GPU driver allocates (simulation and presentation capacity).
+pub const GPU_MAX_AGENTS: u32 = 65536;
+
+/// Keeps a GPU driver sized to the current soil grid in both engine modes: the GPU engine
+/// simulates with it and both engines are presented from its buffers. In the app it is built
+/// on Bevy's render device so the renderer reads those buffers in place; without a renderer
+/// (headless) it gets a device of its own.
+pub fn ensure_gpu_driver(
+    sim: Res<SimWorld>,
+    mut gpu: ResMut<GpuDriverResource>,
+    render_device: Option<Res<bevy::render::renderer::RenderDevice>>,
+    render_queue: Option<Res<bevy::render::renderer::RenderQueue>>,
+) {
+    let cols = sim.world.soil.cols as u32;
+    let rows = sim.world.soil.rows as u32;
+    let render_available = render_device.is_some() && render_queue.is_some();
+    if let Some(ref d) = gpu.driver {
+        let grid_matches = d.soil_cols == cols && d.soil_rows == rows;
+        // A driver made before the renderer existed moves onto its device, unless the GPU
+        // engine already holds live state on the old device.
+        let can_move = render_available && !d.on_render_device && !d.is_initialized();
+        if grid_matches && !can_move {
+            return;
+        }
+    }
+    gpu.driver = match (render_device, render_queue) {
+        (Some(device), Some(queue)) => Some(
+            crate::gpu::compute_driver::GpuComputeDriver::from_render_device(
+                &device,
+                &queue,
+                cols,
+                rows,
+                GPU_MAX_AGENTS,
+            ),
+        ),
+        _ => crate::gpu::compute_driver::GpuComputeDriver::create_for_world(
+            cols,
+            rows,
+            GPU_MAX_AGENTS,
+        ),
+    };
+}
+
+/// Uploads the CPU world to the GPU, which then owns the simulation.
+pub fn upload_world_to_gpu(
+    sim: &mut SimWorld,
+    driver: &crate::gpu::compute_driver::GpuComputeDriver,
+) {
+    let (states, genomes, atomics, soil, params) = crate::gpu::bridge::sync_rust_to_gpu(sim);
+    driver.upload_state(&states, &genomes, &atomics, &soil, &params);
+    // Present the uploaded world as it was, before the first GPU tick: its soil colormap and
+    // its creatures' trails (a NEW WORLD has none; an engine switch keeps them).
+    let mut rgba = vec![0u8; sim.world.soil.grid_size * 4];
+    crate::rendering::generate_soil_rgba(&sim.world.soil, &mut rgba);
+    driver.write_soil_display(&rgba);
+    driver.write_trails(&crate::gpu::bridge::agent_trails(sim));
+    sim.gpu_population = sim.world.agents.iter().filter(|a| a.dead == 0).count() as u32;
+    sim.gpu_births_base = sim.world.births;
+}
+
 pub fn sim_step_system(
     mut sim: ResMut<SimWorld>,
     mut gpu_res: Option<ResMut<GpuDriverResource>>,
     mut audio_queue: Option<ResMut<crate::audio::AudioVoiceQueue>>,
-    ui_state: Option<Res<crate::ui::UiState>>,
     camera_query: Query<(&Camera, &Transform, &Projection), With<Camera2d>>,
 ) {
+    // A replaced CPU world invalidates the GPU copy. Never flush it back; in GPU mode upload
+    // the new world at once so the renderer (which reads GPU buffers) shows it even while paused.
+    if sim.gpu_resync_pending {
+        sim.gpu_resync_pending = false;
+        if let Some(driver) = gpu_res.as_ref().and_then(|g| g.driver.as_ref()) {
+            driver.set_initialized(false);
+            let grid_matches = driver.soil_cols == sim.world.soil.cols as u32
+                && driver.soil_rows == sim.world.soil.rows as u32;
+            if sim.active_engine == ActiveEngine::Gpu && grid_matches {
+                upload_world_to_gpu(&mut sim, driver);
+            }
+        }
+    }
+    // Finished GPU frames land here, also while paused, so nothing stays in flight.
+    if let Some(driver) = gpu_res.as_ref().and_then(|g| g.driver.as_ref()) {
+        if driver.is_initialized() {
+            for frame in driver.poll_frame_readbacks() {
+                apply_frame_readback(&mut sim, driver, &frame, audio_queue.as_deref_mut());
+            }
+        }
+    }
     if sim.paused {
         return;
     }
@@ -145,6 +236,9 @@ pub fn sim_step_system(
                 if let Some(ref driver) = gpu.driver {
                     if driver.is_initialized() {
                         flush_gpu_to_rust(&mut sim, driver);
+                        for frame in driver.poll_frame_readbacks() {
+                            apply_frame_readback(&mut sim, driver, &frame, None);
+                        }
                         driver.set_initialized(false);
                     }
                 }
@@ -154,21 +248,9 @@ pub fn sim_step_system(
         }
         ActiveEngine::Gpu => {
             if let Some(ref mut gpu) = gpu_res {
-                if let Some(ref d) = gpu.driver {
-                    if d.soil_cols != sim.world.soil.cols as u32 || d.soil_rows != sim.world.soil.rows as u32 {
-                        gpu.driver = None;
-                    }
-                }
-                if gpu.driver.is_none() {
-                    let cols = sim.world.soil.cols as u32;
-                    let rows = sim.world.soil.rows as u32;
-                    gpu.driver = crate::gpu::compute_driver::GpuComputeDriver::create_for_world(cols, rows, 65536);
-                }
                 if let Some(ref mut driver) = gpu.driver {
                     if !driver.is_initialized() {
-                        let (states, genomes, atomics, soil, params) = crate::gpu::bridge::sync_rust_to_gpu(&sim);
-                        driver.upload_state(&states, &genomes, &atomics, &soil, &params);
-                        sim.gpu_population = sim.world.agents.iter().filter(|a| a.dead == 0).count() as u32;
+                        upload_world_to_gpu(&mut sim, driver);
                     }
 
                     let current_count = if sim.gpu_population > 0 {
@@ -177,34 +259,41 @@ pub fn sim_step_system(
                         sim.world.agents.len() as u32
                     };
 
-                    let (cam_pos, cam_size) = if let Ok((camera, transform, proj)) = camera_query.single() {
+                    let (cam_pos, cam_size) = if let Ok((camera, transform, proj)) =
+                        camera_query.single()
+                    {
                         let pos = transform.translation.truncate();
-                        let sim_cam = crate::rendering::bevy_to_sim_coord(pos, sim.world_height as f32);
-                        let mut size = camera.logical_viewport_size().unwrap_or(Vec2::new(sim.world_width as f32, sim.world_height as f32));
+                        let sim_cam =
+                            crate::rendering::bevy_to_sim_coord(pos, sim.world_height as f32);
+                        let mut size = camera
+                            .logical_viewport_size()
+                            .unwrap_or(Vec2::new(sim.world_width as f32, sim.world_height as f32));
                         if let Projection::Orthographic(ref ortho) = *proj {
                             size *= ortho.scale;
                         }
                         ([sim_cam.x, sim_cam.y], [size.x, size.y])
                     } else {
-                        ([(sim.world_width * 0.5) as f32, (sim.world_height * 0.5) as f32], [sim.world_width as f32, sim.world_height as f32])
+                        (
+                            [
+                                (sim.world_width * 0.5) as f32,
+                                (sim.world_height * 0.5) as f32,
+                            ],
+                            [sim.world_width as f32, sim.world_height as f32],
+                        )
                     };
 
-                    let (tool_type, tool_pos, tool_radius) = if let Some(pt) = sim.pending_tool.take() {
-                        (pt.tool_type, pt.tool_pos, pt.tool_radius)
-                    } else {
-                        (0xFFFFFFFF, [0.0, 0.0], 45.0)
-                    };
-
-                    let (bh, cortex, sex) = if let Some(ref ui) = ui_state {
-                        (ui.barnes_hut, ui.expanded_cortex, ui.sexual_selection)
-                    } else {
-                        (false, false, false)
-                    };
+                    let (tool_type, tool_pos, tool_radius) =
+                        if let Some(pt) = sim.pending_tool.take() {
+                            (pt.tool_type, pt.tool_pos, pt.tool_radius)
+                        } else {
+                            (0xFFFFFFFF, [0.0, 0.0], 45.0)
+                        };
 
                     let params = crate::gpu::types::GpuSimParams {
                         tick: sim.world.tick,
                         agent_count: current_count,
-                        max_agents: driver.max_agents,
+                        // Only the slots that can hold a creature, not all of the driver's.
+                        max_agents: driver.active_slots(sim.world.max_cap as u32),
                         max_capacity: sim.world.max_cap as u32,
                         hostility: (sim.world.hostility / 100.0) as f32,
                         mut_rate: (sim.world.mutation / 100.0) as f32,
@@ -224,14 +313,16 @@ pub fn sim_step_system(
                     };
 
                     driver.update_params(&params);
-                    driver.dispatch_sub_ticks_with_mods(steps, &params, bh, cortex, sex);
+                    driver.dispatch_sub_ticks(steps, &params);
 
-                    // Read back ONLY telemetry (128 bytes)
-                    let telemetry = driver.readback_telemetry();
+                    // Results arrive through the async ring on a later frame.
+                    driver.request_frame_readback(sim.selected_agent_slot, tool_type == 0);
                     sim.world.tick += steps;
-                    sim.world.kills += telemetry.kills;
-                    sim.world.births = telemetry.total_births.max(sim.world.births);
-                    sim.gpu_population = telemetry.population;
+                    // The reference counts the eclipse down once per tick.
+                    sim.world.eclipse = sim.world.eclipse.saturating_sub(steps);
+                    if sim.selected_agent_slot.is_none() {
+                        sim.selected_agent_cache = None;
+                    }
 
                     // Spore replenishment if GPU population collapses (matching HTML line 1464 & Rust world.rs line 984)
                     if sim.gpu_population < 15 && sim.world.tick % 45 < steps {
@@ -243,6 +334,16 @@ pub fn sim_step_system(
                             spore_positions.push((x, y));
                         }
                         let new_slots = driver.seed_spores_gpu(&spore_positions);
+                        // Seeding waited for the GPU, so every frame requested so far has
+                        // landed; apply them now or their pre-seed counts would arrive later.
+                        for frame in driver.poll_frame_readbacks() {
+                            apply_frame_readback(
+                                &mut sim,
+                                driver,
+                                &frame,
+                                audio_queue.as_deref_mut(),
+                            );
+                        }
                         sim.gpu_population += new_slots.len() as u32;
                         let cur_tick = sim.world.tick;
                         if sim.world.events.len() < 1024 {
@@ -255,63 +356,6 @@ pub fn sim_step_system(
                         }
                     }
 
-                    if telemetry.apex_agent_id > 0 {
-                        driver.next_agent_id.fetch_max(telemetry.apex_agent_id, std::sync::atomic::Ordering::Relaxed);
-                        sim.world.next_id = sim.world.next_id.max(telemetry.apex_agent_id);
-                    }
-
-                    // Ingest audio voices into AudioVoiceQueue and generate visual sparks
-                    let v_count = (telemetry.audio_voice_count as usize).min(256);
-                    if v_count > 0 {
-                        let voices = driver.readback_audio_voices(v_count);
-                        for v in &voices {
-                            let (color_idx, count) = match v.event_type {
-                                1 => (8, 2),  // Kill spark
-                                2 => (9, 9),  // Birth spark
-                                3 => (10, 9), // Lineage spark
-                                _ => (8, 2),
-                            };
-                            if sim.world.spark_events.len() < 512 {
-                                sim.world.spark_events.push(clank_core::SparkEvent {
-                                    x: v.pos[0],
-                                    y: v.pos[1],
-                                    color_idx,
-                                    count,
-                                });
-                            }
-                        }
-                        if let Some(ref mut aq) = audio_queue {
-                            aq.ingest_voices(&voices);
-                        }
-                    }
-
-                    // Specimen Picking & Identity Guard
-                    if tool_type == 0 {
-                        if telemetry.selected_agent_idx != 0xFFFFFFFF {
-                            sim.selected_agent_id = Some(telemetry.selected_agent_id);
-                            sim.selected_agent_slot = Some(telemetry.selected_agent_idx);
-                        } else {
-                            sim.selected_agent_id = None;
-                            sim.selected_agent_slot = None;
-                            sim.selected_agent_cache = None;
-                        }
-                    }
-
-                    if let (Some(slot), Some(expected_id)) = (sim.selected_agent_slot, sim.selected_agent_id) {
-                        if let Some((state, genome, atomic)) = driver.readback_agent_slot(slot) {
-                            let is_dead = (state.meta_flags & (1 << 13)) != 0;
-                            let mut data = crate::gpu::bridge::unpack_gpu_agent_to_agent_data(&state, &genome, Some(&atomic));
-                            if state.id != expected_id || is_dead {
-                                data.dead = 1;
-                            }
-                            sim.selected_agent_cache = Some(data);
-                        } else {
-                            sim.selected_agent_cache = None;
-                        }
-                    } else {
-                        sim.selected_agent_cache = None;
-                    }
-
                     return;
                 }
             }
@@ -321,12 +365,100 @@ pub fn sim_step_system(
     }
 }
 
+/// Applies one finished GPU frame: counters, audio, picking and the selected creature.
+fn apply_frame_readback(
+    sim: &mut SimWorld,
+    driver: &crate::gpu::compute_driver::GpuComputeDriver,
+    frame: &crate::gpu::frame_readback::FrameReadback,
+    audio_queue: Option<&mut crate::audio::AudioVoiceQueue>,
+) {
+    let telemetry = &frame.telemetry;
+    sim.world.kills += telemetry.kills;
+    sim.world.births = sim.gpu_births_base + telemetry.total_births;
+    sim.gpu_population = telemetry.population;
+
+    if telemetry.apex_agent_id > 0 {
+        driver.next_agent_id.fetch_max(
+            telemetry.apex_agent_id,
+            std::sync::atomic::Ordering::Relaxed,
+        );
+        sim.world.next_id = sim.world.next_id.max(telemetry.apex_agent_id);
+    }
+
+    for v in &frame.audio {
+        let (color_idx, count) = match v.event_type {
+            1 => (8, 2),  // Kill spark
+            2 => (9, 9),  // Birth spark
+            3 => (10, 9), // Lineage spark
+            _ => (8, 2),
+        };
+        if sim.world.spark_events.len() < 512 {
+            sim.world.spark_events.push(clank_core::SparkEvent {
+                x: v.pos[0],
+                y: v.pos[1],
+                color_idx,
+                count,
+            });
+        }
+    }
+    if let Some(aq) = audio_queue {
+        if !frame.audio.is_empty() {
+            aq.ingest_voices(&frame.audio);
+        }
+    }
+
+    // Specimen Picking & Identity Guard
+    if frame.picking {
+        if telemetry.selected_agent_idx != 0xFFFFFFFF {
+            if sim.selected_agent_id != Some(telemetry.selected_agent_id) {
+                sim.selected_agent_cache = None;
+            }
+            sim.selected_agent_id = Some(telemetry.selected_agent_id);
+            sim.selected_agent_slot = Some(telemetry.selected_agent_idx);
+        } else {
+            sim.selected_agent_id = None;
+            sim.selected_agent_slot = None;
+            sim.selected_agent_cache = None;
+        }
+    }
+
+    // Only a snapshot of the creature that is selected now; frames requested before a new
+    // pick describe the previous selection.
+    let Some(sel) = frame.selected else {
+        return;
+    };
+    let (Some(slot), Some(expected_id)) = (sim.selected_agent_slot, sim.selected_agent_id) else {
+        return;
+    };
+    if sel.slot != slot {
+        return;
+    }
+    let is_dead = (sel.state.meta_flags & (1 << 13)) != 0;
+    let mut data = crate::gpu::bridge::unpack_gpu_agent_to_agent_data(
+        &sel.state,
+        &sel.genome,
+        Some(&sel.atomic),
+    );
+    if sel.state.id != expected_id || is_dead {
+        data.dead = 1;
+    }
+    if sel.trail.owner_id == sel.state.id {
+        let n = (sel.trail.count as usize).min(crate::gpu::types::TRAIL_LEN);
+        for (i, p) in sel.trail.pts[..n].iter().enumerate() {
+            data.trail_x[i] = p[0] as f64;
+            data.trail_y[i] = p[1] as f64;
+        }
+        data.trail_count = n as u32;
+    }
+    sim.selected_agent_cache = Some(data);
+}
+
 pub struct ClankSimPlugin;
 
 impl Plugin for ClankSimPlugin {
     fn build(&self, app: &mut App) {
         app.init_resource::<SimWorld>()
             .init_resource::<GpuDriverResource>()
-            .add_systems(Update, sim_step_system);
+            .add_systems(Update, (ensure_gpu_driver, sim_step_system).chain());
     }
 }

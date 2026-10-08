@@ -1,5 +1,7 @@
+use clank_app::persistence::{
+    load_clank_snapshot, load_json_world, save_clank_snapshot, save_json_world,
+};
 use clank_app::sim::SimWorld;
-use clank_app::persistence::{save_clank_snapshot, load_clank_snapshot, save_json_world, load_json_world};
 
 #[test]
 fn test_clank_binary_persistence_roundtrip() {
@@ -68,7 +70,9 @@ fn test_json_persistence_roundtrip() {
 
 #[test]
 fn test_file_save_and_load_roundtrip() {
-    use clank_app::persistence::{save_clank_file, load_clank_file, export_json_file, import_json_file};
+    use clank_app::persistence::{
+        export_json_file, import_json_file, load_clank_file, save_clank_file,
+    };
 
     let mut sim = SimWorld::new(1234);
     sim.step(60);
@@ -101,4 +105,3 @@ fn test_file_save_and_load_roundtrip() {
     let _ = std::fs::remove_file(clank_path);
     let _ = std::fs::remove_file(json_path);
 }
-

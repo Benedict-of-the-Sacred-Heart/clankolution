@@ -49,15 +49,8 @@ pub fn crossover_genes(word_a: u32, word_b: u32, id: u32, tick: u32) -> u32 {
 }
 
 /// Mutates a 32-bit packed word containing 4 signed 8-bit gene weights,
-/// applying triangular mutation and masking inactive dummy genes when `expanded_cortex` is false.
-pub fn mutate_word(
-    word: u32,
-    id: u32,
-    word_idx: u32,
-    tick: u32,
-    mut_rate: f32,
-    expanded_cortex: bool,
-) -> u32 {
+/// applying triangular mutation and masking inactive dummy genes.
+pub fn mutate_word(word: u32, id: u32, word_idx: u32, tick: u32, mut_rate: f32) -> u32 {
     let bytes = word.to_le_bytes();
     let mut mutated_bytes = [0u8; 4];
     for i in 0..4 {
@@ -67,15 +60,12 @@ pub fn mutate_word(
     }
     let mut result = u32::from_le_bytes(mutated_bytes);
 
-    if !expanded_cortex {
-        if word_idx < 70 && (word_idx % 7) == 6 {
-            result &= 0x0000FFFF;
-        }
-        if word_idx >= 70 && ((word_idx - 70) % 3) == 2 {
-            result &= 0x00FFFFFF;
-        }
+    if word_idx < 70 && (word_idx % 7) == 6 {
+        result &= 0x0000FFFF;
+    }
+    if word_idx >= 70 && ((word_idx - 70) % 3) == 2 {
+        result &= 0x00FFFFFF;
     }
 
     result
 }
-
