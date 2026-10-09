@@ -43,7 +43,7 @@
    - **Grid Cell Table Sentinels**: The 54-cell table of `(start, count)` pairs is stored in the `spatial_keys` buffer after the `N` sorted keys (`[0, N)` sorted keys, `[N, N + 54)` cell table, `[N + 54, 2N + 54)` `cell_slots`, `N = params.max_agents`). The grid scan rewrites all 54 entries every sub-tick, writing empty cells as `vec2u(0xFFFFFFFFu, 0xFFFFFFFFu)`, so nothing else clears it. In `agent_step.wgsl`, neighbor searches check `if (range.x != 0xFFFFFFFFu)`, instantly skipping empty cells with zero warp divergence. Morton order does not keep a 100 px grid cell's creatures contiguous (cell edges are not power-of-two Morton boundaries), so the table is filled by a count pass, a 54-entry prefix sum, and a scatter of live slots into `cell_slots`; each `(start, count)` indexes `cell_slots`. There is no per-cell cap (the per-cell linked list capped at 128 is replaced).
    - **Lightweight 8-Byte Indirection Radix Sort**: Parallel radix sort operates strictly on `array<vec2u>` storing `(morton_key, agent_slot_idx)`. The 128-byte `GpuAgentState` structs remain completely stationary in VRAM, eliminating gigabytes/sec of memory bus saturation. It is a multi-pass LSD sort (4 stable passes of 8 bits over the Morton code, keys starting in slot order, so equal codes stay in slot order). Single-pass decoupled look-back scans can hang on Metal and are not used. Each pass is two dispatches: a count of each 256-key workgroup's digits, and a scatter whose workgroups work out their own offsets from those counts (no separate scan dispatches), ranking a key among its workgroup's earlier keys with the same digit by counting bits in a per-digit 256-bit mask (a loop over all earlier threads cost about 60 µs per dispatch on the FirePro D500). Pass 0 also builds the grid cell table from the unsorted keys and counts `live_count` (reset by the preamble). The sort pipelines skip zero-initialising workgroup memory, which cost about 120 µs per dispatch; every workgroup variable is written before it is read. Measured on the D500: about 0.2 ms of GPU time per sort at 340 slots and 0.33 ms at 10,000. Morton codes quantize with `floor` in both WGSL and `spatial_index::compute_morton_32_with_size` (the Rust helper currently uses `.round()`; they must agree).
    - **Sub-Microsecond Mouse Picking ($O(\log N)$)**: Fast binary search on sorted Morton keys to select creatures for the specimen card.
-   - **Coalesced Atomic Soil Writes**: Threads scheduled in Morton order write to contiguous L1/L2 cache lines for food/taint/scent deposits, cutting bus contention.
+   - **Coalesced Atomic Soil Writes**: Threads scheduled in Morton order write to contiguous L1/L2 cache lines for food/taint/scent deposits, cutting bus contention. The agent pass's thread `i` takes slot `spatial_keys[i].y` (the sort's first `max_agents` keys hold every slot once, live creatures first by position), so neighbouring threads also read neighbouring creatures and cell lists. Measured on the D500 (32 sub-ticks from reference founders): 65,000 creatures 510 → 128 ms per tick, 16,000 creatures 16.4 → 11.9 ms.
    - **Spatially Coherent Dart Rendering**: Morton-ordered instance streams maximize GPU tile-cache hit rates on Metal and tile-based rasterizers.
 
 5. **Hardware Toroidal Coordinate Wrapping**:
@@ -97,7 +97,7 @@
     - **Operation 6: Precomputed Visual Render Cache (`visual_cache: u32`)**: The final 4 bytes of Cache Line 1 (offsets 124..128) pack the rendering attributes, identically in `agent_step.wgsl`, `birth_step.wgsl` and `bridge::pack_agent_state`: bits 0..7 radius (`tr0 × 255`), bits 8..15 signal (`signal × 255`), bits 16..23 energy (`energy / 100 × 255`), bit 24 attacking (`attack > 0.5`, clankolution.html line 58), bits 25..31 birth countdown. The vertex shader loads `vec2u(root, visual_cache)` directly from Cache Line 1 and looks the lineage colour up as `PALETTE[root % 8]`, completely bypassing Cache Line 0 (traits, kinematics) and saving ~72 MB of vertex fetch bandwidth per frame (~4.3 GB/s at 60 FPS) across 1,000,000 agents.
 
 15. **Consolidated Output Queue (Telemetry Header + 65,536 Births + 256 Voices = 1,028 KB)**:
-    - **Unified Buffer Architecture (`ConsolidatedQueue`)**: Combines aggregate telemetry (128 bytes), birth events (65,536 entries $\times$ 16B = 1,048,576 bytes = 1 MB), and audio voices (256 entries $\times$ 16B = 4,096 bytes = 4 KB) into a single 1,052,800-byte storage buffer ($1,028.1\text{ KB} \ll 128\text{ MB}$ WebGPU storage limit, 16-byte aligned).
+    - **Unified Buffer Architecture (`ConsolidatedQueue`)**: Combines aggregate telemetry (128 bytes), birth events (65,536 entries $\times$ 16B = 1,048,576 bytes = 1 MB), audio voices (256 entries $\times$ 16B = 4,096 bytes = 4 KB) and chronicle events (64 entries $\times$ 16B = 1,024 bytes) into a single 1,053,824-byte storage buffer ($1,029.1\text{ KB} \ll 128\text{ MB}$ WebGPU storage limit, 16-byte aligned).
     - **Freelist Reservation Order**: Reserves `queue_idx = atomicAdd(&queue_buffer.telemetry.birth_count, 1u)` *before* popping from `freelist`, completely eliminating slot leakage during reproductive blooms or queue saturation.
     - **Toroidal Seam Viewport Frustum Culling**: Events occurring outside the camera viewport are culled directly on the GPU using toroidal shortest distances:
       ```wgsl
@@ -298,7 +298,7 @@
     - **Specimen Picking Identity Guard `(slot_idx, agent_id)`**:
       The CPU tracks the tuple `(slot_idx, agent_id)`. If Agent $K$ dies during sub-ticks 2..32 (or a subsequent tick) and slot $K$ is recycled, `agent_states[slot_idx].id != picked_id`. The UI immediately detects the death, prevents displaying the replacement creature, and displays final stats.
     - **Multi-Tick Telemetry & Audio Lifecycle Synchronization (`preamble_clear.wgsl`)**:
-      In 32x speed mode, sub-tick resets (`mate_claim`, `mate_energy_milli`, `birth_count = 0u`; `dead_claimed` is persistent) run every sub-tick. Frame-level cumulative counters (`audio_voice_count = 0u`, `kills = 0u`, `starvations = 0u`, `food_grazed_milli = 0u`, `apex_record_milli = 0u`) are reset strictly at frame start (`params.sub_tick == 0u`), preventing audio queue overwrites and telemetry loss. Instantaneous living census (`population`, `max_generation`, `living_lineages`) is reset and recounted strictly on the final sub-tick (`sub_tick == params.sub_ticks_per_frame - 1u`) by a census pass that runs after the birth pass, so the population includes that sub-tick's newborns (counting in the agent pass lagged one birth pass behind). `living_lineages` counts distinct full-width roots: each live creature inserts `root + 1` into a cleared 4096-entry open-addressed table by CAS, and each insert of a new root adds 1. The 16-bucket `lineage_counts` cannot represent full-width roots and is removed.
+      In 32x speed mode, sub-tick resets (`mate_claim`, `mate_energy_milli`, `birth_count = 0u`; `dead_claimed` is persistent) run every sub-tick. Frame-level cumulative counters (`audio_voice_count = 0u`, `kills = 0u`, `starvations = 0u`, `food_grazed_milli = 0u`, `apex_record_milli = 0u`) are reset strictly at frame start (`params.sub_tick == 0u`), preventing audio queue overwrites and telemetry loss. Instantaneous living census (`population`, `max_generation`, `living_lineages`) is reset and recounted strictly on the final sub-tick (`sub_tick == params.sub_ticks_per_frame - 1u`) by a census pass that runs after the birth pass, so the population includes that sub-tick's newborns (counting in the agent pass lagged one birth pass behind). `living_lineages` counts distinct full-width roots: each live creature inserts `root + 1` by CAS into a cleared open-addressed table sized to a power of two of at least twice the slot count (every creature may head its own lineage, so the table never fills and probe chains stay short — a fixed 4096-entry table capped the count at 4096 and made every later insert probe the whole table), and each insert of a new root adds 1. The 16-bucket `lineage_counts` cannot represent full-width roots and is removed.
 
     #### 12. Soil Sensing Reads the Simulation Buffer, Never the Colormap (Tasks 3 & 5)
     - **The Vulnerabilities**:
@@ -422,8 +422,9 @@ The remediation steps that used to be Task 7 now sit in the tasks they belong to
   - Implement coalesced atomic soil deposits (each clamping the cell to [0, 3]; corpses deposit at the victim's final position) and grazing to `soil_buffer`, atomic millijoule combat resolution with `dead_claimed` CAS, toroidal seam frustum-culled stochastic audio voice emission (256-voice buffer), reference mating (several suitors may share a mate) with seamless asexual fallback, and decoupled SIMD genome mutation pass (`birth_step.wgsl`) with newborn workgroup bounds guard (`wg_id.x >= min(birth_count, 65536u)`) and `visual_cache` newborn initialization.
   - Births reserve capacity atomically (charged only when a slot is reserved; the cap holds across sub-ticks), and the birth pass is dispatched indirectly over the whole queue.
   - Draw every random number from its own `pcg3d(id, stream, tick)` stream.
-  - Give spores (population collapse and Seed Life) reference founder genomes: genes uniform in [−58, 58], traits uniform in [0, 1], energy uniform in [34, 52], a new root each. (Today they get a fixed gene pattern, traits of 0.5 and energy 43.)
+  - Give new agents (population-collapse replenishment and Seed Life) reference founder genomes: genes uniform in [−58, 58], each trait uniform in its reference range ([0.25, 0.8], [0.3, 0.8], [0.3, 0.8], [0.25, 0.75], [0.2, 0.8], [0.2, 0.8]), energy uniform in [34, 52], a new root each, after every lineage of the uploaded world (`next_agent_root`, carried back to `World::roots` on download), and ids after the GPU's newborns (`apex_agent_id`). (Today they get a fixed gene pattern, traits of 0.5 and energy 43.)
   - Census pass after births: population, max generation, living lineages.
+  - Run the agent pass's threads in Morton order (thread `i` takes slot `spatial_keys[i].y`; see Cross-Cutting Morton Code Optimizations).
 
 - [ ] **Task 6: Frustum Culling, Minimap LOD, Dual-Engine UI, Audio & Verification**
   - Implement **GPU Camera Viewport Frustum Culling** via LBVH streaming 128-byte `GpuAgentState` ($4.0\times$ less bandwidth than 512B structs) into an Indirect Draw Buffer.
@@ -437,6 +438,7 @@ The remediation steps that used to be Task 7 now sit in the tasks they belong to
   - Trails are per tick, not per rendered frame: `trail_step.wgsl` appends each creature's position after the agent pass into `agent_trails_buf`, owned by creature id (play-test fix 2026-10-06: trails stretched with speed and stitched reused ids; covered by `gpu_trail_and_reset_test`).
   - NEW WORLD and loads replace the GPU world: `SimWorld::gpu_resync_pending` is set by `reset()` and the loaders and handled before the pause check (never flushed back), and `upload_state` zeroes lifetime telemetry (play-test fix 2026-10-06; covered by `gpu_trail_and_reset_test`).
   - Wire telemetry from GPU storage buffers into UI stats, The Record, and Specimen card. In GPU mode the GENERATION and LINEAGES boxes read `max_generation` and `living_lineages` from telemetry, not the stale CPU `World`. (Play-test bug: in GPU mode they never changed.)
+  - GPU chronicle: the agent pass queues "Lineage R has taken N lives." on a creature's every 8th kill and the birth pass "Generation G opens in lineage R." for 8% of births at a positive multiple of 12 generations (its own `pcg3d` stream), into `ConsolidatedQueue::chronicle` (64 per frame, `chronicle_count` reset at frame start). The frame readback carries them and `apply_frame_readback` adds them to `world.events`, which the UI drains. (Play-test bug 2026-10-07: in GPU mode the chronicle never updated.)
   - Long-run statistical parity gate against the reference run (Verification Plan tolerances).
   - Run the targeted GPU test suite listed in the Verification Plan (never `cargo test --workspace`).
 
@@ -494,7 +496,7 @@ fn test_gpu_struct_alignments() {
     assert_eq!(std::mem::size_of::<GpuTelemetry>() % 16, 0);
     assert_eq!(std::mem::size_of::<GpuTelemetry>(), 128);
     assert_eq!(std::mem::size_of::<ConsolidatedQueue>() % 16, 0);
-    assert_eq!(std::mem::size_of::<ConsolidatedQueue>(), 1_052_800);
+    assert_eq!(std::mem::size_of::<ConsolidatedQueue>(), 1_053_824);
 }
 ```
 - [ ] **Step 2: Run test to verify it fails**
@@ -611,7 +613,8 @@ pub struct GpuTelemetry {
     pub live_count: u32,        // 4 bytes: live keys at the head of the sorted spatial_keys
     pub pending_free_count: u32,// 4 bytes: deaths awaiting the post-birth merge
     pub available_slots: u32,   // 4 bytes: birth capacity left this sub-tick
-    pub _reserved1: [u32; 13],  // 52 bytes
+    pub chronicle_count: u32,   // 4 bytes: chronicle events queued this frame
+    pub _reserved1: [u32; 12],  // 48 bytes
 } // Total: 128 bytes (2 x 64B cache lines, 8ns DMA transfer)
 
 #[repr(C, align(16))]
@@ -620,7 +623,8 @@ pub struct ConsolidatedQueue {
     pub telemetry: GpuTelemetry,           // 128 bytes (Cache Lines 0 & 1)
     pub births: [BirthEvent; 65536],        // 1,048,576 bytes = 1,024 KB = 1 MB
     pub audio: [AudioVoice; 256],           // 4,096 bytes = 4 KB (1 memory page)
-} // Total: 1,052,800 bytes (1,028.1 KB, 16-byte aligned)
+    pub chronicle: [GpuChronicleEvent; 64], // 1,024 bytes: (tick, type, p1, p2), as clank_core::SimEvent
+} // Total: 1,053,824 bytes (1,029.1 KB, 16-byte aligned)
 
 #[repr(C, align(16))]
 #[derive(Clone, Copy, Debug, bytemuck::Pod, bytemuck::Zeroable)]
@@ -843,7 +847,7 @@ fn soil_main(@builtin(global_invocation_id) id: vec3u) {
 - Modify: `crates/clank_app/assets/shaders/lbvh_aabb.wgsl` (`atomicMin`/`atomicMax` climb, #10)
 - Modify: `crates/clank_app/assets/shaders/preamble_clear.wgsl` (drop the `cell_offsets` clear)
 - Modify: `crates/clank_app/assets/shaders/agent_step.wgsl` (Tier 1 / Tier 2 neighbour search over `cell_slots` and the sorted keys)
-- Modify: `crates/clank_app/src/gpu/compute_driver.rs` (`seed_agents_gpu` places two creatures per Seed Life click, within ±11 px, while under the cap; the old body becomes `place_founders_gpu`, which `seed_spores_gpu` keeps calling with one creature per position; drop `cell_offsets_buf` and the linked-list pipelines; the sort covers `params.max_agents` slots, which can be smaller than the driver's, and its workgroups past them return; record each sub-tick as one compute pass, since each dispatch is its own WebGPU synchronization scope and a separate pass costs the CPU about 0.22 ms to record in a debug build against about 0.04 ms for a dispatch; `active_slots(max_cap)` = max(cap, uploaded creatures), at most the driver's slots, bounds every live creature, and the capacity pass always covers every slot)
+- Modify: `crates/clank_app/src/gpu/compute_driver.rs` (`seed_agents_gpu` places two creatures per Seed Life click, within ±11 px, while under the cap; the old body becomes `place_founders_gpu`, which `replenish_agents_gpu` keeps calling with one creature per position; drop `cell_offsets_buf` and the linked-list pipelines; the sort covers `params.max_agents` slots, which can be smaller than the driver's, and its workgroups past them return; record each sub-tick as one compute pass, since each dispatch is its own WebGPU synchronization scope and a separate pass costs the CPU about 0.22 ms to record in a debug build against about 0.04 ms for a dispatch; `active_slots(max_cap)` = max(cap, uploaded creatures), at most the driver's slots, bounds every live creature, and the capacity pass always covers every slot)
 - Modify: `crates/clank_app/src/sim.rs` (app frames set `params.max_agents` to `driver.active_slots(max_cap)`, not the driver's 65,536 slots)
 - Modify: `crates/clank_app/assets/shaders/preamble_clear.wgsl` (reset `live_count` for the sort's count)
 - Test: `crates/clank_app/tests/gpu_spatial_test.rs` (CPU mirror; not evidence for the shaders)
@@ -1093,7 +1097,7 @@ fn spatial_query_main(@builtin(global_invocation_id) id: vec3u) {
         // Reference semantics: Nourish deposit(food, .28, r3); Blight deposit(taint, .38, r3) and
         // deposit(food, -.14, r2); Extinguish kills every live creature with PLAIN (not toroidal)
         // distance < 23 to the unwrapped cursor, through the dead_claimed CAS, depositing the
-        // corpse as die() does. Seed Life (CPU-driven seed_agents_gpu) adds two spores within
+        // corpse as die() does. Seed Life (CPU-driven seed_agents_gpu) adds two agents within
         // +-11 px while the population is below the cap.
         apply_aoe_tool(id.x, tool_pos, params.tool_type);
     }
@@ -1112,8 +1116,9 @@ fn spatial_query_main(@builtin(global_invocation_id) id: vec3u) {
 - Create: `crates/clank_app/assets/shaders/preamble_clear.wgsl`
 - Create: `crates/clank_app/assets/shaders/agent_step.wgsl`
 - Create: `crates/clank_app/assets/shaders/birth_step.wgsl`
-- Create: census pass (after `birth_step`) and the pending-free merge (Task 2)
-- Modify: `crates/clank_app/src/gpu/compute_driver.rs` (indirect birth dispatch; `seed_spores_gpu` / `seed_agents_gpu` founder genomes)
+- Create: `crates/clank_app/assets/shaders/birth_args.wgsl` (indirect birth dispatch arguments; `BirthDispatch` in `birth_pipeline.rs`)
+- Create: `crates/clank_app/assets/shaders/census.wgsl` and `crates/clank_app/src/gpu/census_pipeline.rs` (census pass after `birth_step`, on the frame's final sub-tick) and the pending-free merge (Task 2)
+- Modify: `crates/clank_app/src/gpu/compute_driver.rs` (indirect birth dispatch; `replenish_agents_gpu` / `seed_agents_gpu` founder genomes)
 - Test: `crates/clank_app/tests/gpu_agent_test.rs` (CPU mirror; not evidence for the shaders)
 - Test: `crates/clank_app/tests/gpu_birth_mutation_test.rs` (CPU mirror; not evidence for the shaders)
 - Test: `crates/clank_app/tests/plan_t5_agent_test.rs` (real shaders, one tick against `World::evolve` in controlled scenarios, tolerances from the Verification Plan):
@@ -1128,10 +1133,13 @@ fn spatial_query_main(@builtin(global_invocation_id) id: vec3u) {
   - `test_more_than_64_births_in_one_sub_tick_all_land`;
   - `test_the_cap_holds_across_sub_ticks`: 32 sub-ticks per frame never put more live creatures than the cap;
   - `test_crossover_and_mutation_draws_are_uncorrelated`: sexual births from parents with all genes +50 and −50; which parent a gene came from is independent of whether it mutated;
-  - `test_spores_get_reference_founder_genomes`: genes spread over [−58, 58], traits over [0, 1], energy in [34, 52];
+  - `test_new_agents_get_reference_founder_genomes`: genes spread over [−58, 58], each trait over its reference range, energy in [34, 52];
   - `test_sexual_births_happen_at_the_reference_rate`: 450 pairs of a ready parent and an able mate of another lineage 10px apart (genes +50 and −50, so a child carrying both signs is a sexual birth; the reference keeps no record of which births were sexual, so a long run cannot measure this): every parent gives birth, and the sexual share is within 7 points of the reference's (about 15%). `test_crossover_and_mutation_draws_are_uncorrelated` uses the same lattice;
   - `test_deposits_keep_cells_within_0_and_3`;
-  - `test_corpse_food_lands_where_the_victim_died`.
+  - `test_corpse_food_lands_where_the_victim_died`;
+  - `test_the_census_counts_newborns_and_not_the_dead`: after a tick with 40 births and 5 starvations, population, max generation and living lineages equal the reference's;
+  - `test_the_census_counts_every_lineage_in_a_large_world`: 6000 founders, each its own lineage, on 8192 slots: `living_lineages` equals the live creatures' distinct roots;
+  - `test_every_creature_in_a_crowd_takes_one_step`: with the agent pass in Morton order, each of 300 creatures takes exactly one step (age +1; energy change as the reference's, except near-tie neighbours).
 
 **Interfaces:**
 - Consumes: `GpuSoilCell` storage buffer (point reads, atomic grazing/deposits), Spatial index (sorted keys, grid table, `cell_slots`), LBVH tree, `GpuAgentState` (128B) and `GpuAgentGenome` (352B) storage buffers, `GpuAgentAtomic` L2 buffer, `GpuSimParams`
@@ -1167,7 +1175,6 @@ fn test_stateless_pcg_triangular_distribution() {
 // Dispatched before agent_step.wgsl to guarantee a global GPU execution barrier:
 @group(0) @binding(0) var<storage, read_write> agent_atomics: array<GpuAgentAtomic>;
 @group(0) @binding(1) var<storage, read_write> queue_buffer: ConsolidatedQueue;
-@group(0) @binding(3) var<storage, read_write> lineage_table: array<atomic<u32>, 4096>;
 @group(1) @binding(0) var<uniform> params: GpuSimParams;
 
 @compute @workgroup_size(64)
@@ -1198,17 +1205,9 @@ fn preamble_main(@builtin(global_invocation_id) id: vec3u) {
             }
         }
     }
-    // Instantaneous census is cleared on the final sub-tick; the census pass after births recounts:
-    if (params.sub_tick == params.sub_ticks_per_frame - 1u) {
-        if (id.x == 0u) {
-            atomicStore(&queue_buffer.telemetry.population, 0u);
-            atomicStore(&queue_buffer.telemetry.max_generation, 0u);
-            atomicStore(&queue_buffer.telemetry.living_lineages, 0u);
-        }
-        if (id.x < 4096u) {
-            atomicStore(&lineage_table[id.x], 0u); // open-addressed set of root + 1
-        }
-    }
+    // The instantaneous census (population, max_generation, living_lineages and its root
+    // table) is cleared and recounted by the census pass (census.wgsl) after the births of
+    // the final sub-tick.
 }
 ```
 
@@ -1276,7 +1275,7 @@ fn agent_main(@builtin(global_invocation_id) id: vec3u) {
     ins_hidden[1] = vec4f(clamp(here_taint, 0.0, 1.0), clamp(scent_diff, -1.0, 1.0), sensory_bearing, sensory_dist);
     // ... remaining reference inputs. The oscillator uses the number of the tick being computed
     // (the reference evolve() does tick++ before the agents run): sin(f32(step_tick) * 0.08 + f32(id)),
-    // with step_tick = params.tick + params.sub_tick + 1u.
+    // with step_tick = params.tick + 1u (the driver writes each sub-tick's own tick into params.tick).
 
 // Forward pass over the 326 linearly packed genes, in reference brain() order:
 // gene p is byte p % 4 of word p / 4, sign-extended. N = 15 inputs, Q = 10 hidden, O = 6 outputs.
@@ -1503,7 +1502,7 @@ fn birth_main(@builtin(workgroup_id) wg_id: vec3u, @builtin(local_invocation_id)
 
     let child_idx = shared_child_slot;
     let child_id = shared_child_id;
-    let step_tick = params.tick + params.sub_tick + 1u;
+    let step_tick = params.tick + 1u;
     // Cannot happen when the agent pass reserved capacity (available_slots), kept as a guard:
     if (child_idx == 0xFFFFFFFFu) { return; }
 
@@ -1572,18 +1571,22 @@ fn birth_main(@builtin(workgroup_id) wg_id: vec3u, @builtin(local_invocation_id)
 - Create: `crates/clank_app/src/audio.rs` (Consolidated 256-voice queue consumption & granular Bevy audio playback)
 - Modify: `crates/clank_app/src/lib.rs` (register `pub mod audio;`)
 - Modify: `crates/clank_app/src/ui.rs` (Top bar toggle: `ENGINE: RUST` / `ENGINE: GPU`, 32x speed picking, GPU-mode GENERATION / LINEAGES from telemetry; the minimap radar was removed on 2026-10-06)
-- Modify: `crates/clank_app/src/sim.rs` (`apply_frame_readback` stores `max_generation` and `living_lineages`; `SimWorld::max_generation()` and `SimWorld::living_lineages()` return them in GPU mode and the CPU world's values in Rust mode, as `active_population()` does, and the UI reads them; GPU mode counts `world.eclipse` down)
+- Modify: `crates/clank_app/assets/shaders/agent_step.wgsl`, `birth_step.wgsl`, `preamble_clear.wgsl`, `spatial_query.wgsl`, `src/gpu/types.rs`, `src/gpu/frame_readback.rs` (the chronicle queue and its readback)
+- Modify: `crates/clank_app/src/sim.rs` (`apply_frame_readback` stores `max_generation` and `living_lineages` and adds the frame's chronicle events to `world.events`; `SimWorld::max_generation()` and `SimWorld::living_lineages()` return them in GPU mode and the CPU world's values in Rust mode, as `active_population()` does, and the UI reads them; GPU mode counts `world.eclipse` down)
 - Modify: `crates/clank_app/src/api.rs` (Telemetry reporting for active engine)
 - Test: `crates/clank_app/tests/dual_engine_test.rs` (bridge-level; not evidence for the shaders)
 - Test: `crates/clank_app/tests/plan_t6_integration_test.rs` (real shaders):
   - `test_gpu_mode_stats_follow_the_gpu`: after GPU ticks with births, the GENERATION and LINEAGES values the UI shows equal the live GPU creatures' maximum generation and distinct roots;
   - `test_telemetry_census_matches_the_live_creatures`: `population` equals the live slots after the tick, newborns included, and `apex_record_milli` equals the highest live energy within a tick's lag;
   - `test_audio_voices_reach_the_playback_queue`: kill and birth voices in view arrive in `AudioVoiceQueue` through `apply_frame_readback`; voices out of view do not;
+  - `test_a_kill_milestone_is_chronicled_like_the_reference`: an attacker's 8th kill gives the reference's event (tick, type 3, lineage, 8);
+  - `test_generation_milestones_are_chronicled_at_the_reference_rate`: 450 births of generation 12 give 16–60 events (the reference expects about 36), each naming generation 12 and the parent's lineage;
+  - `test_gpu_events_reach_the_chronicle`: in the GPU-mode app, the kill milestone reaches `world.events`;
   - `test_long_run_matches_the_reference_statistically`: from the same seed-42 world, population, cumulative births, kills and total soil food are within ±20% of the reference at ticks 200, 400, 600, 800 and 1000 (or within 3√n when that is larger: kills stay in single digits for hundreds of ticks). Also strengthens `long_run_behavior_test`.
 - Test: `crates/clank_app/tests/gpu_capacity_test.rs` (the capacity slider, Task 2)
 
 **Interfaces:**
-- Consumes: `SimWorld` (CPU), `GpuSimWorld` (GPU), `ConsolidatedQueue` (1,052,800B) via the non-blocking staging ring (Task 8 Step 2), `GpuAgentState` (128B) storage buffer
+- Consumes: `SimWorld` (CPU), `GpuSimWorld` (GPU), `ConsolidatedQueue` (1,053,824B) via the non-blocking staging ring (Task 8 Step 2), `GpuAgentState` (128B) storage buffer
 - Produces: Camera frustum-culled rendering streaming only 128B `GpuAgentState` ($4.0\times$ bandwidth boost, skipping genomes), unified 128-byte telemetry, 32x speed visual consistency picking, zoom-modulated audio soundscape, HUD metrics, and live engine switching
 
 - [ ] **Step 1: Write failing test for live dual-engine hot-swapping, frustum culling, telemetry readback, and 32x speed picking**
@@ -1767,7 +1770,7 @@ impl CreatureLayerKind { pub const ALL: [Self; 4]; pub fn vertices_per_instance(
     ```
   - Run `cargo test -p clank_app --test gpu_shared_device_test`. Expected: compile error (`request_standalone_device` missing). After stubbing that helper, expect a cross-device validation error or panic.
   - **Implement:**
-    - Split adapter/device creation out of `create_for_world` into `request_standalone_device()`.
+    - Split adapter/device creation out of `create_for_world` into `request_standalone_device()`. It prefers a card that drives no display (Metal `isHeadless`, through `device_is_headless`): headless work on the display's card freezes the screen while it runs (2026-10-08: a 65,000-creature probe hitched the whole Mac Pro, whose second D500 sat idle). Test: `gpu_standalone_device_test`.
     - Add `from_render_device`:
       ```rust
       pub fn from_render_device(device: &RenderDevice, queue: &RenderQueue, soil_cols: u32, soil_rows: u32, max_agents: u32) -> Self {
@@ -1789,8 +1792,8 @@ impl CreatureLayerKind { pub const ALL: [Self; 4]; pub fn vertices_per_instance(
     - The ring lives in `gpu/frame_readback.rs` (`ReadbackRing`, 4816-byte buffers). `upload_state` bumps its epoch, so frames from a replaced world are dropped as they land.
     - `request_frame_readback` takes `picking`, so a picking answer is applied only from the frame that ran the query. When the picked id changes, the cache is cleared until that creature's snapshot arrives.
     - Frames are applied before the pause check (so the ring drains while paused) and after `flush_gpu_to_rust` when switching to the Rust engine.
-    - Spore replenishment drains the ring right after `seed_spores_gpu`, which already waits. Without that, pre-seed frames landing afterwards reset `gpu_population` and seeded again (3 creatures → 27 instead of 15). Covered by `test_spore_replenishment_seeds_once_despite_lagged_frames`.
-    - Extra tests: `test_ring_returns_each_frame_once_in_order` (driver level: 30 requests → 30 frames, in order, the last one equal to a synchronous read), plus the spore test above. Red-checked by mutation: a blocking telemetry read in the frame path fails the first test (40 waits); returning each frame twice fails the ordering test (60 ≠ 30).
+    - Agent replenishment drains the ring right after `replenish_agents_gpu`, which already waits. Without that, pre-seed frames landing afterwards reset `gpu_population` and seeded again (3 creatures → 27 instead of 15). Covered by `test_agent_replenishment_seeds_once_despite_lagged_frames`.
+    - Extra tests: `test_ring_returns_each_frame_once_in_order` (driver level: 30 requests → 30 frames, in order, the last one equal to a synchronous read), plus the agent replenishment test above. Red-checked by mutation: a blocking telemetry read in the frame path fails the first test (40 waits); returning each frame twice fails the ordering test (60 ≠ 30).
     - **Residual:** `GpuSimParams.agent_count` (LBVH size, reproduction cap) comes from the newest landed frame, so it now lags by up to `RING_DEPTH` frames instead of one. The fix is to have the passes read the population from `queue_buffer`; this is not done yet.
   - **Failing test** `gpu_frame_readback_test.rs`:
     ```rust
@@ -1831,7 +1834,7 @@ impl CreatureLayerKind { pub const ALL: [Self; 4]; pub fn vertices_per_instance(
     ```
   - Run it. Expected: compile error (`blocking_readback_bytes` missing). With only the counter added, the assertion fails: `readback_telemetry` and `readback_agent_slot` block every frame.
   - **Implement:**
-    - Add `blocking_readback_bytes: AtomicU64` and one private `read_buffer_blocking(&self, src: &wgpu::Buffer, offset: u64, len: u64) -> Vec<u8>`. Route every `readback_*`, `copy_soil_display_rgba` and the freelist/spore readbacks through it, so the counter is complete by construction.
+    - Add `blocking_readback_bytes: AtomicU64` and one private `read_buffer_blocking(&self, src: &wgpu::Buffer, offset: u64, len: u64) -> Vec<u8>`. Route every `readback_*`, `copy_soil_display_rgba` and the freelist readbacks for new agents through it, so the counter is complete by construction.
     - Add the ring:
       - three `FRAME_READBACK_BYTES` (128 telemetry + 4096 audio + 128 state + 352 genome + 16 atomic + 96 trail = 4816, rounded up to 4864) `MAP_READ | COPY_DST` buffers behind a `Mutex<[RingSlot; 3]>`;
       - `RingSlot { state: Free | Pending { selected: Option<u32>, ready: Arc<AtomicBool> } }`.
@@ -2191,7 +2194,7 @@ impl CreatureLayerKind { pub const ALL: [Self; 4]; pub fn vertices_per_instance(
   - Run every `clank_app` test file individually, `cargo fmt --all`, `git diff --check`. Commit `refactor(gpu): remove the CPU-readback rendering path`.
 
 **Out of scope (recorded, not hidden):**
-- Spore re-seeding (`seed_spores_gpu`) still reads the freelist back synchronously. It runs only when the GPU population collapses below 15.
+- Agent replenishment (`replenish_agents_gpu`) still reads the freelist back synchronously. It runs only when the GPU population collapses below 15.
 - The UI's food history still reads the CPU soil copy, which is stale in GPU mode.
 - The selected creature panel is up to two frames behind the GPU.
 
@@ -2229,6 +2232,7 @@ cargo test -p clank_app --test multi_tick_parity_test -- --nocapture
 
 # Task 8 (presentation)
 cargo test -p clank_app --test gpu_shared_device_test
+cargo test -p clank_app --test gpu_standalone_device_test
 cargo test -p clank_app --test gpu_frame_readback_test
 cargo test -p clank_app --test creature_render_test
 cargo test -p clank_app --test gpu_soil_display_test
@@ -2273,26 +2277,33 @@ Measured on the working tree, which holds uncommitted work not yet in any commit
 | 4 | `plan_t4::test_density_counts_neighbours_within_100px` | pass | failed first: a creature exactly 100 px away was counted. Mutation-checked (`<=` fails) |
 | 4 | `plan_t4` Extinguish, Seed | pass | failed first: toroidal erase distance; Seed added 1 creature, not 2. Mutation-checked (toroidal distance fails; one creature per click fails) |
 | 5 | `plan_t5` kill, asexual birth, tombstone, kill voice, `visual_cache` (5) | pass | |
-| 5 | `plan_t5::test_a_lone_creature_takes_the_reference_tick` | FAIL | the oscillator reads `params.tick`; the reference has already incremented its tick |
-| 5 | `plan_t5::test_damage_is_kept_when_the_victim_runs_after_the_attacker` | FAIL | 64 of 64 victims lose the damage: the victim's final `atomicStore` overwrites the attacker's `atomicSub` |
-| 5 | `plan_t5::test_parents_pay_only_for_births_that_get_a_slot` | FAIL | cap 15: 5 births, 10 parents charged |
-| 5 | `plan_t5::test_more_than_64_births_in_one_sub_tick_all_land` | FAIL | 64 of 100 |
+| 5 | `plan_t5::test_a_lone_creature_takes_the_reference_tick` | pass | was: the oscillator read `params.tick`; the reference has already incremented its tick (now `step_tick = params.tick + 1u`) |
+| 5 | `plan_t5::test_damage_is_kept_when_the_victim_runs_after_the_attacker` | pass | was: 64 of 64 victims lost the damage to the victim's final `atomicStore` (now `atomicMin` to the 110 ceiling) |
+| 5 | `plan_t5::test_parents_pay_only_for_births_that_get_a_slot` | pass | was: cap 15, 5 births, 10 parents charged (now births reserve `available_slots` before charging) |
+| 5 | `plan_t5::test_more_than_64_births_in_one_sub_tick_all_land` | pass | was: 64 of 100 (now dispatched indirectly, one workgroup per queued birth: `birth_args.wgsl`) |
 | 5 | `plan_t5::test_the_cap_holds_across_sub_ticks` | pass | mutation-checked: with all three cap guards removed (freelist sized to the cap at upload, `apply_capacity`, the birth-pass check), 214 live against a cap of 200 |
-| 5 | `plan_t5::test_crossover_and_mutation_draws_are_uncorrelated` | FAIL | blocked by the 64-birth limit (7 sexual births, too few to measure) |
-| 5 | `plan_t5::test_sexual_births_happen_at_the_reference_rate` | FAIL | 64 of 450 births (the 64-birth limit) |
-| 5 | `plan_t5::test_spores_get_reference_founder_genomes` | FAIL | traits all 0.5, energy always 43 |
-| 5 | `plan_t5::test_deposits_keep_cells_within_0_and_3` | FAIL | corpse food reaches 20–32 in a cell |
-| 5 | `plan_t5::test_corpse_food_lands_where_the_victim_died` | FAIL | the corpse lands in the right cell, but the victim misses its last meal (0.019 food) that the reference victim eats before dying |
-| 6 | `plan_t6::test_gpu_mode_stats_follow_the_gpu` | FAIL (does not compile) | `SimWorld::max_generation()` / `living_lineages()` do not exist yet; this keeps the whole `plan_t6` file from compiling |
-| 6 | `plan_t6::test_telemetry_census_matches_the_live_creatures` | FAIL | `population` leaves out that tick's newborns |
+| 5 | `plan_t5::test_crossover_and_mutation_draws_are_uncorrelated` | pass | was blocked by the 64-birth limit; each draw now has its own `pcg3d` stream |
+| 5 | `plan_t5::test_sexual_births_happen_at_the_reference_rate` | pass | was: 64 of 450 births (the 64-birth limit) |
+| 5 | `plan_t5::test_new_agents_get_reference_founder_genomes` | pass | was: traits all 0.5, energy always 43 (the test first expected traits over [0, 1]; the reference ranges are narrower) |
+| 5 | `plan_t5::test_deposits_keep_cells_within_0_and_3` | pass | was: corpse food reached 20–32 in a cell; mutation-checked: without the scent cap, scent reaches 6.1 |
+| 5 | `plan_t5::test_the_census_counts_newborns_and_not_the_dead` | pass | was: (population, max generation, lineages) = (40, 5, 0) against (80, 5, 13): counted before the births, no lineage count |
+| 5 | `plan_t5::test_the_census_counts_every_lineage_in_a_large_world` | pass | was: (population, lineages) = (6000, 4096) against (6000, 6000): the fixed 4096-entry root table filled; every later creature probed all 8192 entries, so a speed-1 tick of 16,000 founders cost 46.9 ms against 17.5 ms |
+| 5 | `plan_t5::test_every_creature_in_a_crowd_takes_one_step` | pass (guards the Morton-ordered agent pass; passes on slot order too) | mutation-checked: threads taking `spatial_keys[2i]` leave 148 of 299 unstepped; `spatial_keys[i / 2]` steps each creature twice and 274 change energy unlike the reference. One creature (id 53) differs for the accepted reason: two neighbours 37.18 and 37.00/37.62 px away, the reference having moved one of them first |
+| 8 | `gpu_standalone_device_test` | pass | was: the standalone device was on the display's D500 while the second, headless D500 sat idle |
+| 5 | `plan_t5::test_corpse_food_lands_where_the_victim_died` | pass (known difference) | the corpse lands in the reference's cells; the GPU victim may still eat one meal (0.019 food here) in the tick it is killed, which the test allows in that one cell. The reference victim, hit by a creature that moves before it, dies at the top of its own turn without moving or eating; on the GPU both run at once. Accepted as small (2026-10-07); making it exact needs a two-step agent pass (attacks first, then survivors move and eat), left for after the plan |
+| 6 | `plan_t6::test_gpu_mode_stats_follow_the_gpu` | pass | was: did not compile (`SimWorld::max_generation()` / `living_lineages()` did not exist) |
+| 6 | `plan_t6::test_telemetry_census_matches_the_live_creatures` | pass | was: `population` left out that tick's newborns (fixed by Task 5's census pass) |
+| 6 | `plan_t6::test_a_kill_milestone_is_chronicled_like_the_reference` | pass | was: did not compile (no GPU chronicle) |
+| 6 | `plan_t6::test_generation_milestones_are_chronicled_at_the_reference_rate` | pass | was: did not compile (no GPU chronicle); with no events the count (0) is outside 16–60 |
+| 6 | `plan_t6::test_gpu_events_reach_the_chronicle` | pass | was: did not compile (no GPU chronicle) |
 | 6 | `plan_t6::test_audio_voices_reach_the_playback_queue` | pass | mutation-checked (everything in view fails) |
 | 6 | `plan_t6::test_long_run_matches_the_reference_statistically` | pass | mutation-checked (base metabolism 0.10 → 0.25 fails) |
 | 8 | `gpu_shared_device_test` (3), `gpu_frame_readback_test` (4), `creature_render_test` (3), `gpu_soil_display_test` (1), `creature_pass_render_test` (2) | pass | |
 | 8 | `gpu_frame_readback_test::test_gpu_frames_make_no_blocking_readbacks` | pass (5 of 6 runs in parallel with its 3 sibling tests; 1 wait in the other) | failed after Task 4's first version: 11–13 real 23–156 ms stalls in 40 frames, with its siblings in parallel (pre-Task-4 code: 6 of 6 pass). Causes found by measurement on the D500, debug build: the sort cost about 1 ms of GPU per sub-tick (workgroup-memory zero-fill and a 255-step rank loop in each scatter); app frames covered all 65,536 driver slots; and each sub-tick recorded about 12 compute passes at about 0.22 ms of CPU each. After the fixes, a speed-32 frame costs about 2.35 ms per sub-tick (before Task 4: about 2.8 ms; first Task 4 version: about 4.3 ms), and GPU wait per single-sub-tick frame is back to the pre-Task-4 1.7–1.8 ms. The remaining rare wait comes from the CPU now being faster than before Task 4, so four parallel apps load the GPU harder |
 
-The `plan_t6` results other than the stats test were measured from a copy of the file without that test.
+The `plan_t6` file compiles since 2026-10-07; before that, its results other than the stats test were measured from a copy of the file without that test.
 
-Found while writing these tests, not yet covered by any task: when many creatures graze one cell in the same tick, the GPU feeds all of them from the same food (60 creatures fed from 0.33 food; the reference runs out after 29). GPU spores take lineage numbers from a counter that starts at 0 instead of after the uploaded world's lineages (`next_agent_root`), so a spore joins an existing lineage; the reference gives each spore a new one.
+Found while writing these tests, not yet covered by any task: when many creatures graze one cell in the same tick, the GPU feeds all of them from the same food (60 creatures fed from 0.33 food; the reference runs out after 29).
 
 ### Visual & Manual Confirmation
 1. Build and run the debug binary (`cargo run -p clank_app`); debug builds must work, so never use `--release` to mask a debug failure.

@@ -60,6 +60,9 @@ struct GpuAgentAtomic {
 // Fixed-point scale of SoilCell fields (micro-units). Must match
 // SOIL_FIXED_SCALE in src/gpu/types.rs and SOIL_SCALE in soil_step.wgsl.
 const SOIL_SCALE: f32 = 1000000.0;
+// The reference's deposit() clamps every touched cell to [0, 3]. Every deposit is positive, so
+// capping with atomicMin after the add leaves the same value as the reference's sequential clamp.
+const SOIL_CELL_MAX_MICRO: i32 = 3000000;
 
 struct SoilCell {
     food_micro: atomic<i32>,
@@ -100,7 +103,8 @@ struct GpuTelemetry {
     live_count: atomic<u32>,
     pending_free_count: atomic<u32>,
     available_slots: atomic<u32>,
-    reserved1: array<u32, 13>,
+    chronicle_count: atomic<u32>,
+    reserved1: array<u32, 12>,
 }
 
 struct BirthEvent {
@@ -116,10 +120,19 @@ struct AudioVoice {
     volume: f32,
 }
 
+// GpuChronicleEvent: 2 = generation milestone (gen, root), 3 = kill milestone (root, kills).
+struct ChronicleEvent {
+    tick: u32,
+    event_type: u32,
+    p1: u32,
+    p2: u32,
+}
+
 struct ConsolidatedQueue {
     telemetry: GpuTelemetry,
     births: array<BirthEvent, 65536>,
     audio: array<AudioVoice, 256>,
+    chronicle: array<ChronicleEvent, 64>,
 }
 
 // Exactly 8 storage buffers in Group 0
@@ -171,6 +184,7 @@ fn deposit_food_radius2(p: vec2f, val: f32) {
             let w = 1.0 / (1.0 + rr * 0.8);
             let deposit_micro = i32(round(val * w * SOIL_SCALE));
             atomicAdd(&soil_buffer[idx].food_micro, deposit_micro);
+            atomicMin(&soil_buffer[idx].food_micro, SOIL_CELL_MAX_MICRO);
         }
     }
 }
@@ -186,6 +200,7 @@ fn deposit_taint_radius1(p: vec2f, val: f32) {
 
     let c0 = u32(cy) * params.soil_grid.x + u32(cx);
     atomicAdd(&soil_buffer[c0].taint_micro, i32(round(val * SOIL_SCALE)));
+    atomicMin(&soil_buffer[c0].taint_micro, SOIL_CELL_MAX_MICRO);
 
     let v18_micro = i32(round((val / 1.8) * SOIL_SCALE));
     let c_up = u32((cy - 1 + rows) % rows) * params.soil_grid.x + u32(cx);
@@ -194,9 +209,13 @@ fn deposit_taint_radius1(p: vec2f, val: f32) {
     let c_right = u32(cy) * params.soil_grid.x + u32((cx + 1 + cols) % cols);
 
     atomicAdd(&soil_buffer[c_up].taint_micro, v18_micro);
+    atomicMin(&soil_buffer[c_up].taint_micro, SOIL_CELL_MAX_MICRO);
     atomicAdd(&soil_buffer[c_down].taint_micro, v18_micro);
+    atomicMin(&soil_buffer[c_down].taint_micro, SOIL_CELL_MAX_MICRO);
     atomicAdd(&soil_buffer[c_left].taint_micro, v18_micro);
+    atomicMin(&soil_buffer[c_left].taint_micro, SOIL_CELL_MAX_MICRO);
     atomicAdd(&soil_buffer[c_right].taint_micro, v18_micro);
+    atomicMin(&soil_buffer[c_right].taint_micro, SOIL_CELL_MAX_MICRO);
 }
 
 fn deposit_scent_radius1(p: vec2f, val: f32) {
@@ -210,6 +229,7 @@ fn deposit_scent_radius1(p: vec2f, val: f32) {
 
     let c0 = u32(cy) * params.soil_grid.x + u32(cx);
     atomicAdd(&soil_buffer[c0].scent_micro, i32(round(val * SOIL_SCALE)));
+    atomicMin(&soil_buffer[c0].scent_micro, SOIL_CELL_MAX_MICRO);
 
     let v18_micro = i32(round((val / 1.8) * SOIL_SCALE));
     let c_up = u32((cy - 1 + rows) % rows) * params.soil_grid.x + u32(cx);
@@ -218,9 +238,13 @@ fn deposit_scent_radius1(p: vec2f, val: f32) {
     let c_right = u32(cy) * params.soil_grid.x + u32((cx + 1 + cols) % cols);
 
     atomicAdd(&soil_buffer[c_up].scent_micro, v18_micro);
+    atomicMin(&soil_buffer[c_up].scent_micro, SOIL_CELL_MAX_MICRO);
     atomicAdd(&soil_buffer[c_down].scent_micro, v18_micro);
+    atomicMin(&soil_buffer[c_down].scent_micro, SOIL_CELL_MAX_MICRO);
     atomicAdd(&soil_buffer[c_left].scent_micro, v18_micro);
+    atomicMin(&soil_buffer[c_left].scent_micro, SOIL_CELL_MAX_MICRO);
     atomicAdd(&soil_buffer[c_right].scent_micro, v18_micro);
+    atomicMin(&soil_buffer[c_right].scent_micro, SOIL_CELL_MAX_MICRO);
 }
 
 fn get_gene(agent_idx: u32, p: u32) -> f32 {
@@ -230,14 +254,22 @@ fn get_gene(agent_idx: u32, p: u32) -> f32 {
     return f32(b);
 }
 
-fn pcg_hash(id: u32, stream: u32, tick: u32) -> u32 {
-    let state = id * 747796405u + stream * 2891336453u + tick * 1013904223u;
-    let word = ((state >> ((state >> 28u) + 4u)) ^ state) * 277803737u;
-    return (word >> 22u) ^ word;
+// Random streams: every use draws from its own, so no two draws are correlated.
+const MATE_ROLL_STREAM: u32 = 0x20000000u;
+const AUDIO_STREAM: u32 = 0x21000000u;
+
+// pcg3d (Jarzynski & Olano 2020): a stateless hash of (id, stream, tick).
+fn pcg3d(id: u32, stream: u32, tick: u32) -> u32 {
+    var v = vec3u(id, stream, tick) * 1664525u + 1013904223u;
+    v.x += v.y * v.z; v.y += v.z * v.x; v.z += v.x * v.y;
+    v ^= v >> vec3u(16u);
+    v.x += v.y * v.z; v.y += v.z * v.x; v.z += v.x * v.y;
+    return v.x;
 }
 
-fn pcg_float(id: u32, stream: u32, tick: u32) -> f32 {
-    return f32(pcg_hash(id, stream, tick)) / 4294967295.0;
+// Uniform in [0, 1) from the top 24 bits (exact in f32), as the reference's Math.random().
+fn pcg3d_float(id: u32, stream: u32, tick: u32) -> f32 {
+    return f32(pcg3d(id, stream, tick) >> 8u) / 16777216.0;
 }
 
 fn toroidal_aabb_dist_1d(p: f32, b_min: f32, b_max: f32, w: f32) -> f32 {
@@ -270,6 +302,14 @@ fn toroidal_dist2(p1: vec2f, p2: vec2f) -> f32 {
     return x_dist * x_dist + y_dist * y_dist;
 }
 
+// Queues a chronicle entry for this frame's readback; past 64 in one frame, entries are dropped.
+fn push_chronicle(tick: u32, event_type: u32, p1: u32, p2: u32) {
+    let k = atomicAdd(&queue_buffer.telemetry.chronicle_count, 1u);
+    if (k < 64u) {
+        queue_buffer.chronicle[k] = ChronicleEvent(tick, event_type, p1, p2);
+    }
+}
+
 // Called only by the thread that won a death claim. The slot waits on the pending-free list
 // (freelist[max_agents..]) until the merge after the birth pass, so a newborn never lands in
 // the slot of a creature that died this sub-tick.
@@ -282,8 +322,14 @@ fn push_pending_free(slot: u32) {
 
 @compute @workgroup_size(64)
 fn agent_main(@builtin(global_invocation_id) id: vec3u) {
-    let agent_idx = id.x;
-    if (agent_idx >= params.max_agents) { return; }
+    if (id.x >= params.max_agents) { return; }
+    // Threads take the slots in Morton order: the sort's first max_agents keys hold every slot
+    // once, live creatures first by position, so neighbouring threads read neighbouring
+    // creatures, cell lists and soil cells.
+    let agent_idx = spatial_keys[id.x].y;
+    // The number of the tick being computed: the reference's evolve() does tick++ before the
+    // creatures run, and the driver already writes each sub-tick's own tick into params.tick.
+    let step_tick = params.tick + 1u;
 
     // Top-of-Shader Tombstone Dead-Check Guard with dead_claimed CAS synchronization:
     let m_flags = agent_states[agent_idx].meta_flags;
@@ -439,7 +485,7 @@ fn agent_main(@builtin(global_invocation_id) id: vec3u) {
 
     sensory_inputs[10] = clamp(density / 9.0, 0.0, 1.0);
     sensory_inputs[11] = clamp(f32(a_age) / 600.0, 0.0, 1.0);
-    sensory_inputs[12] = sin(f32(params.tick) * 0.08 + f32(agent_states[agent_idx].id));
+    sensory_inputs[12] = sin(f32(step_tick) * 0.08 + f32(agent_states[agent_idx].id));
     sensory_inputs[13] = clamp(vel.x * cos(angle) + vel.y * sin(angle), -1.0, 1.0);
 
     // Canonical 326-Weight Elman RNN Forward Pass
@@ -554,6 +600,10 @@ fn agent_main(@builtin(global_invocation_id) id: vec3u) {
             if (old_energy_milli > 0 && old_energy_milli <= damage_milli) {
                 a_kills += 1u;
                 atomicAdd(&queue_buffer.telemetry.kills, 1u);
+                // Reference: every 8th kill, "Lineage R has taken N lives."
+                if (a_kills % 8u == 0u) {
+                    push_chronicle(step_tick, 3u, a_root, a_kills);
+                }
                 let kill_bonus = min(9.0, 8.0 * tr5);
                 atomicAdd(&agent_atomics[agent_idx].energy_milli, i32(kill_bonus * 1000.0));
 
@@ -567,7 +617,7 @@ fn agent_main(@builtin(global_invocation_id) id: vec3u) {
                     let zoom_factor = clamp(1.0 - (params.camera_size.x - 150.0) / (params.world_size.x - 150.0), 0.0, 1.0);
                     let kill_volume = mix(0.08, 1.0, zoom_factor);
                     let density_filter = select(1u, 4u, params.agent_count > 10000u);
-                    if (pcg_hash(agent_idx, victim_idx, params.tick) % density_filter == 0u) {
+                    if (pcg3d(agent_idx, AUDIO_STREAM ^ victim_idx, step_tick) % density_filter == 0u) {
                         let voice_slot = atomicAdd(&queue_buffer.telemetry.audio_voice_count, 1u);
                         if (voice_slot < 256u) {
                             queue_buffer.audio[voice_slot] = AudioVoice(pos, 1u /* EVENT_KILL */, kill_volume);
@@ -592,34 +642,36 @@ fn agent_main(@builtin(global_invocation_id) id: vec3u) {
 
     // 5. Reproduction (evaluated AFTER grazing, metabolism & combat in strict parity with HTML lines 1400-1444)
     let current_pre_birth_e = f32(atomicLoad(&agent_atomics[agent_idx].energy_milli)) * 0.001;
-    let can_reproduce = (params.agent_count < params.max_capacity)
-        && (out[5] > -0.15)
+    let can_reproduce = (out[5] > -0.15)
         && (current_pre_birth_e > (58.0 + 12.0 * tr0))
         && (a_age > 65u)
         && (a_birth == 0u);
 
     if (can_reproduce) {
+        // Reference mating: no exclusive claim. Several suitors may take the same mate in one
+        // tick, each costing it 6 energy.
         var mate_partner = 0xFFFFFFFFu;
         if (best_neighbor != 0xFFFFFFFFu && best_dist < 18.0) {
-            let partner_idx = best_neighbor;
-            let partner_e_milli = atomicLoad(&agent_atomics[partner_idx].energy_milli);
-            let partner_root = agent_states[partner_idx].root;
-            if (partner_e_milli > 42000 && partner_root != a_root) {
-                if (pcg_float(agent_idx, 99u, params.tick) < 0.15) {
-                    let partner_id = agent_states[partner_idx].id;
-                    let my_id = agent_states[agent_idx].id;
-                    if (partner_id > my_id) {
-                        let claim = atomicCompareExchangeWeak(&agent_atomics[partner_idx].mate_claim, 0u, agent_idx + 1u);
-                        if (claim.exchanged) {
-                            mate_partner = partner_idx;
-                        }
-                    }
-                }
+            let partner_e_milli = atomicLoad(&agent_atomics[best_neighbor].energy_milli);
+            if (partner_e_milli > 42000 && agent_states[best_neighbor].root != a_root
+                && pcg3d_float(agent_idx, MATE_ROLL_STREAM, step_tick) < 0.15) {
+                mate_partner = best_neighbor;
             }
         }
 
-        let queue_idx = atomicAdd(&queue_buffer.telemetry.birth_count, 1u);
-        if (queue_idx < 65536u) {
+        // The reference's `agents.length < CAP`: reserve one of this sub-tick's free slots.
+        // Only a birth that gets one proceeds and charges energy, so the cap holds across
+        // sub-ticks and nobody pays for a birth that cannot happen.
+        var reserved = false;
+        var avail = atomicLoad(&queue_buffer.telemetry.available_slots);
+        while (avail > 0u) {
+            let r = atomicCompareExchangeWeak(&queue_buffer.telemetry.available_slots, avail, avail - 1u);
+            if (r.exchanged) { reserved = true; break; }
+            avail = r.old_value;
+        }
+
+        let queue_idx = select(0xFFFFFFFFu, atomicAdd(&queue_buffer.telemetry.birth_count, 1u), reserved);
+        if (reserved && queue_idx < 65536u) {
             atomicSub(&agent_atomics[agent_idx].energy_milli, 24000);
             if (mate_partner != 0xFFFFFFFFu) {
                 atomicSub(&agent_atomics[mate_partner].energy_milli, 6000);
@@ -668,14 +720,11 @@ fn agent_main(@builtin(global_invocation_id) id: vec3u) {
         return;
     }
 
+    // Clamp to the reference's 110 ceiling atomically: a plain store of what this thread read
+    // would erase damage another creature's thread subtracts in between.
+    atomicMin(&agent_atomics[agent_idx].energy_milli, 110000);
     a_energy = clamp(f32(current_energy_milli) * 0.001, 0.0, 110.0);
-    atomicStore(&agent_atomics[agent_idx].energy_milli, i32(a_energy * 1000.0));
     atomicMax(&queue_buffer.telemetry.apex_record_milli, u32(a_energy * 1000.0));
-
-    // Telemetry instantaneous population census on final sub-tick
-    if (params.sub_tick == params.sub_ticks_per_frame - 1u) {
-        atomicAdd(&queue_buffer.telemetry.population, 1u);
-    }
 
     // Commit state
     agent_states[agent_idx].pos_vel = vec4f(new_pos.x, new_pos.y, new_vel.x, new_vel.y);

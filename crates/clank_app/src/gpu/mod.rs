@@ -1,6 +1,7 @@
 pub mod agent_pipeline;
 pub mod birth_pipeline;
 pub mod bridge;
+pub mod census_pipeline;
 pub mod compute_driver;
 pub mod creature_render;
 pub mod frame_readback;

@@ -103,13 +103,18 @@ fn rust_layouts() -> BTreeMap<&'static str, (Layout, u32, Names)> {
         "AudioVoice",
         fields!(AudioVoice; pos F32 2, event_type U32 1, volume F32 1),
     );
+    m.insert(
+        "GpuChronicleEvent",
+        fields!(GpuChronicleEvent; tick U32 1, event_type U32 1, p1 U32 1, p2 U32 1),
+    );
     let telemetry = fields!(GpuTelemetry;
         population U32 1, kills U32 1, starvations U32 1, apex_record_milli U32 1,
         food_grazed_milli U32 1, sub_ticks_elapsed U32 1, apex_agent_id U32 1,
         freelist_top U32 1, birth_count U32 1, audio_voice_count U32 1,
         selected_agent_idx U32 1, selected_agent_id U32 1, total_births U32 1,
         total_deaths U32 1, max_generation U32 1, living_lineages U32 1,
-        live_count U32 1, pending_free_count U32 1, available_slots U32 1, _reserved1 U32 13);
+        live_count U32 1, pending_free_count U32 1, available_slots U32 1, chronicle_count U32 1,
+        _reserved1 U32 12);
     m.insert("GpuTelemetry", telemetry.clone());
     {
         let mut l = Layout::new();
@@ -139,10 +144,20 @@ fn rust_layouts() -> BTreeMap<&'static str, (Layout, u32, Names)> {
             16,
             voice,
         );
+        let event = &m["GpuChronicleEvent"].0;
+        nest(
+            &mut l,
+            0,
+            offset_of!(ConsolidatedQueue, chronicle),
+            64,
+            16,
+            event,
+        );
         let names = Names::from([
             (offset_of!(ConsolidatedQueue, telemetry) as u32, "telemetry"),
             (offset_of!(ConsolidatedQueue, births) as u32, "births"),
             (offset_of!(ConsolidatedQueue, audio) as u32, "audio"),
+            (offset_of!(ConsolidatedQueue, chronicle) as u32, "chronicle"),
         ]);
         m.insert(
             "ConsolidatedQueue",
@@ -187,6 +202,7 @@ fn rust_name(wgsl: &str) -> Option<&'static str> {
         "SoilCell" => "GpuSoilCell",
         "BirthEvent" => "BirthEvent",
         "AudioVoice" => "AudioVoice",
+        "ChronicleEvent" => "GpuChronicleEvent",
         "GpuTelemetry" => "GpuTelemetry",
         "ConsolidatedQueue" => "ConsolidatedQueue",
         "GpuLbvhNode" => "GpuLbvhNode",
@@ -406,6 +422,12 @@ fn test_rust_structs_are_16_byte_aligned_with_planned_sizes() {
             16,
         ),
         (
+            "GpuChronicleEvent",
+            size_of::<GpuChronicleEvent>(),
+            align_of::<GpuChronicleEvent>(),
+            16,
+        ),
+        (
             "GpuTelemetry",
             size_of::<GpuTelemetry>(),
             align_of::<GpuTelemetry>(),
@@ -415,7 +437,7 @@ fn test_rust_structs_are_16_byte_aligned_with_planned_sizes() {
             "ConsolidatedQueue",
             size_of::<ConsolidatedQueue>(),
             align_of::<ConsolidatedQueue>(),
-            1_052_800,
+            1_053_824,
         ),
     ];
     for (name, size, align, want) in sizes {

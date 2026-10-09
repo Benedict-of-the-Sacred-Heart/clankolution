@@ -81,6 +81,17 @@ pub struct BirthEvent {
     pub birth_tick: u32, // 4 bytes: repurposed from pad
 }
 
+/// A chronicle entry, as `clank_core::SimEvent`: 2 = "Generation p1 opens in lineage p2.",
+/// 3 = "Lineage p1 has taken p2 lives."
+#[repr(C, align(16))]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Default, bytemuck::Pod, bytemuck::Zeroable)]
+pub struct GpuChronicleEvent {
+    pub tick: u32,
+    pub event_type: u32,
+    pub p1: u32,
+    pub p2: u32,
+}
+
 #[repr(C, align(16))]
 #[derive(Clone, Copy, Debug, PartialEq, bytemuck::Pod, bytemuck::Zeroable)]
 pub struct AudioVoice {
@@ -114,15 +125,17 @@ pub struct GpuTelemetry {
     pub live_count: u32, // 4 bytes: live keys at the head of the sorted spatial_keys
     pub pending_free_count: u32, // 4 bytes: deaths awaiting the post-birth merge
     pub available_slots: u32, // 4 bytes: birth capacity left this sub-tick
-    pub _reserved1: [u32; 13], // 52 bytes
+    pub chronicle_count: u32, // 4 bytes: chronicle events queued this frame
+    pub _reserved1: [u32; 12], // 48 bytes
 }
 
 #[repr(C, align(16))]
 #[derive(Clone, Copy, Debug, bytemuck::Pod, bytemuck::Zeroable)]
 pub struct ConsolidatedQueue {
-    pub telemetry: GpuTelemetry,     // 128 bytes (Cache Lines 0 & 1)
-    pub births: [BirthEvent; 65536], // 1,048,576 bytes = 1,024 KB = 1 MB
-    pub audio: [AudioVoice; 256],    // 4,096 bytes = 4 KB (1 memory page)
+    pub telemetry: GpuTelemetry,            // 128 bytes (Cache Lines 0 & 1)
+    pub births: [BirthEvent; 65536],        // 1,048,576 bytes = 1,024 KB = 1 MB
+    pub audio: [AudioVoice; 256],           // 4,096 bytes = 4 KB (1 memory page)
+    pub chronicle: [GpuChronicleEvent; 64], // 1,024 bytes
 }
 
 /// Fixed-point scale of every `GpuSoilCell` field (micro-units). Must match

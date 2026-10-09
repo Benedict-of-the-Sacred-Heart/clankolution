@@ -2207,6 +2207,7 @@ dependencies = [
  "clank_core",
  "half",
  "image",
+ "objc2-metal 0.3.2",
  "rfd",
  "rkyv",
  "serde",

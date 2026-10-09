@@ -16,6 +16,11 @@ bytemuck = { version = "1.21", features = ["derive"] }
 wgpu = { version = "29.0", default-features = false }
 half = "2.7"
 
+# Metal's `isHeadless`, to run headless GPU work on a card that drives no display. Already in
+# the build through wgpu-hal; this only makes it nameable.
+[target.'cfg(target_os = "macos")'.dependencies]
+objc2-metal = { version = "0.3.2", default-features = false, features = ["std", "MTLDevice"] }
+
 [[bench]]
 name = "gpu_microbench"
 harness = false

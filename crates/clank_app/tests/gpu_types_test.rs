@@ -43,7 +43,7 @@ fn test_gpu_struct_alignments_and_divisible_by_4() {
 
     assert_eq!(std::mem::size_of::<ConsolidatedQueue>() % 16, 0);
     assert_eq!(std::mem::size_of::<ConsolidatedQueue>() % 4, 0);
-    assert_eq!(std::mem::size_of::<ConsolidatedQueue>(), 1_052_800);
+    assert_eq!(std::mem::size_of::<ConsolidatedQueue>(), 1_053_824);
 }
 
 #[test]

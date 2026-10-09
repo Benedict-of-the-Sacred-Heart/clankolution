@@ -156,10 +156,10 @@ fn test_ring_returns_each_frame_once_in_order() {
     assert_eq!(Some(sel.trail), driver.readback_agent_trail(0));
 }
 
-/// Spore replenishment (HTML line 1464) tops a collapsed population up to 15 once. Readbacks
+/// Agent replenishment (HTML line 1464) tops a collapsed population up to 15 once. Readbacks
 /// requested before the seeding still report the old count and must not trigger it again.
 #[test]
-fn test_spore_replenishment_seeds_once_despite_lagged_frames() {
+fn test_agent_replenishment_seeds_once_despite_lagged_frames() {
     let mut app = App::new();
     app.add_plugins(MinimalPlugins).add_plugins(ClankSimPlugin);
     {
@@ -191,7 +191,7 @@ fn test_spore_replenishment_seeds_once_despite_lagged_frames() {
     let born = telemetry.total_births;
     assert!(
         telemetry.population <= 15 + born,
-        "population {} overshot 15 (+{born} births): spores seeded more than once",
+        "population {} overshot 15 (+{born} births): agents seeded more than once",
         telemetry.population
     );
     assert_eq!(sim.gpu_population, telemetry.population);

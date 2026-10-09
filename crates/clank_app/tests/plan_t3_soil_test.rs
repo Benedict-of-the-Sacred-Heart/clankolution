@@ -170,7 +170,7 @@ fn totals(cells: impl Iterator<Item = (f32, f32)>) -> (f64, f64) {
 /// With no creatures, 600 ticks of renewal and random spawns keep the GPU's total food within
 /// 3% of the reference's at every 50th tick from 100 to 600, and spawns push some cell above
 /// the starting maximum. The reference steps its soil alone: `World::evolve` would seed
-/// spores into the empty world at tick 45 and they would eat.
+/// agents into the empty world at tick 45 and they would eat.
 #[test]
 fn test_600_soil_ticks_track_the_reference_food_total() {
     let mut sim = world_with(Vec::new(), 100.0);

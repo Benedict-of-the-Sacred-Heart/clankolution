@@ -58,7 +58,8 @@ struct GpuTelemetry {
     live_count: atomic<u32>,
     pending_free_count: atomic<u32>,
     available_slots: atomic<u32>,
-    reserved1: array<u32, 13>,
+    chronicle_count: atomic<u32>,
+    reserved1: array<u32, 12>,
 }
 
 struct BirthEvent {
@@ -74,10 +75,19 @@ struct AudioVoice {
     volume: f32,
 }
 
+// GpuChronicleEvent: 2 = generation milestone (gen, root), 3 = kill milestone (root, kills).
+struct ChronicleEvent {
+    tick: u32,
+    event_type: u32,
+    p1: u32,
+    p2: u32,
+}
+
 struct ConsolidatedQueue {
     telemetry: GpuTelemetry,
     births: array<BirthEvent, 65536>,
     audio: array<AudioVoice, 256>,
+    chronicle: array<ChronicleEvent, 64>,
 }
 
 @group(0) @binding(0) var<storage, read_write> agent_atomics: array<GpuAgentAtomic>;
@@ -96,10 +106,13 @@ fn preamble_main(@builtin(global_invocation_id) id: vec3u) {
         atomicStore(&queue_buffer.telemetry.birth_count, 0u);
         // The spatial sort's first pass counts the live keys into it.
         atomicStore(&queue_buffer.telemetry.live_count, 0u);
+        // Birth capacity for this sub-tick: the slots on the stack after the previous merge.
+        atomicStore(&queue_buffer.telemetry.available_slots, atomicLoad(&queue_buffer.telemetry.freelist_top));
 
         // Frame-level counter reset (strictly at frame start on sub-tick 0):
         if (params.sub_tick == 0u) {
             atomicStore(&queue_buffer.telemetry.audio_voice_count, 0u);
+            atomicStore(&queue_buffer.telemetry.chronicle_count, 0u);
             atomicStore(&queue_buffer.telemetry.kills, 0u);
             atomicStore(&queue_buffer.telemetry.starvations, 0u);
             atomicStore(&queue_buffer.telemetry.apex_record_milli, 0u);
@@ -108,13 +121,6 @@ fn preamble_main(@builtin(global_invocation_id) id: vec3u) {
                 queue_buffer.telemetry.selected_agent_idx = 0xFFFFFFFFu;
                 queue_buffer.telemetry.selected_agent_id = 0u;
             }
-        }
-    }
-
-    // Instantaneous census is cleared on final sub-tick before recounting:
-    if (params.sub_tick == params.sub_ticks_per_frame - 1u) {
-        if (id.x == 0u) {
-            atomicStore(&queue_buffer.telemetry.population, 0u);
         }
     }
 }

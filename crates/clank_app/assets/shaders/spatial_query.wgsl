@@ -74,7 +74,8 @@ struct GpuTelemetry {
     live_count: u32,
     pending_free_count: u32,
     available_slots: u32,
-    reserved1: array<u32, 13>,
+    chronicle_count: u32,
+    reserved1: array<u32, 12>,
 }
 
 struct BirthEvent {
@@ -90,10 +91,19 @@ struct AudioVoice {
     volume: f32,
 }
 
+// GpuChronicleEvent: 2 = generation milestone (gen, root), 3 = kill milestone (root, kills).
+struct ChronicleEvent {
+    tick: u32,
+    event_type: u32,
+    p1: u32,
+    p2: u32,
+}
+
 struct ConsolidatedQueue {
     telemetry: GpuTelemetry,
     births: array<BirthEvent, 65536>,
     audio: array<AudioVoice, 256>,
+    chronicle: array<ChronicleEvent, 64>,
 }
 
 struct CullOutput {

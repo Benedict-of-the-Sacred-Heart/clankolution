@@ -5,7 +5,8 @@
 //! frame instead of stalling until the GPU has finished every sub-tick.
 
 use crate::gpu::types::{
-    AudioVoice, GpuAgentAtomic, GpuAgentGenome, GpuAgentState, GpuAgentTrail, GpuTelemetry,
+    AudioVoice, GpuAgentAtomic, GpuAgentGenome, GpuAgentState, GpuAgentTrail, GpuChronicleEvent,
+    GpuTelemetry,
 };
 use std::collections::VecDeque;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -16,16 +17,18 @@ pub const RING_DEPTH: usize = 3;
 
 const TELEMETRY_OFFSET: u64 = 0;
 const AUDIO_OFFSET: u64 = 128;
-const STATE_OFFSET: u64 = AUDIO_OFFSET + 256 * 16;
+const CHRONICLE_OFFSET: u64 = AUDIO_OFFSET + 256 * 16;
+const STATE_OFFSET: u64 = CHRONICLE_OFFSET + 64 * 16;
 const GENOME_OFFSET: u64 = STATE_OFFSET + 128;
 const ATOMIC_OFFSET: u64 = GENOME_OFFSET + 352;
 const TRAIL_OFFSET: u64 = ATOMIC_OFFSET + 16;
-/// Bytes copied per frame: telemetry, the audio queue and one creature slot.
+/// Bytes copied per frame: telemetry, the audio queue, the chronicle and one creature slot.
 pub const FRAME_READBACK_BYTES: u64 = TRAIL_OFFSET + 96;
 
 /// Where the queue buffer keeps telemetry and the audio voices.
 pub const QUEUE_TELEMETRY_OFFSET: u64 = 0;
 pub const QUEUE_AUDIO_OFFSET: u64 = 128 + 65536 * 16;
+pub const QUEUE_CHRONICLE_OFFSET: u64 = QUEUE_AUDIO_OFFSET + 256 * 16;
 
 /// The creature slot requested with a frame, as it was when that frame finished.
 #[derive(Clone, Copy, Debug)]
@@ -42,6 +45,8 @@ pub struct SelectedSlotReadback {
 pub struct FrameReadback {
     pub telemetry: GpuTelemetry,
     pub audio: Vec<AudioVoice>,
+    /// The frame's chronicle events, in the order the GPU queued them.
+    pub chronicle: Vec<GpuChronicleEvent>,
     pub selected: Option<SelectedSlotReadback>,
     /// The frame ran the picking query (tool 0), so `telemetry.selected_agent_*` is its answer.
     pub picking: bool,
@@ -137,6 +142,13 @@ impl ReadbackRing {
             AUDIO_OFFSET,
             256 * 16,
         );
+        encoder.copy_buffer_to_buffer(
+            src.queue_buffer,
+            QUEUE_CHRONICLE_OFFSET,
+            dst,
+            CHRONICLE_OFFSET,
+            64 * 16,
+        );
         if let Some(slot) = selected {
             let slot = slot as u64;
             encoder.copy_buffer_to_buffer(src.agent_states, slot * 128, dst, STATE_OFFSET, 128);
@@ -197,6 +209,9 @@ fn parse(data: &[u8], selected: Option<u32>, picking: bool) -> FrameReadback {
     let telemetry: GpuTelemetry = bytemuck::pod_read_unaligned(at(TELEMETRY_OFFSET, 128));
     let voices = (telemetry.audio_voice_count as usize).min(256);
     let audio = bytemuck::pod_collect_to_vec::<u8, AudioVoice>(at(AUDIO_OFFSET, voices * 16));
+    let events = (telemetry.chronicle_count as usize).min(64);
+    let chronicle =
+        bytemuck::pod_collect_to_vec::<u8, GpuChronicleEvent>(at(CHRONICLE_OFFSET, events * 16));
     let selected = selected.map(|slot| SelectedSlotReadback {
         slot,
         state: bytemuck::pod_read_unaligned(at(STATE_OFFSET, 128)),
@@ -207,6 +222,7 @@ fn parse(data: &[u8], selected: Option<u32>, picking: bool) -> FrameReadback {
     FrameReadback {
         telemetry,
         audio,
+        chronicle,
         selected,
         picking,
     }

@@ -129,7 +129,7 @@ pub fn set_simulation_speed(sim: &mut SimWorld, state: &mut UiState, speed: f32)
     sim.speed = clamped.round() as u32;
 }
 
-pub fn trigger_spore_catastrophe(sim: &mut SimWorld) {
+pub fn trigger_catastrophe(sim: &mut SimWorld) {
     sim.world.trigger_eclipse();
 }
 
@@ -430,12 +430,8 @@ pub fn clank_ui_system(
 
                         // 2x2 Stat Grid
                         let active_count = sim.active_population();
-                        let max_gen = sim.world.agents.iter().map(|a| a.gen).max().unwrap_or(0);
-                        let living_roots = sim.world.agents.iter()
-                            .filter(|a| a.dead == 0)
-                            .map(|a| a.root)
-                            .collect::<std::collections::HashSet<_>>()
-                            .len();
+                        let max_gen = sim.max_generation();
+                        let living_roots = sim.living_lineages();
                         let kills_count = sim.world.kills;
 
                         egui::Grid::new("stat_grid").num_columns(2).spacing([8.0, 8.0]).show(ui, |ui| {
@@ -620,7 +616,7 @@ fn render_tool_matrix(ui: &mut egui::Ui, state: &mut UiState, sim: &mut SimWorld
 
                 if ui.add_sized([92.0, 30.0], btn).clicked() {
                     if tool == ActiveTool::Eclipse {
-                        trigger_spore_catastrophe(sim);
+                        trigger_catastrophe(sim);
                         state.add_chronicle(format!(
                             "{:05}  An eclipse consumes the harvest.",
                             sim.world.tick

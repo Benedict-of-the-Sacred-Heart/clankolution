@@ -79,6 +79,8 @@ pub struct GpuComputeDriver {
     pub lbvh_aabb_pipeline: wgpu::ComputePipeline,
     pub agent_pipeline: wgpu::ComputePipeline,
     pub birth_pipeline: wgpu::ComputePipeline,
+    pub birth_dispatch: crate::gpu::birth_pipeline::BirthDispatch,
+    census: crate::gpu::census_pipeline::CensusPass,
     pub merge_pending_free_pipeline: wgpu::ComputePipeline,
     pub spatial_query_pipeline: wgpu::ComputePipeline,
     pub cull_clear_pipeline: wgpu::ComputePipeline,
@@ -125,6 +127,20 @@ pub struct GpuComputeDriver {
 
 static NEXT_DRIVER_GENERATION: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
 
+/// Whether `device` is on a card that drives no display (Metal's `isHeadless`; false elsewhere).
+pub fn device_is_headless(device: &wgpu::Device) -> bool {
+    #[cfg(target_os = "macos")]
+    {
+        use objc2_metal::MTLDevice;
+        // SAFETY: only reads a property of the raw Metal device.
+        if let Some(raw) = unsafe { device.as_hal::<wgpu::hal::api::Metal>() } {
+            return raw.raw_device().isHeadless();
+        }
+    }
+    let _ = device;
+    false
+}
+
 impl GpuComputeDriver {
     pub fn create_default() -> Option<Self> {
         Self::create_for_world(75, 50, 65536)
@@ -132,8 +148,25 @@ impl GpuComputeDriver {
 
     /// A device of our own, for headless use (tests, tools). The app builds the driver on
     /// Bevy's render device instead (`from_render_device`) so the renderer can read its buffers.
+    /// Prefers a card that drives no display (a Mac Pro's second FirePro): long compute on the
+    /// display's card freezes the whole screen until it finishes.
     pub fn request_standalone_device() -> Option<(wgpu::Device, wgpu::Queue)> {
         let instance = wgpu::Instance::default();
+        let request = |adapter: &wgpu::Adapter| {
+            bevy::tasks::block_on(adapter.request_device(&wgpu::DeviceDescriptor {
+                label: Some("clank_gpu_compute_device"),
+                ..Default::default()
+            }))
+            .ok()
+        };
+        for adapter in bevy::tasks::block_on(instance.enumerate_adapters(wgpu::Backends::all())) {
+            if let Some((device, queue)) = request(&adapter) {
+                if device_is_headless(&device) {
+                    return Some((device, queue));
+                }
+            }
+        }
+
         let adapter =
             bevy::tasks::block_on(instance.request_adapter(&wgpu::RequestAdapterOptions {
                 power_preference: wgpu::PowerPreference::HighPerformance,
@@ -141,12 +174,7 @@ impl GpuComputeDriver {
                 force_fallback_adapter: false,
             }))
             .ok()?;
-
-        bevy::tasks::block_on(adapter.request_device(&wgpu::DeviceDescriptor {
-            label: Some("clank_gpu_compute_device"),
-            ..Default::default()
-        }))
-        .ok()
+        request(&adapter)
     }
 
     /// The app's driver: built on Bevy's render device so the renderer can bind the
@@ -205,7 +233,8 @@ impl GpuComputeDriver {
         let lbvh_nodes_size = (max_agents as u64) * 2 * 48;
         let node_flags_size = (max_agents as u64) * 4;
         let freelist_size = (max_agents as u64) * 4;
-        let queue_size = 1052800; // ConsolidatedQueue: 128B telemetry + 65536*16B births + 256*16B audio
+        // ConsolidatedQueue: 128B telemetry + 65536*16B births + 256*16B audio + 64*16B chronicle
+        let queue_size = std::mem::size_of::<crate::gpu::types::ConsolidatedQueue>() as u64;
 
         let agent_states_buf = device.create_buffer(&wgpu::BufferDescriptor {
             label: Some("agent_states_buf"),
@@ -759,6 +788,14 @@ impl GpuComputeDriver {
             &spatial_keys_buf,
             &queue_buffer,
             &sim_params_buf,
+            max_agents,
+        );
+        let birth_dispatch = crate::gpu::birth_pipeline::BirthDispatch::new(&device, &queue_buffer);
+        let census = crate::gpu::census_pipeline::CensusPass::new(
+            &device,
+            &queue_buffer,
+            &agent_states_buf,
+            &agent_atomics_buf,
             max_agents,
         );
 
@@ -1720,6 +1757,8 @@ impl GpuComputeDriver {
             lbvh_aabb_pipeline,
             agent_pipeline,
             birth_pipeline,
+            birth_dispatch,
+            census,
             merge_pending_free_pipeline,
             spatial_query_pipeline,
             cull_clear_pipeline,
@@ -1994,6 +2033,15 @@ impl GpuComputeDriver {
             .store(next_id, std::sync::atomic::Ordering::Relaxed);
         self.queue
             .write_buffer(&self.queue_buffer, 24, bytemuck::bytes_of(&next_id));
+        // Founders start new lineages after every uploaded one (the reference's `roots`).
+        let next_root = states
+            .iter()
+            .filter(|s| (s.meta_flags & (1 << 13)) == 0)
+            .map(|s| s.root + 1)
+            .max()
+            .unwrap_or(0);
+        self.next_agent_root
+            .store(next_root, std::sync::atomic::Ordering::Relaxed);
 
         let sp = crate::gpu::soil_pipeline::SoilParams {
             renewal: params.renewal,
@@ -2146,17 +2194,23 @@ impl GpuComputeDriver {
                     cpass.set_bind_group(0, &self.trail_bind_group, &[]);
                     cpass.dispatch_workgroups(agent_workgroups, 1, 1);
 
-                    // 7. Decoupled birth step
+                    // 7. Decoupled birth step: one workgroup per queued birth
+                    self.birth_dispatch.encode_args(&mut cpass);
                     cpass.set_pipeline(&self.birth_pipeline);
                     cpass.set_bind_group(0, &self.birth_group0, &[]);
                     cpass.set_bind_group(1, &self.birth_group1, &[]);
-                    cpass.dispatch_workgroups(64, 1, 1);
+                    cpass.dispatch_workgroups_indirect(&self.birth_dispatch.args, 0);
 
                     // 8. This sub-tick's deaths become reusable for the next one
                     cpass.set_pipeline(&self.merge_pending_free_pipeline);
                     cpass.set_bind_group(0, &self.birth_group0, &[]);
                     cpass.set_bind_group(1, &self.birth_group1, &[]);
                     cpass.dispatch_workgroups(1, 1, 1);
+
+                    // 9. On the frame's final sub-tick, the living census after the births
+                    if step + 1 == sub_ticks {
+                        self.census.encode(&mut cpass, agent_workgroups);
+                    }
                 }
             }
 
@@ -2722,8 +2776,8 @@ impl GpuComputeDriver {
         12
     }
 
-    /// Spore replenishment: one founder at each position.
-    pub fn seed_spores_gpu(&self, agents: &[(f32, f32)]) -> Vec<u32> {
+    /// Agent replenishment: one founder at each position.
+    pub fn replenish_agents_gpu(&self, agents: &[(f32, f32)]) -> Vec<u32> {
         self.place_founders_gpu(agents)
     }
 
@@ -2754,6 +2808,9 @@ impl GpuComputeDriver {
 
         // 1. Read back current telemetry to check available freelist slots
         let telem = self.readback_telemetry();
+        // Newborns take ids from the GPU's counter; founders continue after them.
+        self.next_agent_id
+            .fetch_max(telem.apex_agent_id, std::sync::atomic::Ordering::Relaxed);
         let cur_freelist_top = telem.freelist_top.min(self.max_agents);
         if cur_freelist_top == 0 {
             return Vec::new();
@@ -2812,11 +2869,26 @@ impl GpuComputeDriver {
             let root = self
                 .next_agent_root
                 .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-            let energy = 43.0f32;
-            let phi = (1.0 + 5.0f32.sqrt()) * 0.5;
-            let angle = ((i as f32) * phi) % (2.0 * std::f32::consts::PI);
+            // Reference founders (`World::create_agent` with no parent): angle in [0, TAU),
+            // energy in [34, 52), each trait uniform in its own range, genes js_round of
+            // uniform [-58, 58). Draws are keyed by the founder's id so each one differs.
+            let rand = |stream: u32, lo: f32, hi: f32| lo + (hi - lo) * founder_uniform(id, stream);
+            let angle = rand(0, 0.0, std::f32::consts::TAU);
+            let energy = rand(1, 34.0, 52.0);
+            const TRAIT_RANGES: [(f32, f32); 6] = [
+                (0.25, 0.8),
+                (0.3, 0.8),
+                (0.3, 0.8),
+                (0.25, 0.75),
+                (0.2, 0.8),
+                (0.2, 0.8),
+            ];
+            let mut traits = [0.0f32; 8];
+            for (c, &(lo, hi)) in TRAIT_RANGES.iter().enumerate() {
+                traits[c] = rand(2 + c as u32, lo, hi);
+            }
 
-            let r_u8 = 128u32; // tr[0] = 0.5
+            let r_u8 = (traits[0].clamp(0.0, 1.0) * 255.0) as u32;
             let e_u8 = ((energy / 100.0).clamp(0.0, 1.0) * 255.0) as u32;
             let visual_cache = r_u8 | (e_u8 << 16);
 
@@ -2826,7 +2898,7 @@ impl GpuComputeDriver {
             states.push(GpuAgentState {
                 pos_vel: [x, y, 0.0, 0.0],
                 angle_energy: [angle, energy, 0.0, 0.0],
-                traits: [0.5, 0.5, 0.5, 0.5, 0.5, 0.5, 0.0, 0.0],
+                traits,
                 hidden: [0.0; 10],
                 id,
                 meta_flags: 0, // living: bit 13 is 0
@@ -2836,15 +2908,10 @@ impl GpuComputeDriver {
                 visual_cache,
             });
 
-            // Spore genome with pseudo-random weights
             let mut packed_genes = [0u32; 88];
-            for g in 0..88 {
-                let w0 = (((i * 73 + g * 31) % 116) as i32 - 58) as i8 as u8;
-                let w1 = (((i * 97 + g * 47) % 116) as i32 - 58) as i8 as u8;
-                let w2 = (((i * 113 + g * 59) % 116) as i32 - 58) as i8 as u8;
-                let w3 = (((i * 127 + g * 71) % 116) as i32 - 58) as i8 as u8;
-                packed_genes[g] =
-                    (w0 as u32) | ((w1 as u32) << 8) | ((w2 as u32) << 16) | ((w3 as u32) << 24);
+            for g in 0..clank_core::agent::GENES {
+                let gene = (rand(8 + g as u32, -58.0, 58.0) + 0.5).floor() as i8;
+                packed_genes[g >> 2] |= (gene as u8 as u32) << ((g & 3) * 8);
             }
             genomes.push(GpuAgentGenome { packed_genes });
 
@@ -3090,6 +3157,15 @@ impl GpuComputeDriver {
             }
         }
     }
+}
+
+/// Uniform [0, 1) draw for founder `id`'s value number `stream` (splitmix64 finalizer).
+fn founder_uniform(id: u32, stream: u32) -> f32 {
+    let mut h = ((id as u64) << 32 | stream as u64) ^ 0x6a09e667f3bcc909;
+    h = (h ^ (h >> 30)).wrapping_mul(0xbf58476d1ce4e5b9);
+    h = (h ^ (h >> 27)).wrapping_mul(0x94d049bb133111eb);
+    h ^= h >> 31;
+    (h >> 40) as f32 / (1u64 << 24) as f32
 }
 
 /// A jitter in [-11, 11) for Seed Life, hashed from a founder number and an axis (the driver

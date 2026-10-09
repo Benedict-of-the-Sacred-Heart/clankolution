@@ -77,7 +77,8 @@ struct GpuTelemetry {
     live_count: atomic<u32>,
     pending_free_count: atomic<u32>,
     available_slots: atomic<u32>,
-    reserved1: array<u32, 13>,
+    chronicle_count: atomic<u32>,
+    reserved1: array<u32, 12>,
 }
 
 struct BirthEvent {
@@ -93,10 +94,19 @@ struct AudioVoice {
     volume: f32,
 }
 
+// GpuChronicleEvent: 2 = generation milestone (gen, root), 3 = kill milestone (root, kills).
+struct ChronicleEvent {
+    tick: u32,
+    event_type: u32,
+    p1: u32,
+    p2: u32,
+}
+
 struct ConsolidatedQueue {
     telemetry: GpuTelemetry,
     births: array<BirthEvent, 65536>,
     audio: array<AudioVoice, 256>,
+    chronicle: array<ChronicleEvent, 64>,
 }
 
 @group(0) @binding(0) var<storage, read_write> agent_states: array<GpuAgentState>;
@@ -107,21 +117,44 @@ struct ConsolidatedQueue {
 @group(1) @binding(0) var<uniform> params: GpuSimParams;
 
 var<workgroup> shared_child_slot: u32;
+var<workgroup> shared_child_id: u32;
 
-fn pcg_hash(id: u32, stream: u32, tick: u32) -> u32 {
-    let state = id * 747796405u + stream * 2891336453u + tick * 1013904223u;
-    let word = ((state >> ((state >> 28u) + 4u)) ^ state) * 277803737u;
-    return (word >> 22u) ^ word;
+// Random streams, each offset by the gene or trait index: every draw has its own, so which
+// parent a gene comes from is independent of whether it mutates.
+const CROSSOVER_STREAM: u32 = 0x10000000u;
+const MUTATE_ROLL_STREAM: u32 = 0x11000000u;
+const MUTATE_R1_STREAM: u32 = 0x12000000u;
+const MUTATE_R2_STREAM: u32 = 0x13000000u;
+const TRAIT_CROSSOVER_STREAM: u32 = 0x14000000u;
+const TRAIT_R1_STREAM: u32 = 0x15000000u;
+const TRAIT_R2_STREAM: u32 = 0x16000000u;
+const CHILD_X_STREAM: u32 = 0x17000000u;
+const CHILD_Y_STREAM: u32 = 0x17000001u;
+const CHILD_ANGLE_STREAM: u32 = 0x17000002u;
+const GENERATION_EVENT_STREAM: u32 = 0x18000000u;
+
+// pcg3d (Jarzynski & Olano 2020): a stateless hash of (id, stream, tick).
+fn pcg3d(id: u32, stream: u32, tick: u32) -> u32 {
+    var v = vec3u(id, stream, tick) * 1664525u + 1013904223u;
+    v.x += v.y * v.z; v.y += v.z * v.x; v.z += v.x * v.y;
+    v ^= v >> vec3u(16u);
+    v.x += v.y * v.z; v.y += v.z * v.x; v.z += v.x * v.y;
+    return v.x;
 }
 
-fn pcg_float(id: u32, stream: u32, tick: u32) -> f32 {
-    return f32(pcg_hash(id, stream, tick)) / 4294967295.0;
+// Uniform in [0, 1) from the top 24 bits (exact in f32), as the reference's Math.random().
+fn pcg3d_float(id: u32, stream: u32, tick: u32) -> f32 {
+    return f32(pcg3d(id, stream, tick) >> 8u) / 16777216.0;
 }
 
-fn pcg_triangular(id: u32, stream: u32, tick: u32) -> f32 {
-    let r1 = pcg_float(id, stream, tick);
-    let r2 = pcg_float(id, stream + 100u, tick);
-    return r1 + r2 - 1.0;
+// r1 + r2 - 1 from two independent streams: triangular on (-1, 1), as the reference.
+fn pcg3d_triangular(id: u32, stream1: u32, stream2: u32, tick: u32) -> f32 {
+    return pcg3d_float(id, stream1, tick) + pcg3d_float(id, stream2, tick) - 1.0;
+}
+
+// JavaScript Math.round: ties toward +infinity (WGSL round() ties to even).
+fn js_round(x: f32) -> f32 {
+    return floor(x + 0.5);
 }
 
 fn wrap_coords(p: vec2f) -> vec2f {
@@ -132,15 +165,10 @@ fn wrap_coords(p: vec2f) -> vec2f {
     );
 }
 
-fn mutate_gene_byte(val: i32, id: u32, stream: u32, tick: u32, mut_rate: f32) -> u32 {
-    let p_mut = pcg_float(id, stream + 500u, tick);
-    if (p_mut >= 0.11) {
-        return u32(val & 0xFF);
-    }
-    let tri = pcg_triangular(id, stream, tick);
-    let delta = i32(round(tri * 100.0 * mut_rate));
-    let new_val = clamp(val + delta, -127, 127);
-    return u32(new_val & 0xFF);
+// Trait c of a creature: traits[0] holds 0..3, traits[1].xy holds 4 and 5.
+fn trait_of(slot: u32, c: u32) -> f32 {
+    if (c < 4u) { return agent_states[slot].traits[0][c]; }
+    return agent_states[slot].traits[1][c - 4u];
 }
 
 @compute @workgroup_size(32)
@@ -153,6 +181,9 @@ fn birth_main(@builtin(workgroup_id) wg_id: vec3u, @builtin(local_invocation_id)
     let event = queue_buffer.births[wg_id.x];
     let parent_a = event.parent_a;
     let parent_b = event.parent_b;
+    let sexual = parent_b != 0xFFFFFFFFu && parent_b < params.max_agents;
+    // The number of the tick being computed (see agent_step.wgsl).
+    let step_tick = params.tick + 1u;
 
     if (local_id.x == 0u) {
         var cur_top = atomicLoad(&queue_buffer.telemetry.freelist_top);
@@ -166,103 +197,72 @@ fn birth_main(@builtin(workgroup_id) wg_id: vec3u, @builtin(local_invocation_id)
             cur_top = cas.old_value;
         }
         shared_child_slot = slot;
+        shared_child_id = select(0u, atomicAdd(&queue_buffer.telemetry.apex_agent_id, 1u), slot != 0xFFFFFFFFu);
     }
-    workgroupBarrier();
+    let child_idx = workgroupUniformLoad(&shared_child_slot);
+    let child_id = workgroupUniformLoad(&shared_child_id);
+    // Cannot happen when the agent pass reserved capacity (available_slots); kept as a guard.
+    if (child_idx == 0xFFFFFFFFu) { return; }
 
-    let child_idx = shared_child_slot;
-    if (child_idx == 0xFFFFFFFFu || child_idx >= params.max_capacity) { return; } // Carrying capacity reached
-
-    // Parallel genome crossover & mutation across 88 words (exact 326 genes)
+    // Genome crossover & mutation, 4 genes per word (326 genes in words 0..81; 82..87 spare).
+    // Per gene, as the reference: 48% from the mate, then an 11% chance of a mutation of
+    // round((r1 + r2 - 1) * 100 * mutRate), clamped to [-127, 127].
     for (var w = local_id.x; w < 88u; w += 32u) {
         if (w >= 82u) {
             agent_genomes[child_idx].packed_genes[w] = 0u;
             continue;
         }
-
         let word_a = agent_genomes[parent_a].packed_genes[w];
         var word_b = word_a;
-        if (parent_b != 0xFFFFFFFFu && parent_b < params.max_agents) {
+        if (sexual) {
             word_b = agent_genomes[parent_b].packed_genes[w];
         }
-
-        // Unpack 4 bytes from parent A and parent B
-        let a0 = (i32(word_a << 24u) >> 24);
-        let a1 = (i32(word_a << 16u) >> 24);
-        let a2 = (i32(word_a << 8u) >> 24);
-        let a3 = (i32(word_a) >> 24);
-
-        let b0 = (i32(word_b << 24u) >> 24);
-        let b1 = (i32(word_b << 16u) >> 24);
-        let b2 = (i32(word_b << 8u) >> 24);
-        let b3 = (i32(word_b) >> 24);
-
-        let g0 = w * 4u + 0u;
-        let g1 = w * 4u + 1u;
-        let g2 = w * 4u + 2u;
-        let g3 = w * 4u + 3u;
-
-        // Individual per-gene crossover (48% parent B, otherwise parent A)
-        let base0 = select(a0, b0, parent_b != 0xFFFFFFFFu && pcg_float(child_idx, g0, params.tick) < 0.48);
-        let base1 = select(a1, b1, parent_b != 0xFFFFFFFFu && pcg_float(child_idx, g1, params.tick) < 0.48);
-        let base2 = select(a2, b2, parent_b != 0xFFFFFFFFu && pcg_float(child_idx, g2, params.tick) < 0.48);
-        let base3 = select(a3, b3, parent_b != 0xFFFFFFFFu && pcg_float(child_idx, g3, params.tick) < 0.48);
-
-        let m0 = select(0u, mutate_gene_byte(base0, child_idx, g0, params.tick, params.mut_rate), g0 < 326u);
-        let m1 = select(0u, mutate_gene_byte(base1, child_idx, g1, params.tick, params.mut_rate), g1 < 326u);
-        let m2 = select(0u, mutate_gene_byte(base2, child_idx, g2, params.tick, params.mut_rate), g2 < 326u);
-        let m3 = select(0u, mutate_gene_byte(base3, child_idx, g3, params.tick, params.mut_rate), g3 < 326u);
-
-        agent_genomes[child_idx].packed_genes[w] = m0 | (m1 << 8u) | (m2 << 16u) | (m3 << 24u);
+        var word = 0u;
+        for (var b = 0u; b < 4u; b += 1u) {
+            let g = w * 4u + b;
+            if (g >= 326u) { break; }
+            var gene = extractBits(i32(word_a), b * 8u, 8u);
+            if (sexual && pcg3d_float(child_id, CROSSOVER_STREAM + g, step_tick) < 0.48) {
+                gene = extractBits(i32(word_b), b * 8u, 8u);
+            }
+            if (pcg3d_float(child_id, MUTATE_ROLL_STREAM + g, step_tick) < 0.11) {
+                let tri = pcg3d_triangular(child_id, MUTATE_R1_STREAM + g, MUTATE_R2_STREAM + g, step_tick);
+                gene = clamp(gene + i32(js_round(tri * 100.0 * params.mut_rate)), -127, 127);
+            }
+            word |= (u32(gene) & 0xFFu) << (b * 8u);
+        }
+        agent_genomes[child_idx].packed_genes[w] = word;
     }
-
 
     if (local_id.x == 0u) {
         atomicAdd(&queue_buffer.telemetry.total_births, 1u);
+        // Within ±9px of the parent (rand(-9, 9) per axis), wrapped.
         let parent_pos = agent_states[parent_a].pos_vel.xy;
         let offset = vec2f(
-            (pcg_float(child_idx, 1u, params.tick) * 18.0) - 9.0,
-            (pcg_float(child_idx, 2u, params.tick) * 18.0) - 9.0
+            pcg3d_float(child_id, CHILD_X_STREAM, step_tick) * 18.0 - 9.0,
+            pcg3d_float(child_id, CHILD_Y_STREAM, step_tick) * 18.0 - 9.0
         );
         let child_pos = wrap_coords(parent_pos + offset);
 
         agent_states[child_idx].pos_vel = vec4f(child_pos.x, child_pos.y, 0.0, 0.0);
-        agent_states[child_idx].angle_energy = vec4f(pcg_float(child_idx, 3u, params.tick) * 6.2831853, 24.0, 0.0, 0.0);
+        agent_states[child_idx].angle_energy = vec4f(pcg3d_float(child_id, CHILD_ANGLE_STREAM, step_tick) * 6.2831853, 24.0, 0.0, 0.0);
         atomicStore(&agent_atomics[child_idx].energy_milli, 24000);
         atomicStore(&agent_atomics[child_idx].dead_claimed, 0u);
         atomicStore(&agent_atomics[child_idx].mate_claim, 0u);
         atomicStore(&agent_atomics[child_idx].mate_energy_milli, 0u);
 
-        // Inherit traits with crossover (45% parent B) and mutation
-        let mut_rate = params.mut_rate;
-        var tr0 = agent_states[parent_a].traits[0];
-        var tr1 = agent_states[parent_a].traits[1];
-
-        if (parent_b != 0xFFFFFFFFu && parent_b < params.max_agents) {
-            let tr0_b = agent_states[parent_b].traits[0];
-            let tr1_b = agent_states[parent_b].traits[1];
-            for (var c = 0u; c < 4u; c += 1u) {
-                if (pcg_float(child_idx, 200u + c, params.tick) < 0.45) {
-                    tr0[c] = tr0_b[c];
-                }
+        // Traits: 45% from the mate, then clamp(base + (r1 + r2 - 1) * mutRate * 0.6, .03, .98).
+        var tr: array<f32, 6>;
+        for (var c = 0u; c < 6u; c += 1u) {
+            var base = trait_of(parent_a, c);
+            if (sexual && pcg3d_float(child_id, TRAIT_CROSSOVER_STREAM + c, step_tick) < 0.45) {
+                base = trait_of(parent_b, c);
             }
-            for (var c = 0u; c < 2u; c += 1u) {
-                if (pcg_float(child_idx, 204u + c, params.tick) < 0.45) {
-                    tr1[c] = tr1_b[c];
-                }
-            }
+            let delta = pcg3d_triangular(child_id, TRAIT_R1_STREAM + c, TRAIT_R2_STREAM + c, step_tick) * params.mut_rate * 0.6;
+            tr[c] = clamp(base + delta, 0.03, 0.98);
         }
-        for (var c = 0u; c < 4u; c += 1u) {
-            let delta = pcg_triangular(child_idx, 10u + c, params.tick) * mut_rate * 0.6;
-            tr0[c] = clamp(tr0[c] + delta, 0.03, 0.98);
-        }
-        for (var c = 0u; c < 2u; c += 1u) {
-            let delta = pcg_triangular(child_idx, 14u + c, params.tick) * mut_rate * 0.6;
-            tr1[c] = clamp(tr1[c] + delta, 0.03, 0.98);
-        }
-        tr1[2] = 0.0; // signal = 0.0
-        tr1[3] = 0.0; // last_victim = 0
-        agent_states[child_idx].traits[0] = tr0;
-        agent_states[child_idx].traits[1] = tr1;
+        agent_states[child_idx].traits[0] = vec4f(tr[0], tr[1], tr[2], tr[3]);
+        agent_states[child_idx].traits[1] = vec4f(tr[4], tr[5], 0.0, 0.0); // signal 0, last victim 0
 
         // Newborn recurrent hidden states must start at 0
         agent_states[child_idx].hidden[0] = vec4f(0.0);
@@ -274,17 +274,24 @@ fn birth_main(@builtin(workgroup_id) wg_id: vec3u, @builtin(local_invocation_id)
 
         let parent_gen = agent_states[parent_a].age_gen >> 16u;
         var max_parent_gen = parent_gen;
-        if (parent_b != 0xFFFFFFFFu && parent_b < params.max_agents) {
-            let gen_b = agent_states[parent_b].age_gen >> 16u;
-            max_parent_gen = max(parent_gen, gen_b);
+        if (sexual) {
+            max_parent_gen = max(parent_gen, agent_states[parent_b].age_gen >> 16u);
         }
         let child_gen = max_parent_gen + 1u;
-        atomicMax(&queue_buffer.telemetry.max_generation, child_gen);
         agent_states[child_idx].age_gen = (child_gen & 0xFFFFu) << 16u;
-        agent_states[child_idx].id = atomicAdd(&queue_buffer.telemetry.apex_agent_id, 1u);
+        // Reference: 8% of births at a positive multiple of 12 generations are chronicled.
+        if (child_gen > 0u && child_gen % 12u == 0u
+            && pcg3d_float(child_id, GENERATION_EVENT_STREAM, step_tick) < 0.08) {
+            let k = atomicAdd(&queue_buffer.telemetry.chronicle_count, 1u);
+            if (k < 64u) {
+                queue_buffer.chronicle[k] =
+                    ChronicleEvent(step_tick, 2u, child_gen, agent_states[parent_a].root);
+            }
+        }
+        agent_states[child_idx].id = child_id;
         agent_states[child_idx].morton_code = 0u;
 
-        let child_r_u8 = u32(clamp(agent_states[child_idx].traits[0][0], 0.0, 1.0) * 255.0);
+        let child_r_u8 = u32(clamp(tr[0], 0.0, 1.0) * 255.0);
         let child_e_u8 = u32(clamp(24.0 / 100.0, 0.0, 1.0) * 255.0);
         agent_states[child_idx].visual_cache = child_r_u8 | (child_e_u8 << 16u);
     }

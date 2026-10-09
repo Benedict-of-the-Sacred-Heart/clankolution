@@ -80,7 +80,7 @@ fn trail_record_main(@builtin(global_invocation_id) id: vec3u) {
 
     var trail = agent_trails[idx];
     if (trail.owner_id != state.id) {
-        // Newborn, spore, or a fresh upload in this slot: no history yet.
+        // Newborn, new agent, or a fresh upload in this slot: no history yet.
         trail.count = 0u;
         trail.owner_id = state.id;
     }

@@ -1,6 +1,6 @@
 use clank_app::sim::SimWorld;
 use clank_app::ui::{
-    compute_cycle_subtitle, set_simulation_speed, toggle_pause, trigger_spore_catastrophe, UiState,
+    compute_cycle_subtitle, set_simulation_speed, toggle_pause, trigger_catastrophe, UiState,
 };
 
 #[test]
@@ -92,11 +92,11 @@ fn test_persistence_filenames_and_status() {
 }
 
 #[test]
-fn test_ui_trigger_spore_catastrophe() {
+fn test_ui_trigger_catastrophe() {
     let mut sim = SimWorld::new(42);
     assert_eq!(sim.world.eclipse, 0);
 
-    trigger_spore_catastrophe(&mut sim);
+    trigger_catastrophe(&mut sim);
     assert!(sim.world.eclipse > 0);
 }
 

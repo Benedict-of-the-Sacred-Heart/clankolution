@@ -23,6 +23,9 @@ pub struct SimWorld {
     pub world_height: f64,
     pub active_engine: ActiveEngine,
     pub gpu_population: u32,
+    /// The GPU census's highest living generation and distinct living lineages.
+    pub gpu_max_generation: u32,
+    pub gpu_living_lineages: u32,
     /// Set when the CPU world was replaced (NEW WORLD, API reset, load); the GPU copy is
     /// stale and must be re-uploaded rather than flushed back.
     pub gpu_resync_pending: bool,
@@ -59,6 +62,8 @@ impl SimWorld {
             world_height: 600.0,
             active_engine: ActiveEngine::Rust,
             gpu_population: 0,
+            gpu_max_generation: 0,
+            gpu_living_lineages: 0,
             gpu_resync_pending: false,
             gpu_births_base: 0,
         }
@@ -70,6 +75,44 @@ impl SimWorld {
         } else {
             self.world.agents.iter().filter(|a| a.dead == 0).count()
         }
+    }
+
+    /// The highest generation among living creatures, from the engine that owns them.
+    pub fn max_generation(&self) -> u32 {
+        if self.active_engine == ActiveEngine::Gpu {
+            self.gpu_max_generation
+        } else {
+            self.cpu_max_generation()
+        }
+    }
+
+    /// The number of distinct lineages among living creatures, from the engine that owns them.
+    pub fn living_lineages(&self) -> usize {
+        if self.active_engine == ActiveEngine::Gpu {
+            self.gpu_living_lineages as usize
+        } else {
+            self.cpu_living_lineages()
+        }
+    }
+
+    fn cpu_max_generation(&self) -> u32 {
+        self.world
+            .agents
+            .iter()
+            .filter(|a| a.dead == 0)
+            .map(|a| a.gen)
+            .max()
+            .unwrap_or(0)
+    }
+
+    fn cpu_living_lineages(&self) -> usize {
+        self.world
+            .agents
+            .iter()
+            .filter(|a| a.dead == 0)
+            .map(|a| a.root)
+            .collect::<std::collections::HashSet<_>>()
+            .len()
     }
 
     pub fn step(&mut self, substeps: u32) {
@@ -136,6 +179,11 @@ pub fn flush_gpu_to_rust(
         &params,
         sim,
     );
+    sim.world.roots = sim.world.roots.max(
+        driver
+            .next_agent_root
+            .load(std::sync::atomic::Ordering::Relaxed),
+    );
 }
 
 /// Slots the app's GPU driver allocates (simulation and presentation capacity).
@@ -188,6 +236,10 @@ pub fn upload_world_to_gpu(
 ) {
     let (states, genomes, atomics, soil, params) = crate::gpu::bridge::sync_rust_to_gpu(sim);
     driver.upload_state(&states, &genomes, &atomics, &soil, &params);
+    // Lineages that died out still count: GPU founders continue after the world's `roots`.
+    driver
+        .next_agent_root
+        .fetch_max(sim.world.roots, std::sync::atomic::Ordering::Relaxed);
     // Present the uploaded world as it was, before the first GPU tick: its soil colormap and
     // its creatures' trails (a NEW WORLD has none; an engine switch keeps them).
     let mut rgba = vec![0u8; sim.world.soil.grid_size * 4];
@@ -195,6 +247,9 @@ pub fn upload_world_to_gpu(
     driver.write_soil_display(&rgba);
     driver.write_trails(&crate::gpu::bridge::agent_trails(sim));
     sim.gpu_population = sim.world.agents.iter().filter(|a| a.dead == 0).count() as u32;
+    // Until the first GPU frame lands, the census is the uploaded world's.
+    sim.gpu_max_generation = sim.cpu_max_generation();
+    sim.gpu_living_lineages = sim.cpu_living_lineages() as u32;
     sim.gpu_births_base = sim.world.births;
 }
 
@@ -324,16 +379,16 @@ pub fn sim_step_system(
                         sim.selected_agent_cache = None;
                     }
 
-                    // Spore replenishment if GPU population collapses (matching HTML line 1464 & Rust world.rs line 984)
+                    // Agent replenishment if GPU population collapses (matching HTML line 1464 & Rust world.rs line 984)
                     if sim.gpu_population < 15 && sim.world.tick % 45 < steps {
                         let n = 15 - sim.gpu_population;
-                        let mut spore_positions = Vec::with_capacity(n as usize);
+                        let mut positions = Vec::with_capacity(n as usize);
                         for _ in 0..n {
                             let x = (sim.world.prng.next_f64() * sim.world_width) as f32;
                             let y = (sim.world.prng.next_f64() * sim.world_height) as f32;
-                            spore_positions.push((x, y));
+                            positions.push((x, y));
                         }
-                        let new_slots = driver.seed_spores_gpu(&spore_positions);
+                        let new_slots = driver.replenish_agents_gpu(&positions);
                         // Seeding waited for the GPU, so every frame requested so far has
                         // landed; apply them now or their pre-seed counts would arrive later.
                         for frame in driver.poll_frame_readbacks() {
@@ -376,6 +431,8 @@ fn apply_frame_readback(
     sim.world.kills += telemetry.kills;
     sim.world.births = sim.gpu_births_base + telemetry.total_births;
     sim.gpu_population = telemetry.population;
+    sim.gpu_max_generation = telemetry.max_generation;
+    sim.gpu_living_lineages = telemetry.living_lineages;
 
     if telemetry.apex_agent_id > 0 {
         driver.next_agent_id.fetch_max(
@@ -383,6 +440,18 @@ fn apply_frame_readback(
             std::sync::atomic::Ordering::Relaxed,
         );
         sim.world.next_id = sim.world.next_id.max(telemetry.apex_agent_id);
+    }
+
+    // The GPU's chronicle entries join the queue the UI drains, as the CPU engine's do.
+    for e in &frame.chronicle {
+        if sim.world.events.len() < 1024 {
+            sim.world.events.push(clank_core::SimEvent {
+                tick: e.tick,
+                event_type: e.event_type,
+                p1: e.p1,
+                p2: e.p2,
+            });
+        }
     }
 
     for v in &frame.audio {

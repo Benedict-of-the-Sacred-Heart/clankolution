@@ -476,7 +476,7 @@ fn handle_http_connection(
 
 use crate::persistence::{load_clank_file, save_clank_file};
 use crate::sim::SimWorld;
-use crate::ui::{trigger_spore_catastrophe, ActiveTool, UiState};
+use crate::ui::{trigger_catastrophe, ActiveTool, UiState};
 use bevy::diagnostic::{DiagnosticsStore, FrameTimeDiagnosticsPlugin};
 use bevy::prelude::*;
 use bevy::render::view::screenshot::{Screenshot, ScreenshotCaptured};
@@ -790,7 +790,7 @@ pub fn api_dispatch_system(
                             }
                         }
                         "eclipse" => {
-                            trigger_spore_catastrophe(sim);
+                            trigger_catastrophe(sim);
                             if let Some(ref mut ui) = ui_res {
                                 ui.add_chronicle(format!(
                                     "{:05}  An eclipse consumes the harvest.",
