@@ -658,7 +658,10 @@ fn agent_main(@builtin(global_invocation_id) id: vec3u) {
             avail = r.old_value;
         }
 
-        let queue_idx = select(0xFFFFFFFFu, atomicAdd(&queue_buffer.telemetry.birth_count, 1u), reserved);
+        // Not select(): WGSL evaluates both of its arguments, so the atomicAdd would queue
+        // births that got no slot.
+        var queue_idx = 0xFFFFFFFFu;
+        if (reserved) { queue_idx = atomicAdd(&queue_buffer.telemetry.birth_count, 1u); }
         if (reserved && queue_idx < 65536u) {
             atomicSub(&agent_atomics[agent_idx].energy_milli, 24000);
             if (mate_partner != 0xFFFFFFFFu) {

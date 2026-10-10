@@ -1131,6 +1131,7 @@ fn spatial_query_main(@builtin(global_invocation_id) id: vec3u) {
   - `test_visual_cache_is_packed_like_the_bridge`;
   - `test_damage_is_kept_when_the_victim_runs_after_the_attacker`: the victim's own pass must not overwrite the attacker's `atomicSub`;
   - `test_parents_pay_only_for_births_that_get_a_slot`: at the cap, ready parents keep their energy;
+  - `test_births_refused_at_the_cap_are_not_queued_and_spend_no_id`: 10 ready parents, room for 5: 5 births queued, 5 ids spent, each child of a charged parent;
   - `test_more_than_64_births_in_one_sub_tick_all_land`;
   - `test_the_cap_holds_across_sub_ticks`: 32 sub-ticks per frame never put more live creatures than the cap;
   - `test_crossover_and_mutation_draws_are_uncorrelated`: sexual births from parents with all genes +50 and −50; which parent a gene came from is independent of whether it mutated;
@@ -1422,7 +1423,10 @@ if (a_energy > 58.0 + 12.0 * tr0 && a_age > 65u && a_birth == 0u && brain_out5 >
 
     // Pass-Decoupled Freelist: Mating threads only record intent in the birth queue.
     // Child slot allocation occurs across the compute pass barrier in birth_step.wgsl (Zero ABA / Push-Pop Race)!
-    let queue_idx = select(0xFFFFFFFFu, atomicAdd(&queue_buffer.telemetry.birth_count, 1u), reserved);
+    // Not select(): WGSL evaluates both of its arguments, so the atomicAdd would queue births
+    // that got no slot (fixed 2026-10-10, see the Verification Plan).
+    var queue_idx = 0xFFFFFFFFu;
+    if (reserved) { queue_idx = atomicAdd(&queue_buffer.telemetry.birth_count, 1u); }
     if (reserved && queue_idx < 65536u) {
         atomicSub(&agent_atomics[agent_idx].energy_milli, 24000);
         if (sexual_success && mate_partner != 0xFFFFFFFFu) {
@@ -1497,7 +1501,10 @@ fn birth_main(@builtin(workgroup_id) wg_id: vec3u, @builtin(local_invocation_id)
             cur_top = cas.old_value;
         }
         shared_child_slot = slot;
-        shared_child_id = atomicAdd(&queue_buffer.telemetry.apex_agent_id, 1u); // next unique creature id
+        // Only a birth with a slot spends an id (as the reference's nextId++). Not select(),
+        // which evaluates both arguments.
+        shared_child_id = 0u;
+        if (slot != 0xFFFFFFFFu) { shared_child_id = atomicAdd(&queue_buffer.telemetry.apex_agent_id, 1u); }
     }
     workgroupBarrier();
 
@@ -2281,6 +2288,7 @@ Measured on the working tree, which holds uncommitted work not yet in any commit
 | 5 | `plan_t5::test_a_lone_creature_takes_the_reference_tick` | pass | was: the oscillator read `params.tick`; the reference has already incremented its tick (now `step_tick = params.tick + 1u`) |
 | 5 | `plan_t5::test_damage_is_kept_when_the_victim_runs_after_the_attacker` | pass | was: 64 of 64 victims lost the damage to the victim's final `atomicStore` (now `atomicMin` to the 110 ceiling) |
 | 5 | `plan_t5::test_parents_pay_only_for_births_that_get_a_slot` | pass | was: cap 15, 5 births, 10 parents charged (now births reserve `available_slots` before charging) |
+| 5 | `plan_t5::test_births_refused_at_the_cap_are_not_queued_and_spend_no_id` | pass | was: (10 queued, 10 ids) for 5 births. The reservation and the id were taken inside `select()`, which evaluates both arguments, so every refused birth was queued anyway; its birth-pass workgroup read a queue entry not written this sub-tick and spent an id. Seen in the app 2026-10-10: creature id 454,337 after 2,409 births at the cap. Mutation-checked: the old `select` in `agent_step` alone gives (10, 5). The `birth_step` half cannot be reached once refused births are not queued; it is kept as a guard |
 | 5 | `plan_t5::test_more_than_64_births_in_one_sub_tick_all_land` | pass | was: 64 of 100 (now dispatched indirectly, one workgroup per queued birth: `birth_args.wgsl`) |
 | 5 | `plan_t5::test_the_cap_holds_across_sub_ticks` | pass | mutation-checked: with all three cap guards removed (freelist sized to the cap at upload, `apply_capacity`, the birth-pass check), 214 live against a cap of 200 |
 | 5 | `plan_t5::test_crossover_and_mutation_draws_are_uncorrelated` | pass | was blocked by the 64-birth limit; each draw now has its own `pcg3d` stream |

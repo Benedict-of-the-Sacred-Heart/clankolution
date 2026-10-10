@@ -513,6 +513,44 @@ fn test_parents_pay_only_for_births_that_get_a_slot() {
     }
 }
 
+/// At the cap only the births that got a slot are queued, and each spends one id, as the
+/// reference's `nextId++` runs only for a creature it makes. 10 ready parents, room for 5.
+#[test]
+fn test_births_refused_at_the_cap_are_not_queued_and_spend_no_id() {
+    let parents: Vec<AgentData> = (0..10)
+        .map(|k| ready_parent(1 + k, 60.0 + k as f64 * 80.0, 300.0))
+        .collect();
+    let mut sim = world_with(parents, 0.0);
+    sim.world.max_cap = 15;
+    let Some(mut gpu) = upload(&sim) else {
+        return;
+    };
+    let ids_before = gpu.driver.readback_telemetry().apex_agent_id;
+    let t = gpu.tick();
+    let live = gpu.live();
+    let charged: Vec<u32> = live
+        .iter()
+        .filter(|(_, a)| a.id <= 10 && a.birth != 0)
+        .map(|(_, a)| a.root)
+        .collect();
+    let mut child_roots: Vec<u32> = live
+        .iter()
+        .filter(|(_, a)| a.id > 10)
+        .map(|(_, a)| a.root)
+        .collect();
+    child_roots.sort();
+    assert_eq!(charged.len(), 5, "parents charged; scenario is wrong");
+    assert_eq!(
+        (t.birth_count, t.apex_agent_id - ids_before),
+        (5, 5),
+        "(births queued, ids spent) for 5 births"
+    );
+    assert_eq!(
+        child_roots, charged,
+        "children's lineages vs the charged parents'"
+    );
+}
+
 /// 100 ready parents in one tick give 100 children, as in the reference: the birth pass
 /// handles the whole queue, not one 64-thread workgroup.
 #[test]

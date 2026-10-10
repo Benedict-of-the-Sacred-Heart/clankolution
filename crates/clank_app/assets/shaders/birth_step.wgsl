@@ -197,7 +197,9 @@ fn birth_main(@builtin(workgroup_id) wg_id: vec3u, @builtin(local_invocation_id)
             cur_top = cas.old_value;
         }
         shared_child_slot = slot;
-        shared_child_id = select(0u, atomicAdd(&queue_buffer.telemetry.apex_agent_id, 1u), slot != 0xFFFFFFFFu);
+        // Not select(), which evaluates both arguments: only a birth with a slot spends an id.
+        shared_child_id = 0u;
+        if (slot != 0xFFFFFFFFu) { shared_child_id = atomicAdd(&queue_buffer.telemetry.apex_agent_id, 1u); }
     }
     let child_idx = workgroupUniformLoad(&shared_child_slot);
     let child_id = workgroupUniformLoad(&shared_child_id);
