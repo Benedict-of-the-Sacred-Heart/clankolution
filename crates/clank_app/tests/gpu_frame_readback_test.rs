@@ -1,7 +1,7 @@
 use bevy::prelude::*;
 use clank_app::gpu::bridge::sync_rust_to_gpu;
 use clank_app::gpu::compute_driver::GpuComputeDriver;
-use clank_app::sim::{ActiveEngine, ClankSimPlugin, GpuDriverResource, SimWorld};
+use clank_app::sim::{ActiveEngine, ClankSimPlugin, GpuDriverResource, PendingTool, SimWorld};
 
 fn blocking_waits(app: &App) -> u64 {
     app.world()
@@ -195,4 +195,51 @@ fn test_agent_replenishment_seeds_once_despite_lagged_frames() {
         telemetry.population
     );
     assert_eq!(sim.gpu_population, telemetry.population);
+}
+
+/// A selected creature that dies is no longer the specimen (the reference sets `selected =
+/// null`), and the panel never shows whatever else now occupies its slot.
+#[test]
+fn test_a_selected_creature_that_dies_is_deselected() {
+    let mut app = App::new();
+    app.add_plugins(MinimalPlugins).add_plugins(ClankSimPlugin);
+    app.world_mut().resource_mut::<SimWorld>().active_engine = ActiveEngine::Gpu;
+    app.update();
+    if app.world().resource::<GpuDriverResource>().driver.is_none() {
+        eprintln!("Skipping test: No GPU adapter available");
+        return;
+    }
+    let first_id = app.world().resource::<SimWorld>().world.agents[0].id;
+    {
+        let mut sim = app.world_mut().resource_mut::<SimWorld>();
+        sim.selected_agent_slot = Some(0);
+        sim.selected_agent_id = Some(first_id);
+    }
+    for _ in 0..5 {
+        app.update();
+    }
+    let (x, y) = {
+        let sim = app.world().resource::<SimWorld>();
+        let cache = sim
+            .selected_agent_cache
+            .as_ref()
+            .expect("the specimen arrived");
+        (cache.x as f32, cache.y as f32)
+    };
+    // Extinguish it where it stands (the tool kills within 23 px).
+    app.world_mut().resource_mut::<SimWorld>().pending_tool = Some(PendingTool {
+        tool_type: 3,
+        tool_pos: [x, y],
+        tool_radius: 23.0,
+    });
+    for _ in 0..8 {
+        app.update();
+    }
+
+    let sim = app.world().resource::<SimWorld>();
+    assert_eq!(sim.get_selected_agent().map(|a| a.id), None);
+    assert_eq!(
+        (sim.selected_agent_id, sim.selected_agent_slot),
+        (None, None)
+    );
 }

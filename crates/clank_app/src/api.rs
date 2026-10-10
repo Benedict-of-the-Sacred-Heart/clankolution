@@ -865,14 +865,13 @@ pub fn api_state_sync_system(
         .map(|u| format!("{:?}", u.active_tool))
         .unwrap_or_else(|| "Observe".to_string());
 
-    let max_gen = sim.world.agents.iter().map(|a| a.gen).max().unwrap_or(0);
     let state = ApiStateResponse {
         tick: sim.world.tick,
         paused: sim.paused,
         speed: sim.speed,
         population: sim.active_population(),
         max_capacity: sim.world.max_cap,
-        generation: max_gen as u32,
+        generation: sim.max_generation(),
         kills: sim.world.kills,
         births: sim.world.births,
         roots: sim.world.roots,

@@ -1855,14 +1855,9 @@ impl GpuComputeDriver {
         self.queue
             .write_buffer(&self.queue_buffer, 28, bytemuck::bytes_of(&freelist_top));
 
-        // Initialize unique creature ID counter in queue_buffer offset 24 (apex_agent_id)
-        let max_incoming_id = states.iter().map(|s| s.id).max().unwrap_or(0);
-        let next_id = (max_incoming_id + 1)
-            .max(
-                self.next_agent_id
-                    .load(std::sync::atomic::Ordering::Relaxed),
-            )
-            .max(1000);
+        // Ids continue after every uploaded one (queue_buffer offset 24, apex_agent_id); the
+        // world's own counter raises this further (`raise_next_agent_id`).
+        let next_id = states.iter().map(|s| s.id + 1).max().unwrap_or(1);
         self.next_agent_id
             .store(next_id, std::sync::atomic::Ordering::Relaxed);
         self.queue
@@ -2596,6 +2591,17 @@ impl GpuComputeDriver {
 
     pub fn dart_template_vertex_count(&self) -> u32 {
         12
+    }
+
+    /// Newborns and founders take ids from at least `next_id` on (the world's `next_id`, which
+    /// is past every id it ever issued, dead creatures' included).
+    pub fn raise_next_agent_id(&self, next_id: u32) {
+        let next = self
+            .next_agent_id
+            .fetch_max(next_id, std::sync::atomic::Ordering::Relaxed)
+            .max(next_id);
+        self.queue
+            .write_buffer(&self.queue_buffer, 24, bytemuck::bytes_of(&next));
     }
 
     /// Agent replenishment: one founder at each position.

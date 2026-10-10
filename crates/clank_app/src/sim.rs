@@ -184,6 +184,8 @@ pub fn flush_gpu_to_rust(
             .next_agent_root
             .load(std::sync::atomic::Ordering::Relaxed),
     );
+    // Ids the GPU issued stay spent, also those of creatures already gone.
+    sim.world.next_id = sim.world.next_id.max(telem.apex_agent_id);
 }
 
 /// Slots the app's GPU driver allocates (simulation and presentation capacity).
@@ -240,6 +242,7 @@ pub fn upload_world_to_gpu(
     driver
         .next_agent_root
         .fetch_max(sim.world.roots, std::sync::atomic::Ordering::Relaxed);
+    driver.raise_next_agent_id(sim.world.next_id);
     // Present the uploaded world as it was, before the first GPU tick: its soil colormap and
     // its creatures' trails (a NEW WORLD has none; an engine switch keeps them).
     let mut rgba = vec![0u8; sim.world.soil.grid_size * 4];
@@ -280,6 +283,21 @@ pub fn sim_step_system(
             }
         }
     }
+    // An engine switch hands the world over at once, also while paused, so the panel and
+    // picking use the engine that now owns it.
+    if let Some(driver) = gpu_res.as_ref().and_then(|g| g.driver.as_ref()) {
+        match (sim.active_engine, driver.is_initialized()) {
+            (ActiveEngine::Rust, true) => {
+                flush_gpu_to_rust(&mut sim, driver);
+                for frame in driver.poll_frame_readbacks() {
+                    apply_frame_readback(&mut sim, driver, &frame, None);
+                }
+                driver.set_initialized(false);
+            }
+            (ActiveEngine::Gpu, false) => upload_world_to_gpu(&mut sim, driver),
+            _ => {}
+        }
+    }
     if sim.paused {
         return;
     }
@@ -287,27 +305,12 @@ pub fn sim_step_system(
 
     match sim.active_engine {
         ActiveEngine::Rust => {
-            if let Some(ref mut gpu) = gpu_res {
-                if let Some(ref driver) = gpu.driver {
-                    if driver.is_initialized() {
-                        flush_gpu_to_rust(&mut sim, driver);
-                        for frame in driver.poll_frame_readbacks() {
-                            apply_frame_readback(&mut sim, driver, &frame, None);
-                        }
-                        driver.set_initialized(false);
-                    }
-                }
-            }
             sim.step(steps);
             sim.gpu_population = sim.world.agents.iter().filter(|a| a.dead == 0).count() as u32;
         }
         ActiveEngine::Gpu => {
             if let Some(ref mut gpu) = gpu_res {
                 if let Some(ref mut driver) = gpu.driver {
-                    if !driver.is_initialized() {
-                        upload_world_to_gpu(&mut sim, driver);
-                    }
-
                     let current_count = if sim.gpu_population > 0 {
                         sim.gpu_population
                     } else {
@@ -502,15 +505,20 @@ fn apply_frame_readback(
     if sel.slot != slot {
         return;
     }
+    // A specimen that died is deselected, as the reference does (`selected = null`); its slot
+    // may already hold a newborn, which must not take its place on the panel.
     let is_dead = (sel.state.meta_flags & (1 << 13)) != 0;
+    if sel.state.id != expected_id || is_dead {
+        sim.selected_agent_id = None;
+        sim.selected_agent_slot = None;
+        sim.selected_agent_cache = None;
+        return;
+    }
     let mut data = crate::gpu::bridge::unpack_gpu_agent_to_agent_data(
         &sel.state,
         &sel.genome,
         Some(&sel.atomic),
     );
-    if sel.state.id != expected_id || is_dead {
-        data.dead = 1;
-    }
     if sel.trail.owner_id == sel.state.id {
         let n = (sel.trail.count as usize).min(crate::gpu::types::TRAIL_LEN);
         for (i, p) in sel.trail.pts[..n].iter().enumerate() {

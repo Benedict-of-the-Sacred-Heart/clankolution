@@ -158,3 +158,37 @@ fn test_settings_active_engine_switching() {
         _ => panic!("unexpected command variant"),
     }
 }
+
+/// `/state`'s generation is the panel's: the highest living generation, from the engine that
+/// owns the world (the GPU's census in GPU mode, where the CPU copy is not kept current).
+#[test]
+fn test_state_generation_comes_from_the_engine_that_owns_the_world() {
+    use bevy::prelude::*;
+    use clank_app::sim::{ActiveEngine, SimWorld};
+    use std::sync::{Arc, RwLock};
+
+    let shared = Arc::new(RwLock::new(SharedApiData::default()));
+    let mut app = App::new();
+    app.insert_resource(SimWorld::new(42))
+        .insert_resource(SharedApiResource(shared.clone()))
+        .add_systems(Update, api_state_sync_system);
+    {
+        let mut sim = app.world_mut().resource_mut::<SimWorld>();
+        sim.active_engine = ActiveEngine::Gpu;
+        sim.gpu_max_generation = 7;
+    }
+    app.update();
+    let generation = shared.read().unwrap().state.as_ref().unwrap().generation;
+    assert_eq!(generation, 7);
+
+    {
+        let mut sim = app.world_mut().resource_mut::<SimWorld>();
+        sim.active_engine = ActiveEngine::Rust;
+        sim.world.agents[0].gen = 12;
+        sim.world.agents[1].gen = 30;
+        sim.world.agents[1].dead = 1;
+    }
+    app.update();
+    let generation = shared.read().unwrap().state.as_ref().unwrap().generation;
+    assert_eq!(generation, 12, "dead creatures do not count");
+}
