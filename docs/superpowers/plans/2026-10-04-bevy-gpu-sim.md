@@ -2,9 +2,9 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:executing-plans to implement this plan task-by-task, inline. Per `AGENTS.md` §5, never dispatch subagents to generate code. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Goal:** Build a high-throughput GPU compute simulation engine (`ENGINE: GPU`) running entirely in WGSL on a dedicated branch (`feature/bevy-gpu`), featuring zero-copy Tombstone Freelist buffers, a hybrid Morton Grid + multi-system Linear Bounding Volume Hierarchy (LBVH), packed 326-weight quantized RNN forward passes, and reactive GPU soil chemistry—coexisting alongside the deterministic CPU reference engine (`ENGINE: RUST`). The GPU engine targets **statistical behavioral parity** with the reference (see *Parity target* in the Verification Plan), not bit-exact parity.
+**Goal:** Build a high-throughput GPU compute simulation engine (`ENGINE: GPU`) running entirely in WGSL on a dedicated branch (`feature/bevy-gpu`), featuring zero-copy Tombstone Freelist buffers, a hybrid Morton Grid (the planned Linear Bounding Volume Hierarchy was dropped on 2026-10-09), packed 326-weight quantized RNN forward passes, and reactive GPU soil chemistry—coexisting alongside the deterministic CPU reference engine (`ENGINE: RUST`). The GPU engine targets **statistical behavioral parity** with the reference (see *Parity target* in the Verification Plan), not bit-exact parity.
 
-**Architecture:** A multi-pass Bevy compute pipeline operating over GPU storage buffers and 2D textures. Agents never reallocate or shift in VRAM thanks to a lock-free Tombstone Freelist. Memory architecture utilizes high-performance **Buffer Splitting (Struct-of-Arrays)**: separating dynamic simulation state (`GpuAgentState`, 128 bytes, 2 cache lines, $2^7$ power-of-two) from static neural genomes (`GpuAgentGenome`, 352 bytes), slashing memory bus traffic by **$4.0\times$** on all rendering and spatial passes. Spatial lookups use a hybrid Morton Grid (Tier 1: $O(1)$ local Moore cells) backed by an explicit Karras Linear Bounding Volume Hierarchy (LBVH). The unified LBVH tree powers these subsystems: 1) Long-range sensory raycasting, 2) Camera viewport frustum culling (dropped on 2026-10-09: the per-slot cull stays, see Subsystem 2), 3) Interactive AoE brush tools, and 4) Hierarchical minimap LOD cluster rendering (deferred: the minimap was removed from the UI on 2026-10-06 because the whole 900×600 world is on screen). The dual-engine architecture preserves bit-for-bit CPU determinism when toggled to `ENGINE: RUST` while unlocking massive agent scaling when toggled to `ENGINE: GPU`. The GPU engine is parallel and f32, so it is neither bit-exact nor run-to-run deterministic against the CPU engine; it must match the reference within the tolerances defined in the Verification Plan.
+**Architecture:** A multi-pass Bevy compute pipeline operating over GPU storage buffers and 2D textures. Agents never reallocate or shift in VRAM thanks to a lock-free Tombstone Freelist. Memory architecture utilizes high-performance **Buffer Splitting (Struct-of-Arrays)**: separating dynamic simulation state (`GpuAgentState`, 128 bytes, 2 cache lines, $2^7$ power-of-two) from static neural genomes (`GpuAgentGenome`, 352 bytes), slashing memory bus traffic by **$4.0\times$** on all rendering and spatial passes. Spatial lookups use a hybrid Morton Grid (Tier 1: $O(1)$ local Moore cells, Tier 2: a scan of the live keys). A Karras Linear Bounding Volume Hierarchy (LBVH) was planned to power these subsystems, and was removed on 2026-10-09 (section 3): 1) Long-range sensory raycasting (dropped: the grid tiers cover sensing), 2) Camera viewport frustum culling (dropped: the per-slot cull stays, see Subsystem 2), 3) Mouse picking and interactive AoE brush tools (picking reads the grid; the AoE tools check each creature, see Subsystem 3), and 4) Hierarchical minimap LOD cluster rendering (deferred: the minimap was removed from the UI on 2026-10-06 because the whole 900×600 world is on screen). The dual-engine architecture preserves bit-for-bit CPU determinism when toggled to `ENGINE: RUST` while unlocking massive agent scaling when toggled to `ENGINE: GPU`. The GPU engine is parallel and f32, so it is neither bit-exact nor run-to-run deterministic against the CPU engine; it must match the reference within the tolerances defined in the Verification Plan.
 
 **Tech Stack:** Rust, Bevy 0.19 (`bevy_render::render_resource`, `wgpu`), WGSL (WebGPU Shading Language), Metal/Vulkan compute pipelines, `rkyv`, `image`.
 
@@ -29,20 +29,21 @@
    - **Linear Genome Packing**: The 326 `i8` genes are packed in order, 4 per `u32` (82 used words of 88; gene `p` is byte `p % 4` of word `p / 4`, sign-extended). The forward pass follows the reference `brain()` order exactly (`s += w[p++] * in[i] / 127`, then `tanh(s * .61)` hidden and `tanh(s * .66)` output). The earlier "7 vec4s per hidden neuron / 3 per output" padded layout is withdrawn. The f32 result is not bit-exact to the f64 reference (measured median output error 6e-8).
 
 3. **Multi-System Linear Bounding Volume Hierarchy (LBVH)**:
+   - **Removed on 2026-10-09.** Only picking still used the tree, yet it was rebuilt every sub-tick: two more dispatches over every slot, and a walk whose unbounded first version froze the development machine. Picking now reads the grid (Subsystem 3), so `lbvh_build.wgsl`, `lbvh_aabb.wgsl`, `gpu/lbvh.rs`, `GpuLbvhNode` and the node buffers are gone. The bullets below are the original design, kept for the record.
    - Built in parallel using Karras 2012 LCP splits on sorted Morton codes ($\approx 0.3\text{ ms}$).
    - **Degenerate Population Guard ($N \le 1$)**: When population collapses or is $\le 1$, builder early-exits gracefully (`if (active_count < 2u) return;`), guarding against unsigned underflow in $N-2$ internal node bounds and falling back to direct Tier-1 lookups.
    - **Strict Key Uniqueness & Tie-Breaking**: If two agents have identical Morton keys (e.g. sharing positions), tie-breaking uses `32u + countLeadingZeros(agent_id_a ^ agent_id_b)` to guarantee distinct keys, preventing infinite loops or zero-length split branches.
-   - **Subsystem 1 (Sensory Raycasting)**: $O(\log N)$ hierarchical traversal for long-range homing vectors.
+   - ~~**Subsystem 1 (Sensory Raycasting)**: $O(\log N)$ hierarchical traversal for long-range homing vectors.~~ Dropped on 2026-10-09. Sensing uses the grid tiers in section 2 (Tier 1 cells, Tier 2 scan of the live keys), which reproduce the reference `near()`.
    - ~~**Subsystem 2 (Frustum Culling)**: Discards entire off-screen subtrees against the camera viewport $[x_{\min}, y_{\min}] \times [x_{\max}, y_{\max}]$, feeding visible agents into an indirect draw buffer.~~ Dropped on 2026-10-09. `creature_render.wgsl` `cull_main` checks every slot, one thread each. At 65,000 creatures on the FirePro D500 a cull costs 0.40 ms in full view and 0.27 ms zoomed to 150×100. Of that, 0.21–0.23 ms is fixed pass cost that remains with nothing to check. So a tree could save at most the checking itself: nothing in full view, where every creature is visible, and 0.06 ms zoomed. A tree cull needs a second pass and an indirect-args copy, which likely cost more. It would also draw from a tree that is one sub-tick stale and misses the final sub-tick's newborns, and the Rust engine mode has no tree at all.
    - **Subsystem 3 (Unified Interactive Spatial Queries - `spatial_query.wgsl`)**:
-     - *Mouse Picking (`tool_type == 0`)*: Traverses the LBVH with **Dynamic Radius Shrinking (Early Tree Pruning)**: starts with cursor radius $R_{\text{pick}} \le 24\text{px}$, but the instant a direct body hit is encountered ($d \le R_{\text{body}} \approx 3.5\text{px} - 5.0\text{px}$), the active search radius is clamped to $d$, immediately pruning all subtrees further than $d$ and resolving picks in ~5–8 node tests (< 40 nanoseconds). The walk is bounded: at most `2n` node visits and a fixed 64-entry stack, so a corrupt tree can never hang the GPU (an unbounded walk on a cyclic tree froze the whole development machine on 2026-10-06).
-     - *AoE Tool Brushes (`tool_type >= 1`)*: Accelerates `extinguish_at`, `blight_at`, `nourish_at`, and `seed_at` from $O(N)$ linear scans to $O(\log N)$ bounding box intersections.
+     - *Mouse Picking (`tool_type == 0`)*: As the Rust engine's `rendering::find_agent_at_position`, so both engines pick the same creature: the nearest live creature whose body radius (`2.3 + 4.5·size`) plus `tool_radius` (25 px) reaches the cursor, by plain distance, the lower id on a tie. That reach is under one 100 px grid cell, so one thread checks the cursor's 3×3 cells (each count clamped to `max_agents`), read from the grid the sort built this sub-tick. Replaced on 2026-10-09: the LBVH walk with a zoom-dependent 4–24 px radius and body-hit priority.
+     - *AoE Tool Brushes (`tool_type >= 1`)*: `extinguish_at`, `blight_at`, `nourish_at` and `seed_at` run one thread per slot, each creature checking its own distance to the brush. Dropped on 2026-10-09: the $O(\log N)$ tree walk. A brush runs once per frame on sub-tick 0, and the per-slot check costs no more than the per-slot creature cull (Subsystem 2).
    - **Subsystem 4 (Minimap LOD Clustering)** *(deferred with the minimap)*: Draws aggregated cluster discs from intermediate tree depths (e.g. depth 5–6) directly onto the radar minimap using cached `dominant_lineage` and `center_of_mass`.
 
 4. **Cross-Cutting Morton Code Optimizations (Engine-Wide)**:
    - **Grid Cell Table Sentinels**: The 54-cell table of `(start, count)` pairs is stored in the `spatial_keys` buffer after the `N` sorted keys (`[0, N)` sorted keys, `[N, N + 54)` cell table, `[N + 54, 2N + 54)` `cell_slots`, `N = params.max_agents`). The grid scan rewrites all 54 entries every sub-tick, writing empty cells as `vec2u(0xFFFFFFFFu, 0xFFFFFFFFu)`, so nothing else clears it. In `agent_step.wgsl`, neighbor searches check `if (range.x != 0xFFFFFFFFu)`, instantly skipping empty cells with zero warp divergence. Morton order does not keep a 100 px grid cell's creatures contiguous (cell edges are not power-of-two Morton boundaries), so the table is filled by a count pass, a 54-entry prefix sum, and a scatter of live slots into `cell_slots`; each `(start, count)` indexes `cell_slots`. There is no per-cell cap (the per-cell linked list capped at 128 is replaced).
    - **Lightweight 8-Byte Indirection Radix Sort**: Parallel radix sort operates strictly on `array<vec2u>` storing `(morton_key, agent_slot_idx)`. The 128-byte `GpuAgentState` structs remain completely stationary in VRAM, eliminating gigabytes/sec of memory bus saturation. It is a multi-pass LSD sort (4 stable passes of 8 bits over the Morton code, keys starting in slot order, so equal codes stay in slot order). Single-pass decoupled look-back scans can hang on Metal and are not used. Each pass is two dispatches: a count of each 256-key workgroup's digits, and a scatter whose workgroups work out their own offsets from those counts (no separate scan dispatches), ranking a key among its workgroup's earlier keys with the same digit by counting bits in a per-digit 256-bit mask (a loop over all earlier threads cost about 60 µs per dispatch on the FirePro D500). Pass 0 also builds the grid cell table from the unsorted keys and counts `live_count` (reset by the preamble). The sort pipelines skip zero-initialising workgroup memory, which cost about 120 µs per dispatch; every workgroup variable is written before it is read. Measured on the D500: about 0.2 ms of GPU time per sort at 340 slots and 0.33 ms at 10,000. Morton codes quantize with `floor` in both WGSL and `spatial_index::compute_morton_32_with_size` (the Rust helper currently uses `.round()`; they must agree).
-   - **Sub-Microsecond Mouse Picking ($O(\log N)$)**: Fast binary search on sorted Morton keys to select creatures for the specimen card.
+   - ~~**Sub-Microsecond Mouse Picking ($O(\log N)$)**: Fast binary search on sorted Morton keys to select creatures for the specimen card.~~ Dropped on 2026-10-09: picking is the grid lookup in Subsystem 3.
    - **Coalesced Atomic Soil Writes**: Threads scheduled in Morton order write to contiguous L1/L2 cache lines for food/taint/scent deposits, cutting bus contention. The agent pass's thread `i` takes slot `spatial_keys[i].y` (the sort's first `max_agents` keys hold every slot once, live creatures first by position), so neighbouring threads also read neighbouring creatures and cell lists. Measured on the D500 (32 sub-ticks from reference founders): 65,000 creatures 510 → 128 ms per tick, 16,000 creatures 16.4 → 11.9 ms.
    - **Spatially Coherent Dart Rendering**: Morton-ordered instance streams maximize GPU tile-cache hit rates on Metal and tile-based rasterizers.
 
@@ -114,6 +115,7 @@
 16. **Hardening Specifications: Detailed Vulnerability Analyses & Hardening Fixes**:
 
     #### 1. Degenerate LBVH Traversal Guard for $N \le 1$ Agents (`spatial_query.wgsl`)
+    *Obsolete since 2026-10-09: the LBVH was removed (section 3).*
     - **The Vulnerability**:
       In `lbvh_build.wgsl`, when population is 0 or 1, the builder early-exits (`if (active_count < 2u) return;`), which is mathematically required because a 1-leaf tree has $N - 1 = 0$ internal nodes.
       However, in `spatial_query.wgsl`, mouse picking unconditionally pushed Node 0 to the traversal stack (`stack[0] = 0u; stack_ptr = 1u;`).
@@ -276,22 +278,23 @@
       When Radix sorted, all dead agents are naturally partitioned to the tail of `spatial_keys`, completely excluded from grid cells 0..53 and LBVH leaf bounds. The sort also writes `live_count` (the number of non-sentinel keys), which the LBVH build, picking and Tier 2 neighbour search use as $N$. Without the sort the LBVH is built over unsorted slots `0..agent_count` (dead slots included, high live slots left out) and comes out cyclic (measured: 30 of 30 trees invalid).
 
     #### 10. Bottom-Up LBVH AABB Fitting Atomic Flag Initialization (Task 4)
+    *Obsolete since 2026-10-09: the LBVH was removed (section 3).*
     - **The Vulnerability**:
       In `lbvh_aabb.wgsl`, parallel tree climbing uses `atomicAdd(&node_flags[current], 1u)` to detect when both children have computed their bounding boxes. If `node_flags` is not reset to 0 every frame, on frame 2 and beyond `atomicAdd` returns $\ge 2$, causing threads to deadlock or produce corrupt bounding boxes. Even with the flags reset, the second thread to arrive then reads the sibling's box with plain loads, and that box was written by another workgroup: WGSL has no device-scope fence, so nothing orders those writes before the read. Measured: 83 of 300 consecutive trees had a box equal to the previous tick's child box.
     - **The Hardening Fix**:
       Phase 1 (`lbvh_build.wgsl`) initialises every internal node's box to empty (min `3e38`, max `0`) and its `count` to `last - first + 1`. Phase 2 reads no child boxes: each live creature writes its leaf, then climbs to the root, growing each ancestor's box with `atomicMin`/`atomicMax` on the box words (the node buffer is bound as `array<atomic<u32>>`, 12 words per node). Box coordinates are clamped to be non-negative, so `u32` order is float order. A thread stops at the first node where it changes nothing: whichever thread set that node's extreme values climbs on with them. The result does not depend on arrival order (300 of 300 trees exact after the change). The climb is capped at 66 steps (a Karras tree over 32-bit keys with a 32-bit tie-break is at most 65 levels deep). Internal nodes' `center_of_mass` and `dominant_lineage` are left at 0; only the deferred minimap would use them.
 
     #### 11. Supplemental Hardening & Robustness Guarantees
-    - **Degenerate LBVH Underflow Guard (`lbvh_build.wgsl`)**:
+    - **Degenerate LBVH Underflow Guard (`lbvh_build.wgsl`)**: *(obsolete since 2026-10-09: the LBVH was removed)*
       In `lbvh_build.wgsl`, if the count is `0u`, the condition `id.x < count - 1u` underflows `0u - 1u` to `u32::MAX` ($4,294,967,295$), launching rogue out-of-bounds writes. Guarded via (with `live_count` from the sort, #9):
       `let active_count = live_count; if (active_count < 2u || id.x >= active_count - 1u) return;`
-    - **Two-Phase LBVH Construction Separation**:
+    - **Two-Phase LBVH Construction Separation**: *(obsolete since 2026-10-09: the LBVH was removed)*
       Topology generation (`lbvh_build.wgsl`) and bottom-up bounding box fitting (`lbvh_aabb.wgsl`) are separate dispatches, each its own WebGPU synchronization scope, eliminating workgroup scheduling race conditions.
-    - **LBVH Identical Key Tie-Breaking**:
+    - **LBVH Identical Key Tie-Breaking**: *(obsolete since 2026-10-09: the LBVH was removed)*
       If multiple agents occupy identical coordinates or have identical Morton keys, Karras LCP comparison evaluates:
       `return 32 + i32(countLeadingZeros(id_i ^ id_j));`
       guaranteeing strictly unique split positions and preventing tree-building infinite loops.
-    - **Dynamic Radius Shrinking (Early Tree Pruning in `spatial_query.wgsl`)**:
+    - **Dynamic Radius Shrinking (Early Tree Pruning in `spatial_query.wgsl`)**: *(obsolete since 2026-10-09: the LBVH was removed)*
       Begins traversal with cursor radius $R_{\text{pick}} = \text{clamp}(16.0 \times (\text{camera\_size}.x / 900.0), 4.0, 24.0)$. The instant a leaf node with a direct body hit is encountered ($d \le R_{\text{body}} \approx 2.0 + 3.0 \times \text{tr}_0$), the active search radius is clamped to $d$. Any subtrees or sibling nodes whose AABB distance to the cursor is $> d$ are **immediately pruned**, resolving clicks in ~5–8 node tests (< 40 nanoseconds on GPU).
     - **Two-Tier Euclidean Disambiguation**:
       Direct body hits (Priority 0) always beat proximity halos (Priority 1); exact 32-bit floating-point Euclidean distance resolves ties without millipixel distortion.
@@ -403,9 +406,9 @@ The remediation steps that used to be Task 7 now sit in the tasks they belong to
   - Implement 32-bit Morton code generator with dead agent partitioning (`0xFFFFFFFFu` sentinel in `morton_encode`; live codes capped at `0xFFFFFFFEu`), `floor` quantization identical to the Rust helper, and boundary clamping (`gx = min(u32(pos.x / 100.0), 8u)`, `gy = min(u32(pos.y / 100.0), 5u)`).
   - Implement 8-byte indirection parallel Radix Sort on `(morton_key, agent_slot_idx)`, keeping heavy agent structs stationary. Before this task no sort existed: `spatial_keys` was a per-cell linked list.
   - Build the grid cell table (count, prefix sum, scatter into `cell_slots`), with no per-cell cap, in the sort's first pass.
-  - Implement Karras 2012 two-phase LBVH construction over the `live_count` sorted keys: Phase 1 topology (`lbvh_build.wgsl`) with slot tie-breaking, empty internal boxes, and $N \le 1$ degenerate population guard; Phase 2 bottom-up AABB fitting (`lbvh_aabb.wgsl`) in the next dispatch, by an `atomicMin`/`atomicMax` climb that reads no sibling boxes (#10).
+  - ~~Implement Karras 2012 two-phase LBVH construction over the `live_count` sorted keys: Phase 1 topology (`lbvh_build.wgsl`) with slot tie-breaking, empty internal boxes, and $N \le 1$ degenerate population guard; Phase 2 bottom-up AABB fitting (`lbvh_aabb.wgsl`) in the next dispatch, by an `atomicMin`/`atomicMax` climb that reads no sibling boxes (#10).~~ Removed on 2026-10-09 (section 3).
   - Implement Tier 1 ($3 \times 3$ local Moore neighborhood) + Tier 2 global scan when nothing is within 100 px, matching the reference `near()` (nearest and density `d² < 10000`).
-  - Implement **Unified Interactive Spatial Query Pass (`spatial_query.wgsl`)** with branchless 1D toroidal AABB distance (preventing boundary pruning blind spots), cursor input toroidal wrapping, degenerate $N \le 1$ safety guard, dynamic radius shrinking (early tree pruning) for uncapped 32-bit mouse picking with a bounded walk, and parallel AoE tool bounding box intersections.
+  - Implement **Unified Interactive Spatial Query Pass (`spatial_query.wgsl`)**: picking from the grid's 3×3 cells around the cursor, as the Rust engine picks (Subsystem 3), and AoE tools checked by one thread per slot.
   - The AoE tools match the reference: Extinguish kills by plain (not toroidal) distance `< 23`; Seed Life adds two creatures within ±11 px when under the cap.
 
 - [ ] **Task 5: Packed 88-Word Vectorized RNN, Combat Resolution, PRNG & Decoupled Birth Pipeline**
@@ -465,7 +468,7 @@ The remediation steps that used to be Task 7 now sit in the tasks they belong to
 
 **Interfaces:**
 - Consumes: `clank_core::agent::AgentData`, `clank_core::agent::GENES` (326)
-- Produces: `GpuAgentState`, `GpuAgentGenome`, `GpuAgentAtomic`, `GpuSimParams`, `GpuLbvhNode`, `GpuSoilCell`, `BirthEvent`, `AudioVoice`, `GpuTelemetry`, `ConsolidatedQueue` with exact 16-byte WGSL alignment
+- Produces: `GpuAgentState`, `GpuAgentGenome`, `GpuAgentAtomic`, `GpuSimParams`, `GpuLbvhNode` (removed on 2026-10-09 with the LBVH), `GpuSoilCell`, `BirthEvent`, `AudioVoice`, `GpuTelemetry`, `ConsolidatedQueue` with exact 16-byte WGSL alignment
 
 - [ ] **Step 1: Write failing test for GPU struct memory layouts** (sizes below; the shader-vs-Rust field check is `plan_t1_layouts_test`)
 ```rust
@@ -838,30 +841,28 @@ fn soil_main(@builtin(global_invocation_id) id: vec3u) {
 
 **Files:**
 - Create: `crates/clank_app/src/gpu/spatial_index.rs`
-- Create: `crates/clank_app/src/gpu/lbvh.rs`
+- ~~Create: `crates/clank_app/src/gpu/lbvh.rs`~~ (removed on 2026-10-09 with the LBVH)
 - Create: `crates/clank_app/assets/shaders/morton_grid.wgsl`
-- Create: `crates/clank_app/assets/shaders/lbvh_build.wgsl`
+- ~~Create: `crates/clank_app/assets/shaders/lbvh_build.wgsl`~~ (removed on 2026-10-09)
 - Create: `crates/clank_app/assets/shaders/spatial_query.wgsl`
 - Create: `crates/clank_app/assets/shaders/radix_sort.wgsl` (count and scatter per pass, the scatter computing its own offsets; multi-pass, no decoupled look-back; pass 0 also builds the grid table)
 - Create: `crates/clank_app/src/gpu/radix_sort.rs` (`SpatialSort`: pipelines, scratch and histogram buffers; `encode(cpass, max_agents)` records the 8 dispatches into the sub-tick's compute pass, for `params.max_agents` slots; `spatial_keys_size(max_agents)`)
-- Modify: `crates/clank_app/assets/shaders/lbvh_aabb.wgsl` (`atomicMin`/`atomicMax` climb, #10)
+- ~~Modify: `crates/clank_app/assets/shaders/lbvh_aabb.wgsl` (`atomicMin`/`atomicMax` climb, #10)~~ (removed on 2026-10-09)
 - Modify: `crates/clank_app/assets/shaders/preamble_clear.wgsl` (drop the `cell_offsets` clear)
 - Modify: `crates/clank_app/assets/shaders/agent_step.wgsl` (Tier 1 / Tier 2 neighbour search over `cell_slots` and the sorted keys)
 - Modify: `crates/clank_app/src/gpu/compute_driver.rs` (`seed_agents_gpu` places two creatures per Seed Life click, within ±11 px, while under the cap; the old body becomes `place_founders_gpu`, which `replenish_agents_gpu` keeps calling with one creature per position; drop `cell_offsets_buf` and the linked-list pipelines; the sort covers `params.max_agents` slots, which can be smaller than the driver's, and its workgroups past them return; record each sub-tick as one compute pass, since each dispatch is its own WebGPU synchronization scope and a separate pass costs the CPU about 0.22 ms to record in a debug build against about 0.04 ms for a dispatch; `active_slots(max_cap)` = max(cap, uploaded creatures), at most the driver's slots, bounds every live creature, and the capacity pass always covers every slot)
 - Modify: `crates/clank_app/src/sim.rs` (app frames set `params.max_agents` to `driver.active_slots(max_cap)`, not the driver's 65,536 slots)
 - Modify: `crates/clank_app/assets/shaders/preamble_clear.wgsl` (reset `live_count` for the sort's count)
 - Test: `crates/clank_app/tests/gpu_spatial_test.rs` (CPU mirror; not evidence for the shaders)
-- Test: `crates/clank_app/tests/plan_t4_spatial_test.rs` (real shaders; picking is dispatched only through `pick_if_tree_is_valid`):
+- Test: `crates/clank_app/tests/plan_t4_spatial_test.rs` (real shaders; picks go through the harness's `Gpu::pick`):
   - `test_live_creatures_carry_the_morton_code_of_their_position` (same `floor` quantization as the Rust helper);
   - `test_spatial_keys_are_sorted_morton_slot_pairs_with_dead_slots_last`;
   - `test_the_sort_holds_when_params_cover_fewer_slots_than_the_driver` (a 65536-slot driver with `params.max_agents` 340, as in the app);
   - `test_the_grid_table_holds_every_live_creature_once` (300 creatures in one cell, after 3 earlier ticks: every live creature listed once, in its cell, no dead slots);
   - `test_a_creature_on_the_far_corner_stays_in_the_index` (a creature at exactly (900, 600) is counted live and listed in the grid table);
-  - `test_lbvh_is_a_valid_tree_over_the_live_creatures` (30 consecutive trees: every node reached once, every live creature one leaf);
-  - `test_lbvh_leaves_are_in_morton_order`;
-  - `test_lbvh_boxes_contain_their_children`;
-  - `test_lbvh_of_one_creature_is_its_leaf`;
+  - ~~`test_lbvh_is_a_valid_tree_over_the_live_creatures`, `test_lbvh_leaves_are_in_morton_order`, `test_lbvh_boxes_contain_their_children`, `test_lbvh_of_one_creature_is_its_leaf`~~ (removed on 2026-10-09 with the LBVH);
   - `test_picking_returns_the_creature_under_the_cursor`;
+  - `test_picking_selects_what_the_rust_engine_selects` (12 cursors: on a creature, 8 px beside one, 26 and 29 px away, in empty space, at the world's left edge; each must match `find_agent_at_position`);
   - `test_extinguish_tool_kills_what_the_reference_kills` (cursors in the middle, at a side seam and at a corner);
   - `test_seed_tool_adds_two_creatures_at_the_cursor`;
   - `test_nearest_neighbour_matches_near`: clustered and isolated scenarios, including a nearest neighbour beyond 100 px, one in a high slot, and 196 creatures in one cell with the nearest holding the cell's highest Morton code; a creature with a different-root neighbour at distance `d` mates only when `d < 18`, as the reference decides from `near()`;
@@ -869,7 +870,7 @@ fn soil_main(@builtin(global_invocation_id) id: vec3u) {
 
 **Interfaces:**
 - Consumes: `GpuAgentState` positions, grid dimensions ($9 \times 6$, cell size $100\text{px}$)
-- Produces: Sorted Morton indices (8-byte indirection buffer `vec2u(morton_key, agent_slot)`), `live_count`, grid cell table and `cell_slots`, Karras LBVH tree with tie-breaking, unified interactive spatial query pass (`spatial_query.wgsl`: $O(\log N)$ uncapped mouse picking with dynamic radius shrinking and a bounded walk, and AoE tool queries)
+- Produces: Sorted Morton indices (8-byte indirection buffer `vec2u(morton_key, agent_slot)`), `live_count`, grid cell table and `cell_slots`, unified interactive spatial query pass (`spatial_query.wgsl`: picking from the cursor's 3×3 grid cells, and AoE tool queries). The Karras LBVH it first produced was removed on 2026-10-09 (section 3).
 
 - [ ] **Step 1: Write failing test for Morton bit-interleaving, empty-cell sentinels, LBVH tree building with tie-breaking, degenerate population guard ($N \le 1$), uncapped picking query with dynamic radius shrinking, and AoE tool queries** (CPU mirror outlines below, plus the real-shader tests listed under **Files**)
 ```rust
@@ -904,11 +905,11 @@ fn test_lbvh_uncapped_mouse_picking_with_dynamic_radius_shrinking() {
 fn test_lbvh_aoe_tool_bounding_box_query() {
     // Verifies:
     // 1. Bounding box intersection [tool_pos - R, tool_pos + R] correctly isolates agents within tool radius
-    // 2. AoE tools (blight, nourish, extinguish, seed) apply effects in O(log N) time
+    // 2. AoE tools (blight, nourish, extinguish, seed) apply their effects (one thread per slot)
 }
 ```
 - [ ] **Step 2: Run test to verify it fails**
-- [ ] **Step 3: Implement Morton encoding, the grid cell table with 0xFFFFFFFF sentinels for empty cells, 8-byte indirection Radix sort, Karras LBVH hierarchy generation with $N \le 1$ early-exit guard and tie-breaking, and Unified `spatial_query.wgsl`**
+- [ ] **Step 3: Implement Morton encoding, the grid cell table with 0xFFFFFFFF sentinels for empty cells, 8-byte indirection Radix sort, Karras LBVH hierarchy generation with $N \le 1$ early-exit guard and tie-breaking, and Unified `spatial_query.wgsl`** (the LBVH sketches below are the original design; the LBVH was removed on 2026-10-09 and picking reads the grid, section 3)
 ```wgsl
 // In morton_grid.wgsl (coordinate encoding):
 // Dead Agent Partitioning: Assign sentinel 0xFFFFFFFFu so tombstone slots sort to the array tail:
@@ -1142,7 +1143,7 @@ fn spatial_query_main(@builtin(global_invocation_id) id: vec3u) {
   - `test_every_creature_in_a_crowd_takes_one_step`: with the agent pass in Morton order, each of 300 creatures takes exactly one step (age +1; energy change as the reference's, except near-tie neighbours).
 
 **Interfaces:**
-- Consumes: `GpuSoilCell` storage buffer (point reads, atomic grazing/deposits), Spatial index (sorted keys, grid table, `cell_slots`), LBVH tree, `GpuAgentState` (128B) and `GpuAgentGenome` (352B) storage buffers, `GpuAgentAtomic` L2 buffer, `GpuSimParams`
+- Consumes: `GpuSoilCell` storage buffer (point reads, atomic grazing/deposits), Spatial index (sorted keys, grid table, `cell_slots`), `GpuAgentState` (128B) and `GpuAgentGenome` (352B) storage buffers, `GpuAgentAtomic` L2 buffer, `GpuSimParams`
 - Produces: Updated kinematics with toroidal wrapping, hidden RNN states from the 326 linearly packed genes, coalesced soil deposits, atomic combat resolution with `dead_claimed` CAS, decoupled SIMD genome mutation, and the census (population, max generation, living lineages)
 
 - [ ] **Step 1: Write failing test for the forward pass, combat resolution with double-free CAS, and toroidal coordinate wrapping** (the CPU mirror below, plus the real-shader tests listed under **Files**)
@@ -1794,7 +1795,7 @@ impl CreatureLayerKind { pub const ALL: [Self; 4]; pub fn vertices_per_instance(
     - Frames are applied before the pause check (so the ring drains while paused) and after `flush_gpu_to_rust` when switching to the Rust engine.
     - Agent replenishment drains the ring right after `replenish_agents_gpu`, which already waits. Without that, pre-seed frames landing afterwards reset `gpu_population` and seeded again (3 creatures → 27 instead of 15). Covered by `test_agent_replenishment_seeds_once_despite_lagged_frames`.
     - Extra tests: `test_ring_returns_each_frame_once_in_order` (driver level: 30 requests → 30 frames, in order, the last one equal to a synchronous read), plus the agent replenishment test above. Red-checked by mutation: a blocking telemetry read in the frame path fails the first test (40 waits); returning each frame twice fails the ordering test (60 ≠ 30).
-    - **Residual:** `GpuSimParams.agent_count` (LBVH size, reproduction cap) comes from the newest landed frame, so it now lags by up to `RING_DEPTH` frames instead of one. The fix is to have the passes read the population from `queue_buffer`; this is not done yet.
+    - **Residual:** `GpuSimParams.agent_count` (reproduction cap) comes from the newest landed frame, so it now lags by up to `RING_DEPTH` frames instead of one. The fix is to have the passes read the population from `queue_buffer`; this is not done yet.
   - **Failing test** `gpu_frame_readback_test.rs`:
     ```rust
     use bevy::prelude::*;
@@ -2207,7 +2208,7 @@ impl CreatureLayerKind { pub const ALL: [Self; 4]; pub fn vertices_per_instance(
 - **Single-tick lockstep** in controlled scenarios (`plan_t5_agent_test`): position within 1e-3 px (toroidal), velocity and angle within 1e-4, energy within 2e-3, hidden state within 1e-4, feeding/attack/signal within 1e-4, age exact.
 - **Soil**: one tick cell by cell within 2e-6 (spawn cells excluded); 600 empty ticks with total food within 3% of the reference at ticks 100..600.
 - **Long run** (`plan_t6_integration_test`, `long_run_behavior_test`): population, cumulative births, kills and total soil food within ±20% of the reference at ticks 200..1000 (or 3√n for small counts).
-- **Exact invariants**: struct layouts, slot accounting, single death counting, tombstones, a valid LBVH every tick, tool effects.
+- **Exact invariants**: struct layouts, slot accounting, single death counting, tombstones, tool effects.
 
 ### Rules for every step
 Follow `superpowers:systematic-debugging` and `superpowers:test-driven-development`: the new test must fail on the current shader for the intended reason before production code changes. One step per commit. Run `cargo fmt --all -- --check` and `git diff --check`. Run only the targeted tests named in the step plus the existing GPU behavior tests (`long_run_behavior_test`, `multi_tick_parity_test`). Never dispatch anything that can loop without bound on bad data: prove such defects from CPU readbacks (the harness refuses picks until 100 consecutive trees read back valid).
@@ -2265,14 +2266,14 @@ Measured on the working tree, which holds uncommitted work not yet in any commit
 | 3 | `plan_t3::test_an_eclipse_ends_mid_frame` | pass | mutation-checked (no countdown between sub-ticks: taint +87.8 vs +21.5) |
 | 3 | `plan_t3::test_an_eclipse_skips_odd_ticks` | pass | mutation-checked (the wrong tick parity adds 22.4 taint) |
 | 3 | `gpu_soil_parity_test` | pass | |
-| 4 | `plan_t4` Morton, sort, tree, leaves, boxes (5) | pass (Task 4 implemented, uncommitted) | failed first: keys unsorted, Morton rounds instead of floors, 30 of 30 trees invalid. Mutation-checked (rounding fails; a sort ignoring the top byte fails; a box climb stopping at the parent fails; dropping the preamble's `live_count` reset fails the tree tests). The flag-based box fitting left 83 of 300 trees with stale boxes; the atomic climb gives 0 of 300 |
+| 4 | `plan_t4` Morton, sort, tree, leaves, boxes (5) | Morton and sort pass; the 4 tree tests were removed with the LBVH on 2026-10-09 | failed first: keys unsorted, Morton rounds instead of floors, 30 of 30 trees invalid. Mutation-checked (rounding fails; a sort ignoring the top byte fails; a box climb stopping at the parent fails; dropping the preamble's `live_count` reset fails the tree tests). The flag-based box fitting left 83 of 300 trees with stale boxes; the atomic climb gives 0 of 300 |
 | 4 | `plan_t4::test_the_sort_holds_when_params_cover_fewer_slots_than_the_driver` | pass | mutation-checked (dropping the workgroup guards fails 2 of 2 runs: workgroups past `params.max_agents` overwrote the histogram; in the app kills fell to 3–9 against the reference's 28) |
 | 4 | `plan_t4::test_the_grid_table_holds_every_live_creature_once` | pass | mutation-checked (a 128-entry cap in the table fails; cell counters not cleared between sub-ticks fail) |
 | 4 | `gpu_capacity_test::test_active_slots_cover_the_cap_and_the_uploaded_creatures` | pass | failed first: `active_slots(50)` was 50 with 72 creatures uploaded |
 | 4 | `gpu_capacity_test::test_lowering_the_cap_removes_creatures_born_above_the_new_frame_size` | pass | failed first: creatures above the new cap stayed alive when the capacity pass covered only the frame's slots |
 | 4 | `plan_t4::test_a_creature_on_the_far_corner_stays_in_the_index` | pass | failed first: live count 2 of 3 (the corner creature's all-ones code sorted among the dead) |
-| 4 | `plan_t4::test_lbvh_of_one_creature_is_its_leaf` | pass | |
-| 4 | `plan_t4::test_picking_returns_the_creature_under_the_cursor` | not run | picks are never dispatched in tests on this machine (a pick on a bad tree hung it); the bounded walk is checked in the app |
+| 4 | `plan_t4::test_picking_returns_the_creature_under_the_cursor` | pass | runs since 2026-10-09: the grid pick has only bounded loops |
+| 4 | `plan_t4::test_picking_selects_what_the_rust_engine_selects` | pass | failed first: the old harness would not dispatch a pick (its tree check counted the tick's newborns). Mutation-checked (no 25 px margin fails; only the cursor's own cell fails; not preferring the nearest fails) |
 | 4 | `plan_t4::test_nearest_neighbour_matches_near` | pass | failed first: 3 of 7 scenarios (a neighbour above the live count missed; no global scan when the 3×3 cells hold only a creature beyond 100 px; the 128-per-cell cap). Mutation-checked (no global scan fails; a 128-per-cell search cap fails the 196-creature scenario added for it, 3 of 3 runs) |
 | 4 | `plan_t4::test_density_counts_neighbours_within_100px` | pass | failed first: a creature exactly 100 px away was counted. Mutation-checked (`<=` fails) |
 | 4 | `plan_t4` Extinguish, Seed | pass | failed first: toroidal erase distance; Seed added 1 creature, not 2. Mutation-checked (toroidal distance fails; one creature per click fails) |
@@ -2311,8 +2312,8 @@ Found while writing these tests, not yet covered by any task: when many creature
    - Top header engine badge displays active mode (`ENGINE: RUST` vs `ENGINE: GPU`).
    - Creatures move, feed, fight, and reproduce with identical visual fidelity.
    - Soil texture renders smoothly without artifacts.
-   - Zooming in uses LBVH frustum culling without visual pop-in.
-   - Dragging AoE tools (Extinguish, Nourish, Blight) operates in $O(\log N)$ time.
+   - Zooming in culls creatures without visual pop-in at the edges.
+   - Dragging AoE tools (Extinguish, Nourish, Blight) stays smooth.
    - Trails are the same length at 1x and 32x speed, in both engines.
    - NEW WORLD in GPU mode (running and paused) replaces the creatures immediately.
    - UI metrics (population, generation, lineages, record graph) update in real-time from 128-byte `GpuTelemetry`.

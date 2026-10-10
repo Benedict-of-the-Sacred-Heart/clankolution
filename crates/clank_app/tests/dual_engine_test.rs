@@ -1,5 +1,4 @@
 use clank_app::gpu::bridge::{sync_gpu_to_rust, sync_rust_to_gpu, GpuSimBridge};
-use clank_app::gpu::lbvh::LbvhTree;
 use clank_app::gpu::types::{GpuAgentState, GpuTelemetry};
 use clank_app::sim::SimWorld;
 
@@ -77,7 +76,7 @@ fn test_gpu_telemetry_fields() {
 }
 
 #[test]
-fn test_two_tier_uncapped_picking_disambiguation() {
+fn test_picked_identity_guard_detects_a_recycled_slot() {
     let agent_a = GpuAgentState {
         pos_vel: [200.0, 200.0, 0.0, 0.0],
         angle_energy: [0.0, 50.0, 0.0, 0.0],
@@ -105,15 +104,6 @@ fn test_two_tier_uncapped_picking_disambiguation() {
     };
 
     let agents = vec![agent_a, agent_b];
-    let tree = LbvhTree::build(&agents);
-
-    // Cursor at (201.0, 200.0):
-    // Dist to A: 1.0 (<= 3.5 -> Priority 0 body hit)
-    // Dist to B: 2.0 (<= 2.0 -> Priority 0 body hit)
-    // Tie-break: Dist to A (1.0) < Dist to B (2.0) -> selects A!
-    let (best_idx, best_id) = tree.pick_agent([201.0, 200.0], &agents, 16.0);
-    assert_eq!(best_idx, Some(0));
-    assert_eq!(best_id, Some(777));
 
     // Identity guard: if slot 0 is recycled and ID changes, picking flags death
     let is_alive = GpuSimBridge::verify_picked_identity(0, 777, &agents);

@@ -165,13 +165,6 @@ fn rust_layouts() -> BTreeMap<&'static str, (Layout, u32, Names)> {
         );
     }
     m.insert(
-        "GpuLbvhNode",
-        fields!(GpuLbvhNode;
-            aabb_min F32 2, aabb_max F32 2, center_of_mass F32 2, count U32 1,
-            dominant_lineage U32 1, left_child U32 1, right_child U32 1, parent U32 1,
-            leaf_idx U32 1),
-    );
-    m.insert(
         "GpuAgentTrail",
         fields!(GpuAgentTrail; pts F32 18, count U32 1, owner_id U32 1, _pad U32 4),
     );
@@ -205,7 +198,6 @@ fn rust_name(wgsl: &str) -> Option<&'static str> {
         "ChronicleEvent" => "GpuChronicleEvent",
         "GpuTelemetry" => "GpuTelemetry",
         "ConsolidatedQueue" => "ConsolidatedQueue",
-        "GpuLbvhNode" => "GpuLbvhNode",
         "GpuAgentTrail" => "GpuAgentTrail",
         "DartInstance" => "GpuDartInstance",
         "RenderParams" => "CreatureRenderParams",
@@ -396,12 +388,6 @@ fn test_rust_structs_are_16_byte_aligned_with_planned_sizes() {
             size_of::<GpuSimParams>(),
             align_of::<GpuSimParams>(),
             96,
-        ),
-        (
-            "GpuLbvhNode",
-            size_of::<GpuLbvhNode>(),
-            align_of::<GpuLbvhNode>(),
-            48,
         ),
         (
             "GpuSoilCell",

@@ -1,6 +1,6 @@
 use clank_app::gpu::types::{
     AudioVoice, BirthEvent, ConsolidatedQueue, GpuAgentAtomic, GpuAgentGenome, GpuAgentState,
-    GpuLbvhNode, GpuSimParams, GpuSoilCell, GpuTelemetry,
+    GpuSimParams, GpuSoilCell, GpuTelemetry,
 };
 
 #[test]
@@ -16,10 +16,6 @@ fn test_gpu_struct_alignments_and_divisible_by_4() {
     assert_eq!(std::mem::size_of::<GpuSimParams>() % 16, 0);
     assert_eq!(std::mem::size_of::<GpuSimParams>() % 4, 0);
     assert_eq!(std::mem::size_of::<GpuSimParams>(), 96);
-
-    assert_eq!(std::mem::size_of::<GpuLbvhNode>() % 16, 0);
-    assert_eq!(std::mem::size_of::<GpuLbvhNode>() % 4, 0);
-    assert_eq!(std::mem::size_of::<GpuLbvhNode>(), 48);
 
     assert_eq!(std::mem::size_of::<GpuAgentAtomic>() % 16, 0);
     assert_eq!(std::mem::size_of::<GpuAgentAtomic>() % 4, 0);

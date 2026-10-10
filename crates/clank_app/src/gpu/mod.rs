@@ -6,7 +6,6 @@ pub mod compute_driver;
 pub mod creature_render;
 pub mod frame_readback;
 pub mod freelist;
-pub mod lbvh;
 pub mod radix_sort;
 pub mod soil_pipeline;
 pub mod spatial_index;

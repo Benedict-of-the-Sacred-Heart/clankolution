@@ -5,8 +5,8 @@
 
 use crate::gpu::frame_readback::{FrameReadback, ReadbackRing, ReadbackSources};
 use crate::gpu::types::{
-    AudioVoice, GpuAgentAtomic, GpuAgentGenome, GpuAgentState, GpuAgentTrail, GpuLbvhNode,
-    GpuSimParams, GpuSoilCell, GpuTelemetry,
+    AudioVoice, GpuAgentAtomic, GpuAgentGenome, GpuAgentState, GpuAgentTrail, GpuSimParams,
+    GpuSoilCell, GpuTelemetry,
 };
 use std::sync::Arc;
 
@@ -37,8 +37,6 @@ pub struct GpuComputeDriver {
     pub soil_buf: wgpu::Buffer,
     pub bloom_table_buf: wgpu::Buffer,
     pub spatial_keys_buf: wgpu::Buffer,
-    pub lbvh_nodes_buf: wgpu::Buffer,
-    pub node_flags_buf: wgpu::Buffer,
     pub freelist_buf: wgpu::Buffer,
     pub queue_buffer: wgpu::Buffer,
     pub visible_instances_buf: wgpu::Buffer,
@@ -67,7 +65,6 @@ pub struct GpuComputeDriver {
     pub staging_dart_trails: wgpu::Buffer,
     pub staging_freelist: wgpu::Buffer,
     pub staging_audio: wgpu::Buffer,
-    pub staging_lbvh: wgpu::Buffer,
 
     // Pipelines
     pub soil_pipeline: wgpu::ComputePipeline,
@@ -75,8 +72,6 @@ pub struct GpuComputeDriver {
     pub preamble_pipeline: wgpu::ComputePipeline,
     pub morton_encode_pipeline: wgpu::ComputePipeline,
     pub spatial_sort: crate::gpu::radix_sort::SpatialSort,
-    pub lbvh_pipeline: wgpu::ComputePipeline,
-    pub lbvh_aabb_pipeline: wgpu::ComputePipeline,
     pub agent_pipeline: wgpu::ComputePipeline,
     pub birth_pipeline: wgpu::ComputePipeline,
     pub birth_dispatch: crate::gpu::birth_pipeline::BirthDispatch,
@@ -95,7 +90,6 @@ pub struct GpuComputeDriver {
     pub preamble_bg0: wgpu::BindGroup,
     pub preamble_bg1: wgpu::BindGroup,
     pub morton_bind_group: wgpu::BindGroup,
-    pub lbvh_bind_group: wgpu::BindGroup,
     pub agent_group0: wgpu::BindGroup,
     pub agent_group1: wgpu::BindGroup,
     pub birth_group0: wgpu::BindGroup,
@@ -230,8 +224,6 @@ impl GpuComputeDriver {
         let soil_size = total_soil_cells * 16;
         let bloom_size = total_soil_cells * 4;
         let spatial_keys_size = crate::gpu::radix_sort::spatial_keys_size(max_agents);
-        let lbvh_nodes_size = (max_agents as u64) * 2 * 48;
-        let node_flags_size = (max_agents as u64) * 4;
         let freelist_size = (max_agents as u64) * 4;
         // ConsolidatedQueue: 128B telemetry + 65536*16B births + 256*16B audio + 64*16B chronicle
         let queue_size = std::mem::size_of::<crate::gpu::types::ConsolidatedQueue>() as u64;
@@ -288,20 +280,6 @@ impl GpuComputeDriver {
             label: Some("spatial_keys_buf"),
             size: spatial_keys_size,
             usage: BufferUsages::STORAGE | BufferUsages::COPY_SRC | BufferUsages::COPY_DST,
-            mapped_at_creation: false,
-        });
-
-        let lbvh_nodes_buf = device.create_buffer(&wgpu::BufferDescriptor {
-            label: Some("lbvh_nodes_buf"),
-            size: lbvh_nodes_size,
-            usage: BufferUsages::STORAGE | BufferUsages::COPY_SRC | BufferUsages::COPY_DST,
-            mapped_at_creation: false,
-        });
-
-        let node_flags_buf = device.create_buffer(&wgpu::BufferDescriptor {
-            label: Some("node_flags_buf"),
-            size: node_flags_size,
-            usage: BufferUsages::STORAGE | BufferUsages::COPY_DST,
             mapped_at_creation: false,
         });
 
@@ -391,13 +369,6 @@ impl GpuComputeDriver {
         let staging_audio = device.create_buffer(&wgpu::BufferDescriptor {
             label: Some("staging_audio"),
             size: 4096, // 256 AudioVoice * 16 bytes
-            usage: BufferUsages::MAP_READ | BufferUsages::COPY_DST,
-            mapped_at_creation: false,
-        });
-
-        let staging_lbvh = device.create_buffer(&wgpu::BufferDescriptor {
-            label: Some("staging_lbvh"),
-            size: (64 * std::mem::size_of::<crate::gpu::types::GpuLbvhNode>()) as u64,
             usage: BufferUsages::MAP_READ | BufferUsages::COPY_DST,
             mapped_at_creation: false,
         });
@@ -589,12 +560,6 @@ impl GpuComputeDriver {
             label: Some("morton_sm"),
             source: wgpu::ShaderSource::Wgsl(
                 include_str!("../../assets/shaders/morton_grid.wgsl").into(),
-            ),
-        });
-        let lbvh_sm = device.create_shader_module(wgpu::ShaderModuleDescriptor {
-            label: Some("lbvh_sm"),
-            source: wgpu::ShaderSource::Wgsl(
-                include_str!("../../assets/shaders/lbvh_build.wgsl").into(),
             ),
         });
         let agent_sm = device.create_shader_module(wgpu::ShaderModuleDescriptor {
@@ -798,131 +763,6 @@ impl GpuComputeDriver {
             &agent_atomics_buf,
             max_agents,
         );
-
-        // 3. LBVH Pipeline & Bind Group
-        let lbvh_bgl = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
-            label: Some("lbvh_bgl"),
-            entries: &[
-                wgpu::BindGroupLayoutEntry {
-                    binding: 0,
-                    visibility: wgpu::ShaderStages::COMPUTE,
-                    ty: wgpu::BindingType::Buffer {
-                        ty: wgpu::BufferBindingType::Storage { read_only: true },
-                        has_dynamic_offset: false,
-                        min_binding_size: None,
-                    },
-                    count: None,
-                },
-                wgpu::BindGroupLayoutEntry {
-                    binding: 1,
-                    visibility: wgpu::ShaderStages::COMPUTE,
-                    ty: wgpu::BindingType::Buffer {
-                        ty: wgpu::BufferBindingType::Storage { read_only: false },
-                        has_dynamic_offset: false,
-                        min_binding_size: None,
-                    },
-                    count: None,
-                },
-                wgpu::BindGroupLayoutEntry {
-                    binding: 2,
-                    visibility: wgpu::ShaderStages::COMPUTE,
-                    ty: wgpu::BindingType::Buffer {
-                        ty: wgpu::BufferBindingType::Storage { read_only: false },
-                        has_dynamic_offset: false,
-                        min_binding_size: None,
-                    },
-                    count: None,
-                },
-                wgpu::BindGroupLayoutEntry {
-                    binding: 3,
-                    visibility: wgpu::ShaderStages::COMPUTE,
-                    ty: wgpu::BindingType::Buffer {
-                        ty: wgpu::BufferBindingType::Storage { read_only: true },
-                        has_dynamic_offset: false,
-                        min_binding_size: None,
-                    },
-                    count: None,
-                },
-                wgpu::BindGroupLayoutEntry {
-                    binding: 4,
-                    visibility: wgpu::ShaderStages::COMPUTE,
-                    ty: wgpu::BindingType::Buffer {
-                        ty: wgpu::BufferBindingType::Uniform,
-                        has_dynamic_offset: false,
-                        min_binding_size: None,
-                    },
-                    count: None,
-                },
-                wgpu::BindGroupLayoutEntry {
-                    binding: 5,
-                    visibility: wgpu::ShaderStages::COMPUTE,
-                    ty: wgpu::BindingType::Buffer {
-                        ty: wgpu::BufferBindingType::Storage { read_only: false },
-                        has_dynamic_offset: false,
-                        min_binding_size: None,
-                    },
-                    count: None,
-                },
-            ],
-        });
-        let lbvh_bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
-            label: Some("lbvh_bg"),
-            layout: &lbvh_bgl,
-            entries: &[
-                wgpu::BindGroupEntry {
-                    binding: 0,
-                    resource: spatial_keys_buf.as_entire_binding(),
-                },
-                wgpu::BindGroupEntry {
-                    binding: 1,
-                    resource: lbvh_nodes_buf.as_entire_binding(),
-                },
-                wgpu::BindGroupEntry {
-                    binding: 2,
-                    resource: node_flags_buf.as_entire_binding(),
-                },
-                wgpu::BindGroupEntry {
-                    binding: 3,
-                    resource: agent_states_buf.as_entire_binding(),
-                },
-                wgpu::BindGroupEntry {
-                    binding: 4,
-                    resource: sim_params_buf.as_entire_binding(),
-                },
-                wgpu::BindGroupEntry {
-                    binding: 5,
-                    resource: queue_buffer.as_entire_binding(),
-                },
-            ],
-        });
-        let lbvh_pl = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
-            label: Some("lbvh_pl"),
-            bind_group_layouts: &[Some(&lbvh_bgl)],
-            immediate_size: 0,
-        });
-        let lbvh_pipeline = device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
-            label: Some("lbvh_pipeline"),
-            layout: Some(&lbvh_pl),
-            module: &lbvh_sm,
-            entry_point: Some("build_lbvh_hierarchy"),
-            compilation_options: wgpu::PipelineCompilationOptions::default(),
-            cache: None,
-        });
-
-        let lbvh_aabb_sm = device.create_shader_module(wgpu::ShaderModuleDescriptor {
-            label: Some("lbvh_aabb_sm"),
-            source: wgpu::ShaderSource::Wgsl(
-                include_str!("../../assets/shaders/lbvh_aabb.wgsl").into(),
-            ),
-        });
-        let lbvh_aabb_pipeline = device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
-            label: Some("lbvh_aabb_pipeline"),
-            layout: Some(&lbvh_pl),
-            module: &lbvh_aabb_sm,
-            entry_point: Some("fit_lbvh_aabbs"),
-            compilation_options: wgpu::PipelineCompilationOptions::default(),
-            cache: None,
-        });
 
         // 4. Agent Pipeline & Bind Groups (Group 0: 8 storage buffers; Group 1: uniform + texture + sampler)
         let agent_bgl0 = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
@@ -1302,7 +1142,7 @@ impl GpuComputeDriver {
                 },
                 wgpu::BindGroupEntry {
                     binding: 1,
-                    resource: lbvh_nodes_buf.as_entire_binding(),
+                    resource: spatial_keys_buf.as_entire_binding(),
                 },
                 wgpu::BindGroupEntry {
                     binding: 2,
@@ -1721,8 +1561,6 @@ impl GpuComputeDriver {
             soil_buf,
             bloom_table_buf,
             spatial_keys_buf,
-            lbvh_nodes_buf,
-            node_flags_buf,
             freelist_buf,
             queue_buffer,
             visible_instances_buf,
@@ -1747,14 +1585,11 @@ impl GpuComputeDriver {
             staging_dart_trails,
             staging_freelist,
             staging_audio,
-            staging_lbvh,
             soil_pipeline,
             eclipse_pipeline,
             preamble_pipeline,
             morton_encode_pipeline,
             spatial_sort,
-            lbvh_pipeline,
-            lbvh_aabb_pipeline,
             agent_pipeline,
             birth_pipeline,
             birth_dispatch,
@@ -1771,7 +1606,6 @@ impl GpuComputeDriver {
             preamble_bg0,
             preamble_bg1,
             morton_bind_group,
-            lbvh_bind_group,
             agent_group0,
             agent_group1,
             birth_group0,
@@ -2159,18 +1993,6 @@ impl GpuComputeDriver {
 
                     // 2c. Sort the keys, count the live ones, build the grid cell table
                     self.spatial_sort.encode(&mut cpass, cur_params.max_agents);
-
-                    // 3. LBVH Phase 1: Hierarchy Topology over the live_count sorted keys. The
-                    //    live count is only known on the GPU, so both tree steps cover every
-                    //    slot and return early past it.
-                    cpass.set_pipeline(&self.lbvh_pipeline);
-                    cpass.set_bind_group(0, &self.lbvh_bind_group, &[]);
-                    cpass.dispatch_workgroups(agent_workgroups, 1, 1);
-
-                    // 4. LBVH Phase 2: Bottom-Up AABB fitting, after the topology dispatch
-                    cpass.set_pipeline(&self.lbvh_aabb_pipeline);
-                    cpass.set_bind_group(0, &self.lbvh_bind_group, &[]);
-                    cpass.dispatch_workgroups(agent_workgroups, 1, 1);
 
                     // 5. Unified Spatial Query (Mouse Picking & AoE tools) on sub_tick 0
                     if cur_params.tool_type != 0xFFFFFFFF && step == 0 {
@@ -3009,49 +2831,6 @@ impl GpuComputeDriver {
         self.staging_audio.unmap();
 
         voices
-    }
-
-    pub fn readback_lbvh_nodes(&self, count: usize) -> Vec<GpuLbvhNode> {
-        let count = count.min(64);
-        if count == 0 {
-            return Vec::new();
-        }
-        let node_size = std::mem::size_of::<GpuLbvhNode>() as u64;
-        let byte_len = (count as u64) * node_size;
-        let mut encoder = self
-            .device
-            .create_command_encoder(&wgpu::CommandEncoderDescriptor {
-                label: Some("readback_lbvh_nodes_encoder"),
-            });
-        encoder.copy_buffer_to_buffer(&self.lbvh_nodes_buf, 0, &self.staging_lbvh, 0, byte_len);
-        self.queue.submit([encoder.finish()]);
-
-        let slice = self.staging_lbvh.slice(0..byte_len);
-        let (sender, receiver) = std::sync::mpsc::channel();
-        slice.map_async(wgpu::MapMode::Read, move |res| {
-            let _ = sender.send(res);
-        });
-        self.wait_blocking();
-        receiver.recv().unwrap().unwrap();
-
-        let data = slice.get_mapped_range();
-        let nodes = bytemuck::cast_slice::<u8, GpuLbvhNode>(&data[0..byte_len as usize]).to_vec();
-        drop(data);
-        self.staging_lbvh.unmap();
-
-        nodes
-    }
-
-    pub fn extract_gpu_minimap_clusters(
-        &self,
-        target_depth: usize,
-    ) -> Vec<crate::gpu::lbvh::MinimapCluster> {
-        let nodes = self.readback_lbvh_nodes(63);
-        if nodes.is_empty() {
-            return Vec::new();
-        }
-        let tree = crate::gpu::lbvh::LbvhTree { nodes };
-        tree.extract_minimap_clusters(target_depth)
     }
 
     pub fn readback_agent_slot(

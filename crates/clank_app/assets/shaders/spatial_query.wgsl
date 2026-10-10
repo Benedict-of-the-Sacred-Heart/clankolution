@@ -28,18 +28,6 @@ struct GpuSimParams {
     epoch: u32,
 }
 
-struct GpuLbvhNode {
-    aabb_min: vec2f,
-    aabb_max: vec2f,
-    center_of_mass: vec2f,
-    count: u32,
-    dominant_lineage: u32,
-    left_child: u32,
-    right_child: u32,
-    parent: u32,
-    leaf_idx: u32,
-}
-
 struct GpuAgentState {
     pos_vel: vec4f,
     angle_energy: vec4f,
@@ -128,34 +116,14 @@ struct GpuAgentAtomic {
 }
 
 @group(0) @binding(0) var<storage, read_write> agent_states: array<GpuAgentState>;
-@group(0) @binding(1) var<storage, read> lbvh_nodes: array<GpuLbvhNode>;
+// [0, N) sorted keys, [N, N + 54) grid cell table, [N + 54, ...) cell_slots (N = max_agents).
+@group(0) @binding(1) var<storage, read> spatial_keys: array<vec2u>;
 @group(0) @binding(2) var<storage, read_write> queue_buffer: ConsolidatedQueue;
 @group(0) @binding(3) var<uniform> params: GpuSimParams;
 @group(0) @binding(4) var<storage, read_write> visible_instances: array<u32>;
 @group(0) @binding(5) var<storage, read_write> cull_output: CullOutput;
 @group(0) @binding(6) var<storage, read_write> dart_instances: array<DartInstance>;
 @group(0) @binding(7) var<storage, read_write> agent_atomics: array<GpuAgentAtomic>;
-
-fn toroidal_aabb_dist_1d(p: f32, b_min: f32, b_max: f32, w: f32) -> f32 {
-    if (p >= b_min && p <= b_max) { return 0.0; }
-    let direct = select(p - b_max, b_min - p, p < b_min);
-    let wrapped = select(w - p + b_min, w - b_max + p, p < b_min);
-    return min(direct, wrapped);
-}
-
-fn distance_to_aabb(pos: vec2f, aabb_min: vec2f, aabb_max: vec2f) -> f32 {
-    let dx = toroidal_aabb_dist_1d(pos.x, aabb_min.x, aabb_max.x, params.world_size.x);
-    let dy = toroidal_aabb_dist_1d(pos.y, aabb_min.y, aabb_max.y, params.world_size.y);
-    return sqrt(dx * dx + dy * dy);
-}
-
-fn toroidal_dist(p1: vec2f, p2: vec2f) -> f32 {
-    let dx = abs(p1.x - p2.x);
-    let x_dist = min(dx, params.world_size.x - dx);
-    let dy = abs(p1.y - p2.y);
-    let y_dist = min(dy, params.world_size.y - dy);
-    return sqrt(x_dist * x_dist + y_dist * y_dist);
-}
 
 @compute @workgroup_size(64)
 fn spatial_query_main(@builtin(global_invocation_id) id: vec3u) {
@@ -168,93 +136,36 @@ fn spatial_query_main(@builtin(global_invocation_id) id: vec3u) {
     if (params.tool_type == 0u /* inspect/pick */) {
         if (id.x != 0u) { return; }
 
-        // The tree holds this sub-tick's live keys (live_count, from the spatial sort).
-        let live_count = queue_buffer.telemetry.live_count;
-        if (live_count == 0u) {
-            queue_buffer.telemetry.selected_agent_idx = 0xFFFFFFFFu;
-            queue_buffer.telemetry.selected_agent_id = 0u;
-            return;
-        }
-
-        var search_r = clamp(16.0 * (params.camera_size[0] / params.world_size.x), 4.0, 24.0);
-
-        if (live_count == 1u) {
-            let slot = lbvh_nodes[0].leaf_idx;
-            if (slot < params.max_agents) {
-                let agent_pos = agent_states[slot].pos_vel.xy;
-                let d = toroidal_dist(tool_pos, agent_pos);
-                if (d <= search_r) {
-                    queue_buffer.telemetry.selected_agent_idx = slot;
-                    queue_buffer.telemetry.selected_agent_id = agent_states[slot].id;
-                } else {
-                    queue_buffer.telemetry.selected_agent_idx = 0xFFFFFFFFu;
-                    queue_buffer.telemetry.selected_agent_id = 0u;
-                }
-            } else {
-                queue_buffer.telemetry.selected_agent_idx = 0xFFFFFFFFu;
-                queue_buffer.telemetry.selected_agent_id = 0u;
-            }
-            return;
-        }
-
+        // As the Rust engine's find_agent_at_position: the nearest live creature whose body
+        // radius plus tool_radius reaches the cursor, by plain distance, the lower id on a tie.
+        // That reach (at most 6.8 + 25 px) is under one grid cell (world / 9 by world / 6), so
+        // the cursor's 3×3 cells hold every candidate.
+        let n_keys = params.max_agents;
+        let gx = i32(min(u32(tool_pos.x / (w.x / 9.0)), 8u));
+        let gy = i32(min(u32(tool_pos.y / (w.y / 6.0)), 5u));
         var best_idx = 0xFFFFFFFFu;
         var best_id = 0u;
-        var best_priority = 2u; // 0 = body hit, 1 = halo, 2 = none
-        var best_dist = search_r;
-
-        var stack: array<u32, 64>;
-        var stack_ptr = 0u;
-        stack[stack_ptr] = 0u; // Root
-        stack_ptr += 1u;
-
-        // Bounded walk: a valid tree has 2n - 1 nodes, so more visits than that means a corrupt
-        // tree. Stop rather than loop (an unbounded walk on a cyclic tree froze the machine).
-        let node_count = 2u * live_count - 1u;
-        var visits = 0u;
-        while (stack_ptr > 0u && visits < node_count) {
-            visits += 1u;
-            stack_ptr -= 1u;
-            let node_idx = stack[stack_ptr];
-            if (node_idx >= node_count) { continue; }
-            let node = lbvh_nodes[node_idx];
-
-            let box_dist = distance_to_aabb(tool_pos, node.aabb_min, node.aabb_max);
-            if (box_dist > search_r) { continue; }
-
-            if (node.leaf_idx != 0xFFFFFFFFu) {
-                let agent_idx = node.leaf_idx;
-                let agent_pos = agent_states[agent_idx].pos_vel.xy;
-                let d = toroidal_dist(tool_pos, agent_pos);
-                let visual_r = 2.0 + 3.0 * agent_states[agent_idx].traits[0][0];
-
-                let priority = select(1u, 0u, d <= visual_r);
-                if (d <= search_r) {
-                    if (priority < best_priority || (priority == best_priority && d < best_dist)) {
-                        best_priority = priority;
-                        best_dist = d;
-                        best_idx = agent_idx;
-                        best_id = agent_states[agent_idx].id;
-
-                        // Dynamic Radius Shrinking
-                        if (priority == 0u) {
-                            search_r = min(search_r, d);
-                        }
-                    }
-                }
-            } else {
-                if (stack_ptr < 62u) {
-                    if (node.right_child != 0xFFFFFFFFu) {
-                        stack[stack_ptr] = node.right_child;
-                        stack_ptr += 1u;
-                    }
-                    if (node.left_child != 0xFFFFFFFFu) {
-                        stack[stack_ptr] = node.left_child;
-                        stack_ptr += 1u;
+        var best_d = 3.0e38;
+        for (var dy = -1; dy <= 1; dy++) {
+            let n_gy = (gy + dy + 6) % 6;
+            for (var dx = -1; dx <= 1; dx++) {
+                let n_gx = (gx + dx + 9) % 9;
+                let range = spatial_keys[n_keys + u32(n_gy * 9 + n_gx)];
+                if (range.x == 0xFFFFFFFFu) { continue; }
+                for (var k = 0u; k < min(range.y, n_keys); k += 1u) {
+                    let slot = spatial_keys[n_keys + 54u + range.x + k].x;
+                    if (slot >= n_keys || (agent_states[slot].meta_flags & (1u << 13u)) != 0u) { continue; }
+                    let a_id = agent_states[slot].id;
+                    let d = distance(agent_states[slot].pos_vel.xy, params.tool_pos);
+                    let reach = 2.3 + agent_states[slot].traits[0][0] * 4.5 + params.tool_radius;
+                    if (d <= reach && (d < best_d || (d == best_d && a_id < best_id))) {
+                        best_d = d;
+                        best_idx = slot;
+                        best_id = a_id;
                     }
                 }
             }
         }
-
         queue_buffer.telemetry.selected_agent_idx = best_idx;
         queue_buffer.telemetry.selected_agent_id = best_id;
     } else {

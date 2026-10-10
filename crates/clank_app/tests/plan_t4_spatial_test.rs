@@ -1,6 +1,5 @@
 //! Plan Task 4: Morton codes, the 8-byte (morton, slot) radix sort with dead slots sorted to
-//! the tail, the Karras LBVH over sorted keys, picking, and the AoE tools — on the real
-//! shaders. Picking is only dispatched once the tree is proven valid (see the harness).
+//! the tail, picking from the grid, and the AoE tools — on the real shaders.
 
 #[path = "support/gpu_harness.rs"]
 mod gpu_harness;
@@ -213,107 +212,6 @@ fn test_a_creature_on_the_far_corner_stays_in_the_index() {
     );
 }
 
-/// The Karras LBVH is a tree over exactly the live creatures: from the root every node is
-/// reached once and every live creature is one leaf.
-#[test]
-fn test_lbvh_is_a_valid_tree_over_the_live_creatures() {
-    let sim = SimWorld::new(42);
-    let Some(mut gpu) = upload(&sim) else {
-        return;
-    };
-    let mut bad = Vec::new();
-    for tick in 0..30 {
-        gpu.tick();
-        let problems = gpu.lbvh_problems();
-        if !problems.is_empty() {
-            bad.push(format!("tick {tick}: {}", problems.join("; ")));
-        }
-    }
-    assert!(
-        bad.is_empty(),
-        "{} of 30 trees are invalid:\n{}",
-        bad.len(),
-        bad.join("\n")
-    );
-}
-
-/// Leaves appear in ascending Morton order (Karras construction over sorted keys).
-#[test]
-fn test_lbvh_leaves_are_in_morton_order() {
-    let sim = SimWorld::new(42);
-    let Some(mut gpu) = upload(&sim) else {
-        return;
-    };
-    gpu.ticks(5);
-    let states = gpu.states();
-    let n = gpu.live().len();
-    let nodes = gpu.lbvh_nodes(2 * n - 1);
-    let codes: Vec<u32> = nodes[n - 1..]
-        .iter()
-        .map(|leaf| {
-            states
-                .get(leaf.leaf_idx as usize)
-                .map(|s| s.morton_code)
-                .unwrap_or(u32::MAX)
-        })
-        .collect();
-    let unsorted = codes.windows(2).filter(|w| w[0] > w[1]).count();
-    assert_eq!(
-        unsorted,
-        0,
-        "{unsorted} of {} leaf pairs out of Morton order",
-        n - 1
-    );
-}
-
-/// Every node's box contains its children's boxes and each leaf's box its creature.
-#[test]
-fn test_lbvh_boxes_contain_their_children() {
-    let sim = SimWorld::new(42);
-    let Some(mut gpu) = upload(&sim) else {
-        return;
-    };
-    gpu.ticks(5);
-    let problems = gpu.lbvh_problems();
-    assert!(
-        problems.is_empty(),
-        "not a tree, boxes undefined: {problems:?}"
-    );
-    let n = gpu.live().len();
-    let nodes = gpu.lbvh_nodes(2 * n - 1);
-    let contains = |o: &clank_app::gpu::types::GpuLbvhNode,
-                    i: &clank_app::gpu::types::GpuLbvhNode| {
-        o.aabb_min[0] <= i.aabb_min[0]
-            && o.aabb_min[1] <= i.aabb_min[1]
-            && o.aabb_max[0] >= i.aabb_max[0]
-            && o.aabb_max[1] >= i.aabb_max[1]
-    };
-    let bad = nodes
-        .iter()
-        .filter(|nd| nd.leaf_idx == u32::MAX)
-        .filter(|nd| {
-            !contains(nd, &nodes[nd.left_child as usize])
-                || !contains(nd, &nodes[nd.right_child as usize])
-        })
-        .count();
-    assert_eq!(bad, 0, "{bad} internal boxes do not contain their children");
-}
-
-/// With a single creature the tree is that one leaf (degenerate N <= 1 guard).
-#[test]
-fn test_lbvh_of_one_creature_is_its_leaf() {
-    let sim = world_with(vec![creature(1, 300.0, 200.0, 0.0)], 0.0);
-    let Some(mut gpu) = upload(&sim) else {
-        return;
-    };
-    gpu.tick();
-    let root = gpu.lbvh_nodes(1)[0];
-    assert_eq!(
-        root.leaf_idx, 0,
-        "root of a one-creature tree is not its leaf"
-    );
-}
-
 /// Picking returns the live creature under the cursor: aimed at a creature with no other
 /// creature within the pick radius, that creature's slot and id come back.
 #[test]
@@ -323,7 +221,7 @@ fn test_picking_returns_the_creature_under_the_cursor() {
         return;
     };
     let target = std::cell::Cell::new((u32::MAX, 0u32));
-    let result = gpu.pick_if_tree_is_valid(|live| {
+    let t = gpu.pick(|live| {
         let isolated = live
             .iter()
             .find(|(_, a)| {
@@ -335,13 +233,52 @@ fn test_picking_returns_the_creature_under_the_cursor() {
         target.set((isolated.0 as u32, isolated.1.id));
         [isolated.1.x as f32, isolated.1.y as f32]
     });
-    let t = result.unwrap_or_else(|why| panic!("{why}"));
     let (slot, id) = target.get();
     assert_eq!(
         (t.selected_agent_idx, t.selected_agent_id),
         (slot, id),
         "picked the wrong creature"
     );
+}
+
+/// GPU picking selects what the Rust engine's `find_agent_at_position` selects (the nearest
+/// creature whose body radius plus 25px reaches the cursor), so a click picks the same
+/// creature in either engine: on a creature, beside one, just past 24px, in empty space, and
+/// at the world's edge.
+#[test]
+fn test_picking_selects_what_the_rust_engine_selects() {
+    let sim = SimWorld::new(42);
+    let Some(mut gpu) = upload(&sim) else {
+        return;
+    };
+    let mut picked = 0;
+    for k in 0..12usize {
+        let expected = std::cell::Cell::new(None);
+        let t = gpu.pick(|live| {
+            let (_, a) = &live[(k * 37) % live.len()];
+            let reach = [0.0, 8.0, 26.0, 29.0, 45.0, 0.0][k % 6];
+            let angle = k as f64 * 2.1;
+            let mut pos = [
+                (a.x + reach * angle.cos()) as f32,
+                (a.y + reach * angle.sin()) as f32,
+            ];
+            if k == 11 {
+                pos = [1.0, a.y as f32];
+            }
+            let mut mirror = SimWorld::new(42);
+            mirror.world.agents = live.iter().map(|(_, a)| a.clone()).collect();
+            expected.set(clank_app::rendering::find_agent_at_position(
+                &mirror,
+                bevy::math::Vec2::new(pos[0], pos[1]),
+                25.0,
+            ));
+            pos
+        });
+        let got = (t.selected_agent_idx != u32::MAX).then_some(t.selected_agent_id);
+        assert_eq!(got, expected.get(), "pick {k}: GPU picked {got:?}");
+        picked += usize::from(got.is_some());
+    }
+    assert!(picked >= 6, "only {picked} of 12 picks hit a creature");
 }
 
 /// The Extinguish tool kills the creatures the reference `extinguish_at` kills: within 23px

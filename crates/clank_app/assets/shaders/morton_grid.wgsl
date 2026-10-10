@@ -63,7 +63,7 @@ fn compute_morton_32(pos: vec2f) -> u32 {
 }
 
 // Keys in slot order for the radix sort. Dead slots get the 0xFFFFFFFF sentinel, so they sort
-// to the tail and stay out of the grid table and the LBVH.
+// to the tail and stay out of the grid table.
 @compute @workgroup_size(64)
 fn morton_encode(@builtin(global_invocation_id) id: vec3u) {
     let agent_idx = id.x;

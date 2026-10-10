@@ -153,20 +153,6 @@ pub struct GpuSoilCell {
 }
 
 #[repr(C, align(16))]
-#[derive(Clone, Copy, Debug, PartialEq, bytemuck::Pod, bytemuck::Zeroable)]
-pub struct GpuLbvhNode {
-    pub aabb_min: [f32; 2],       // 8 bytes: bounding box min [x, y]
-    pub aabb_max: [f32; 2],       // 8 bytes: bounding box max [x, y] (Total 16)
-    pub center_of_mass: [f32; 2], // 8 bytes: weighted centroid [x, y]
-    pub count: u32,               // 4 bytes: subtree creature count
-    pub dominant_lineage: u32, // 4 bytes: lineage root 0..15 with highest count in subtree (Total 32)
-    pub left_child: u32,       // 4 bytes: child node index
-    pub right_child: u32,      // 4 bytes: child node index
-    pub parent: u32,           // 4 bytes: parent node index
-    pub leaf_idx: u32, // 4 bytes: leaf agent index (0..N-1), or 0xFFFFFFFF for internal nodes (Total 48)
-}
-
-#[repr(C, align(16))]
 #[derive(Clone, Copy, Debug, Default, PartialEq, bytemuck::Pod, bytemuck::Zeroable)]
 pub struct GpuDartInstance {
     pub pos_angle: [f32; 3], // 12 bytes: x, y, angle

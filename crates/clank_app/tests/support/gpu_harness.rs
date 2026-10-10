@@ -1,9 +1,8 @@
 //! Shared harness for the plan verification tests: runs the real WGSL pipelines through
 //! `GpuComputeDriver` on a headless device and reads results back.
 //!
-//! Safety: `tool_type == 0` (picking) walks the GPU LBVH, which is unbounded on a cyclic tree
-//! and has hung the whole machine. `Gpu::tick` refuses to dispatch a pick; only
-//! `pick_if_tree_is_valid` may, after proving the tree acyclic on the CPU.
+//! Picks go through `Gpu::pick`, which aims from the creatures' positions before the tick;
+//! `Gpu::tick` refuses to dispatch one.
 #![allow(dead_code)]
 
 use bevy::app::App;
@@ -46,7 +45,7 @@ impl Gpu {
     pub fn tick(&mut self) -> GpuTelemetry {
         assert_ne!(
             self.params.tool_type, 0,
-            "picking walks the LBVH; use pick_if_tree_is_valid"
+            "a pick reads the creatures' positions before the tick; use pick"
         );
         self.params.sub_tick = 0;
         self.params.sub_ticks_per_frame = 1;
@@ -97,10 +96,6 @@ impl Gpu {
 
     pub fn freelist(&self, count: usize) -> Vec<u32> {
         read_buffer(&self.driver, &self.driver.freelist_buf, count)
-    }
-
-    pub fn lbvh_nodes(&self, count: usize) -> Vec<GpuLbvhNode> {
-        read_buffer(&self.driver, &self.driver.lbvh_nodes_buf, count)
     }
 }
 
@@ -172,102 +167,11 @@ pub fn angle_diff(a: f64, b: f64) -> f64 {
     d.min(std::f64::consts::TAU - d)
 }
 
-/// Checks the LBVH over `n` leaves is a tree: walking from the root visits each of the
-/// `2n-1` nodes exactly once and reaches every live creature as a leaf exactly once.
-/// Pure CPU over a readback; never dispatches anything.
-pub fn lbvh_problems(nodes: &[GpuLbvhNode], live_slots: &[usize]) -> Vec<String> {
-    let mut problems = Vec::new();
-    let mut visits = vec![0u32; nodes.len()];
-    let mut leaves = std::collections::BTreeMap::<u32, u32>::new();
-    let mut stack = vec![0u32];
-    let mut steps = 0usize;
-    while let Some(i) = stack.pop() {
-        steps += 1;
-        if steps > nodes.len() * 4 + 16 {
-            problems.push(format!(
-                "walk from the root did not end after {steps} steps (cycle)"
-            ));
-            break;
-        }
-        let Some(node) = nodes.get(i as usize) else {
-            problems.push(format!(
-                "child index {i} is outside the {} nodes",
-                nodes.len()
-            ));
-            continue;
-        };
-        visits[i as usize] += 1;
-        if visits[i as usize] > 1 {
-            continue;
-        }
-        if node.leaf_idx != u32::MAX {
-            *leaves.entry(node.leaf_idx).or_default() += 1;
-            continue;
-        }
-        stack.push(node.left_child);
-        stack.push(node.right_child);
-    }
-    let revisited = visits.iter().filter(|&&v| v > 1).count();
-    let unreached = visits.iter().filter(|&&v| v == 0).count();
-    if revisited > 0 {
-        problems.push(format!("{revisited} nodes are reachable more than once"));
-    }
-    if unreached > 0 {
-        problems.push(format!(
-            "{unreached} of {} nodes are unreachable",
-            nodes.len()
-        ));
-    }
-    let missing = live_slots
-        .iter()
-        .filter(|s| !leaves.contains_key(&(**s as u32)))
-        .count();
-    if missing > 0 {
-        problems.push(format!(
-            "{missing} of {} live creatures are not leaves",
-            live_slots.len()
-        ));
-    }
-    let dead_leaves = leaves
-        .keys()
-        .filter(|l| !live_slots.contains(&(**l as usize)))
-        .count();
-    if dead_leaves > 0 {
-        problems.push(format!("{dead_leaves} leaves are not live creatures"));
-    }
-    problems
-}
-
-/// Consecutive tree builds that must all be proven valid before a pick is dispatched.
-pub const VALID_BUILDS_BEFORE_PICK: u32 = 100;
-
 impl Gpu {
-    /// The LBVH problems of the tree built by the last tick (empty when it is a valid tree).
-    pub fn lbvh_problems(&self) -> Vec<String> {
-        let live: Vec<usize> = self.live().into_iter().map(|(s, _)| s).collect();
-        let n = live.len().max(1);
-        lbvh_problems(&self.lbvh_nodes(2 * n - 1), &live)
-    }
-
-    /// Dispatches a pick at `pos` only after `VALID_BUILDS_BEFORE_PICK` consecutive ticks
-    /// whose trees all read back as valid; otherwise returns the first bad tree's problems
-    /// without dispatching. The pick rebuilds the tree from the newest positions in the same
-    /// submission, so one valid tree proves nothing about the next; a long valid streak is
-    /// the evidence required before risking the unbounded walk.
-    pub fn pick_if_tree_is_valid(
-        &mut self,
-        aim: impl Fn(&[(usize, AgentData)]) -> [f32; 2],
-    ) -> Result<GpuTelemetry, String> {
-        for build in 0..VALID_BUILDS_BEFORE_PICK {
-            self.tick();
-            let problems = self.lbvh_problems();
-            if !problems.is_empty() {
-                return Err(format!(
-                    "pick not dispatched: tree build {build} is not a valid tree: {}",
-                    problems.join("; ")
-                ));
-            }
-        }
+    /// One tick with a pick at the position `aim` chooses from the live creatures, which
+    /// are where the pick's grid is built from. The grid pick is bounded (the cursor's 3×3
+    /// cells, each clamped to the slot count), so it is safe to dispatch.
+    pub fn pick(&mut self, aim: impl FnOnce(&[(usize, AgentData)]) -> [f32; 2]) -> GpuTelemetry {
         let pos = aim(&self.live());
         self.params.tool_type = 0;
         self.params.tool_pos = pos;
@@ -277,7 +181,7 @@ impl Gpu {
         self.driver.dispatch_sub_ticks(1, &self.params);
         self.params.tool_type = NO_TOOL;
         self.params.tick += 1;
-        Ok(self.driver.readback_telemetry())
+        self.driver.readback_telemetry()
     }
 }
 

@@ -71,18 +71,6 @@ struct SoilCell {
     fertility_micro: atomic<i32>,
 }
 
-struct GpuLbvhNode {
-    aabb_min: vec2f,
-    aabb_max: vec2f,
-    center_of_mass: vec2f,
-    count: u32,
-    dominant_lineage: u32,
-    left_child: u32,
-    right_child: u32,
-    parent: u32,
-    leaf_idx: u32,
-}
-
 struct GpuTelemetry {
     population: atomic<u32>,
     kills: atomic<u32>,

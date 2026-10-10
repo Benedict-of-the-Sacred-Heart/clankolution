@@ -6,19 +6,14 @@
 //! Includes:
 //! 1. Vectorized 88-Word unpack4x8snorm RNN Forward Pass
 //! 2. Morton 32-bit Coordinate Encoding & 8-byte Radix Key Sorting
-//! 3. Karras 2012 LBVH Hierarchy Construction (Phase 1 & Phase 2)
-//! 4. Uncapped Mouse Picking with Dynamic Radius Shrinking
-//! 5. Camera Frustum Culling
-//! 6. Hierarchical Minimap LOD Cluster Extraction
-//! 7. Decoupled Soil Diffusion & Atomic Grazing
-//! 8. Bi-directional Dual-Engine Hot-Swap State Bridge
+//! 3. Decoupled Soil Diffusion & Atomic Grazing
+//! 4. Bi-directional Dual-Engine Hot-Swap State Bridge
 
 use std::hint::black_box;
 use std::time::Instant;
 
 use clank_app::gpu::agent_pipeline::forward_pass_packed;
 use clank_app::gpu::bridge::{sync_gpu_to_rust, sync_rust_to_gpu};
-use clank_app::gpu::lbvh::LbvhTree;
 use clank_app::gpu::soil_pipeline::GpuSoilPipeline;
 use clank_app::gpu::spatial_index::compute_morton_32;
 use clank_app::gpu::types::{GpuAgentGenome, GpuAgentState, GpuSoilCell};
@@ -185,163 +180,8 @@ fn bench_morton_encoding_and_sorting(scales: &[usize]) {
     }
 }
 
-fn bench_lbvh_construction(scales: &[usize]) {
-    println!("\n### 3. Karras 2012 LBVH Hierarchy Construction (Two-Phase)");
-    println!("| Scale (Agents) | Total Build Time | Per-Node Latency | Build Rate | Tree Nodes |");
-    println!("| :--- | :--- | :--- | :--- | :--- |");
-
-    for &n in scales {
-        if n > 100_000 {
-            continue; // Skip ultra-high memory scales for full BVH building in single-threaded microbench
-        }
-        let (agents, _) = create_mock_agents(n);
-        let mut keys: Vec<[u32; 2]> = agents
-            .iter()
-            .enumerate()
-            .map(|(i, a)| [a.morton_code, i as u32])
-            .collect();
-        keys.sort_unstable_by(|a, b| a[0].cmp(&b[0]).then_with(|| a[1].cmp(&b[1])));
-
-        // Warmup
-        let _ = black_box(LbvhTree::build_from_keys(&keys, &agents));
-
-        let iters = if n >= 32_768 {
-            5
-        } else if n >= 10_000 {
-            15
-        } else {
-            40
-        };
-
-        let start = Instant::now();
-        for _ in 0..iters {
-            let tree = LbvhTree::build_from_keys(&keys, &agents);
-            black_box(&tree);
-        }
-        let elapsed = start.elapsed() / iters;
-        let total_nodes = (2 * n - 1) as f64;
-        let per_node_ns = elapsed.as_nanos() as f64 / total_nodes;
-        let build_rate_mops = (n as f64 / elapsed.as_secs_f64()) / 1_000_000.0;
-
-        let total_str = if elapsed.as_millis() > 0 {
-            format!("{:.2} ms", elapsed.as_secs_f64() * 1000.0)
-        } else {
-            format!("{:.1} µs", elapsed.as_nanos() as f64 / 1000.0)
-        };
-
-        println!(
-            "| {:>14} | {:>16} | {:>13.2} ns | {:>8.2} M/s | {:>10} |",
-            n,
-            total_str,
-            per_node_ns,
-            build_rate_mops,
-            2 * n - 1
-        );
-    }
-}
-
-fn bench_uncapped_picking(scales: &[usize]) {
-    println!("\n### 4. Uncapped Mouse Picking with Dynamic Radius Shrinking (<40ns Target)");
-    println!("| Scale (Agents) | Direct Body Hit (Priority 0) | Halo Hit (Priority 1) | Empty Miss Query |");
-    println!("| :--- | :--- | :--- | :--- |");
-
-    for &n in scales {
-        if n > 100_000 {
-            continue;
-        }
-        let (agents, _) = create_mock_agents(n);
-        let tree = LbvhTree::build(&agents);
-
-        let target_agent = &agents[n / 2];
-        let body_pos = [target_agent.pos_vel[0], target_agent.pos_vel[1]];
-        let halo_pos = [target_agent.pos_vel[0] + 5.0, target_agent.pos_vel[1] + 5.0];
-        let miss_pos = [899.9, 599.9]; // Out in empty corner
-
-        let iters = 10_000;
-
-        // Priority 0: Direct body hit
-        let start_body = Instant::now();
-        for _ in 0..iters {
-            let res = tree.pick_agent(body_pos, &agents, 16.0);
-            black_box(res);
-        }
-        let body_ns = start_body.elapsed().as_nanos() as f64 / iters as f64;
-
-        // Priority 1: Halo hit
-        let start_halo = Instant::now();
-        for _ in 0..iters {
-            let res = tree.pick_agent(halo_pos, &agents, 16.0);
-            black_box(res);
-        }
-        let halo_ns = start_halo.elapsed().as_nanos() as f64 / iters as f64;
-
-        // Miss query
-        let start_miss = Instant::now();
-        for _ in 0..iters {
-            let res = tree.pick_agent(miss_pos, &agents, 16.0);
-            black_box(res);
-        }
-        let miss_ns = start_miss.elapsed().as_nanos() as f64 / iters as f64;
-
-        println!(
-            "| {:>14} | {:>25.2} ns | {:>18.2} ns | {:>13.2} ns |",
-            n, body_ns, halo_ns, miss_ns
-        );
-    }
-}
-
-fn bench_frustum_culling_and_minimap(scales: &[usize]) {
-    println!("\n### 5. Camera Frustum Culling & Hierarchical Minimap LOD Clusters");
-    println!("| Scale (Agents) | Frustum Cull Viewport | Minimap LOD Clusters | Visible Agents |");
-    println!("| :--- | :--- | :--- | :--- |");
-
-    for &n in scales {
-        if n > 100_000 {
-            continue;
-        }
-        let (agents, _) = create_mock_agents(n);
-        let tree = LbvhTree::build(&agents);
-
-        let view_min = [300.0, 200.0];
-        let view_max = [600.0, 400.0];
-
-        let iters = 2_000;
-
-        let start_cull = Instant::now();
-        let mut visible_count = 0;
-        for _ in 0..iters {
-            let visible = tree.cull_frustum(view_min, view_max, &agents);
-            visible_count = visible.len();
-            black_box(visible);
-        }
-        let cull_time = start_cull.elapsed() / iters;
-        let cull_str = if cull_time.as_millis() > 0 {
-            format!("{:.2} ms", cull_time.as_secs_f64() * 1000.0)
-        } else {
-            format!("{:.2} µs", cull_time.as_nanos() as f64 / 1000.0)
-        };
-
-        let start_minimap = Instant::now();
-        for _ in 0..iters {
-            let clusters = tree.extract_minimap_clusters(4);
-            black_box(clusters);
-        }
-        let minimap_time = start_minimap.elapsed() / iters;
-        let minimap_str = if minimap_time.as_millis() > 0 {
-            format!("{:.2} ms", minimap_time.as_secs_f64() * 1000.0)
-        } else {
-            format!("{:.2} µs", minimap_time.as_nanos() as f64 / 1000.0)
-        };
-
-        println!(
-            "| {:>14} | {:>21} | {:>20} | {:>14} |",
-            n, cull_str, minimap_str, visible_count
-        );
-    }
-}
-
 fn bench_soil_diffusion_and_grazing() {
-    println!("\n### 6. Decoupled Soil Diffusion & Atomic Grazing (3,750 Cells)");
+    println!("\n### 3. Decoupled Soil Diffusion & Atomic Grazing (3,750 Cells)");
     println!("| Component | Total Time | Per-Cell Latency | Throughput |");
     println!("| :--- | :--- | :--- | :--- |");
 
@@ -375,7 +215,7 @@ fn bench_soil_diffusion_and_grazing() {
 }
 
 fn bench_state_hotswap_bridge(scales: &[usize]) {
-    println!("\n### 7. Dual-Engine Live Hot-Swap Bridge Latency");
+    println!("\n### 4. Dual-Engine Live Hot-Swap Bridge Latency");
     println!("| Scale (Agents) | Rust -> GPU Upload | GPU -> Rust Readback | Transfer Bandwidth |");
     println!("| :--- | :--- | :--- | :--- |");
 
@@ -447,9 +287,6 @@ fn main() {
 
     bench_rnn_forward_pass(&scales);
     bench_morton_encoding_and_sorting(&scales);
-    bench_lbvh_construction(&scales);
-    bench_uncapped_picking(&scales);
-    bench_frustum_culling_and_minimap(&scales);
     bench_soil_diffusion_and_grazing();
     bench_state_hotswap_bridge(&scales);
 
