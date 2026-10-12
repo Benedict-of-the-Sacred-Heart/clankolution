@@ -542,14 +542,22 @@ pub fn clank_ui_system(
     });
 }
 
-fn render_stat_box(ui: &mut egui::Ui, label: &str, value: &str, sub: &str, sub2: Option<&str>) {
+/// Draws one stat box and returns the space it took.
+pub fn render_stat_box(
+    ui: &mut egui::Ui,
+    label: &str,
+    value: &str,
+    sub: &str,
+    sub2: Option<&str>,
+) -> egui::Rect {
     egui::Frame::NONE
         .fill(COLOR_STAT_BG)
         .stroke(Stroke::new(1.0, COLOR_STAT_BORDER))
         .corner_radius(CornerRadius::same(2))
         .inner_margin(egui::Margin::symmetric(10, 8))
         .show(ui, |ui| {
-            ui.set_width(142.0);
+            // Half the 290 px column less the grid's 8 px gap, minus margins and border.
+            ui.set_width(119.0);
             ui.set_min_height(60.0);
             ui.vertical(|ui| {
                 ui.label(
@@ -559,7 +567,7 @@ fn render_stat_box(ui: &mut egui::Ui, label: &str, value: &str, sub: &str, sub2:
                         .color(COLOR_MUTED),
                 );
                 ui.add_space(2.0);
-                ui.horizontal(|ui| {
+                ui.horizontal_wrapped(|ui| {
                     ui.label(
                         RichText::new(value)
                             .size(22.0)
@@ -573,7 +581,9 @@ fn render_stat_box(ui: &mut egui::Ui, label: &str, value: &str, sub: &str, sub2:
                     ui.label(RichText::new(s2).size(9.5).monospace().color(COLOR_MUTED));
                 }
             });
-        });
+        })
+        .response
+        .rect
 }
 
 fn render_tool_matrix(ui: &mut egui::Ui, state: &mut UiState, sim: &mut SimWorld) {
@@ -906,16 +916,18 @@ fn render_chart_legend(ui: &mut egui::Ui) {
     });
 }
 
-fn render_specimen_box(ui: &mut egui::Ui, sim: &SimWorld) {
+/// Draws the selected creature's card and returns the space it took.
+pub fn render_specimen_box(ui: &mut egui::Ui, sim: &SimWorld) -> egui::Rect {
     egui::Frame::NONE
         .fill(Color32::from_rgb(16, 30, 31))
         .stroke(Stroke::new(1.0, Color32::from_rgb(45, 65, 64)))
         .corner_radius(CornerRadius::same(2))
         .inner_margin(egui::Margin::same(10))
         .show(ui, |ui| {
-            ui.set_width(290.0);
+            // The 290 px column, minus margins and border.
+            ui.set_width(268.0);
             if let Some(agent) = sim.get_selected_agent() {
-                ui.horizontal(|ui| {
+                ui.horizontal_wrapped(|ui| {
                     ui.label(RichText::new(format!("SPECIMEN {}", agent.id)).size(13.5).strong().monospace().color(Color32::from_rgb(240, 230, 217)));
                     ui.label(RichText::new(format!("  ·  lineage {}  ·  generation {}", agent.root, agent.gen)).size(11.0).monospace().color(Color32::from_rgb(173, 191, 186)));
                 });
@@ -952,7 +964,9 @@ fn render_specimen_box(ui: &mut egui::Ui, sim: &SimWorld) {
             } else {
                 ui.label(RichText::new("Select a creature in the arena.\nIts recurrent state, ancestry, and traits will appear here.").size(11.0).color(Color32::from_rgb(173, 191, 186)));
             }
-        });
+        })
+        .response
+        .rect
 }
 
 fn render_chronicle_log(ui: &mut egui::Ui, state: &UiState) {

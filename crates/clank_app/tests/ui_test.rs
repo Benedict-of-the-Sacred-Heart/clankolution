@@ -199,3 +199,49 @@ fn test_compute_tool_hint() {
         "Click a creature to inspect its lineage. Choose a tool, then paint on the world."
     );
 }
+
+#[test]
+fn test_specimen_card_stays_inside_its_width_for_long_ids() {
+    use bevy_egui::egui;
+    use clank_app::ui::render_specimen_box;
+
+    let mut sim = SimWorld::new(42);
+    let agent = &mut sim.world.agents[0];
+    agent.id = 454_337;
+    agent.root = 123_456;
+    agent.gen = 98_765;
+    sim.selected_agent_id = Some(454_337);
+
+    let ctx = egui::Context::default();
+    clank_app::theme::setup_clank_theme(&ctx);
+    let mut card_width = 0.0;
+    for _ in 0..2 {
+        let _ = ctx.run_ui(egui::RawInput::default(), |ui| {
+            card_width = render_specimen_box(ui, &sim).width();
+        });
+    }
+    // The card spans the 290 px sidebar column, as the stat grid above it does.
+    assert!(card_width <= 290.0, "specimen card is {card_width} px wide");
+}
+
+#[test]
+fn test_two_stat_boxes_fit_the_sidebar_column() {
+    use bevy_egui::egui;
+    use clank_app::ui::render_stat_box;
+
+    let ctx = egui::Context::default();
+    clank_app::theme::setup_clank_theme(&ctx);
+    let mut box_width = 0.0;
+    for _ in 0..2 {
+        let _ = ctx.run_ui(egui::RawInput::default(), |ui| {
+            box_width =
+                render_stat_box(ui, "POPULATION", "65536", " / 65536", Some("capacity")).width();
+        });
+    }
+    // The sidebar column is 290 px; two boxes share it with the grid's 8 px gap between them
+    // (as the reference's two-column stat grid shares its column).
+    assert!(
+        2.0 * box_width + 8.0 <= 290.0,
+        "a stat box is {box_width} px wide"
+    );
+}
