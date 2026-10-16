@@ -1,12 +1,39 @@
 use bevy::prelude::*;
 use clank_app::gpu::bridge::sync_rust_to_gpu;
 use clank_app::gpu::compute_driver::GpuComputeDriver;
+use clank_app::gpu::creature_render::{CreatureRenderParams, CreatureRenderer};
+use clank_app::gpu::types::{GpuAgentTrail, GpuDartInstance, GpuSimParams};
 use clank_app::sim::{ActiveEngine, ClankSimPlugin, GpuDriverResource, SimWorld};
 
 fn toroidal_step(a: [f32; 2], b: [f32; 2], w: f32, h: f32) -> f32 {
     let dx = (a[0] - b[0]).abs();
     let dy = (a[1] - b[1]).abs();
     dx.min(w - dx).hypot(dy.min(h - dy))
+}
+
+fn cull_visible(
+    driver: &GpuComputeDriver,
+    renderer: &mut CreatureRenderer,
+    params: &GpuSimParams,
+) -> (Vec<GpuDartInstance>, Vec<GpuAgentTrail>) {
+    let rp = CreatureRenderParams {
+        clip_from_world: [[0.0; 4]; 4],
+        camera_pos: params.camera_pos,
+        camera_size: params.camera_size,
+        world_size: params.world_size,
+        slot_count: params.max_agents.max(params.agent_count),
+        _pad: 0,
+    };
+    let mut enc = driver.device.create_command_encoder(&Default::default());
+    renderer.encode_cull(
+        &driver.device,
+        &driver.queue,
+        &mut enc,
+        &driver.creature_source(),
+        &rp,
+    );
+    driver.queue.submit([enc.finish()]);
+    renderer.readback_visible(&driver.device, &driver.queue)
 }
 
 /// Trails are the last nine per-tick positions (clankolution.html `a.trail.push([a.x,a.y])`
@@ -21,14 +48,14 @@ fn test_gpu_trails_hold_per_tick_positions_at_any_speed() {
         eprintln!("Skipping test: No GPU adapter available");
         return;
     };
+    let mut renderer = CreatureRenderer::new(&driver.device, driver.max_agents);
     let (states, genomes, atomics, soil, mut params) = sync_rust_to_gpu(&sim);
     params.max_agents = driver.max_agents;
     driver.upload_state(&states, &genomes, &atomics, &soil, &params);
 
     // A fresh upload carries no motion history.
-    let visible = driver.dispatch_culling(&params) as usize;
-    assert_eq!(visible, 72);
-    let trails = driver.readback_dart_trails(visible);
+    let (instances, trails) = cull_visible(&driver, &mut renderer, &params);
+    assert_eq!(instances.len(), 72);
     assert!(
         trails.iter().all(|t| t.count == 0),
         "uploaded agents start with empty trails"
@@ -39,10 +66,9 @@ fn test_gpu_trails_hold_per_tick_positions_at_any_speed() {
     driver.dispatch_sub_ticks(12, &params);
     params.agent_count = driver.readback_telemetry().population;
 
-    let visible = driver.dispatch_culling(&params) as usize;
+    let (instances, trails) = cull_visible(&driver, &mut renderer, &params);
+    let visible = instances.len();
     assert!(visible > 0);
-    let instances = driver.readback_dart_instances(visible);
-    let trails = driver.readback_dart_trails(visible);
     assert_eq!(trails.len(), instances.len());
 
     let (w, h) = (sim.world_width as f32, sim.world_height as f32);

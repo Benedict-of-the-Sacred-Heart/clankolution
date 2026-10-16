@@ -305,7 +305,9 @@ fn test_api_gpu_nourish_does_not_overwrite_gpu_soil_with_stale_cpu_soil() {
 
 #[test]
 fn test_frustum_cull_excludes_creatures_killed_this_tick() {
+    use clank_app::gpu::creature_render::{CreatureRenderParams, CreatureRenderer};
     let Some(driver) = driver() else { return };
+    let mut renderer = CreatureRenderer::new(&driver.device, driver.max_agents);
     let sim = quiet_world(
         vec![
             quiet_agent(1, 450.0, 300.0, 20.0),
@@ -325,13 +327,34 @@ fn test_frustum_cull_excludes_creatures_killed_this_tick() {
         .queue
         .write_buffer(&driver.agent_atomics_buf, 16, bytemuck::bytes_of(&killed));
     params.agent_count = 2;
-    let visible = driver.dispatch_culling(&params);
+    let rp = CreatureRenderParams {
+        clip_from_world: [[0.0; 4]; 4],
+        camera_pos: params.camera_pos,
+        camera_size: params.camera_size,
+        world_size: params.world_size,
+        slot_count: params.max_agents.max(params.agent_count),
+        _pad: 0,
+    };
+    let mut enc = driver.device.create_command_encoder(&Default::default());
+    renderer.encode_cull(
+        &driver.device,
+        &driver.queue,
+        &mut enc,
+        &driver.creature_source(),
+        &rp,
+    );
+    driver.queue.submit([enc.finish()]);
+    let visible = renderer.readback_draw_args(&driver.device, &driver.queue)[0][1];
     assert_eq!(visible, 1, "a claimed corpse must not be drawn");
 }
 
 #[test]
 fn test_cull_output_is_valid_draw_indirect_args() {
+    use clank_app::gpu::creature_render::{
+        CreatureLayerKind, CreatureRenderParams, CreatureRenderer,
+    };
     let Some(driver) = driver() else { return };
+    let mut renderer = CreatureRenderer::new(&driver.device, driver.max_agents);
     let sim = quiet_world(
         vec![
             quiet_agent(1, 450.0, 300.0, 20.0),
@@ -343,25 +366,64 @@ fn test_cull_output_is_valid_draw_indirect_args() {
     let mut params = upload(&driver, &sim);
     params.camera_pos = [450.0, 300.0];
     params.camera_size = [200.0, 200.0];
-    let visible = driver.dispatch_culling(&params);
-    let args = driver.readback_cull_args();
-    assert_eq!(
-        args,
-        [driver.dart_template_vertex_count(), visible, 0, 0],
-        "cull output must be DrawIndirectArgs {{vertex_count, instance_count, first_vertex, first_instance}}"
+    let rp = CreatureRenderParams {
+        clip_from_world: [[0.0; 4]; 4],
+        camera_pos: params.camera_pos,
+        camera_size: params.camera_size,
+        world_size: params.world_size,
+        slot_count: params.max_agents.max(params.agent_count),
+        _pad: 0,
+    };
+    let mut enc = driver.device.create_command_encoder(&Default::default());
+    renderer.encode_cull(
+        &driver.device,
+        &driver.queue,
+        &mut enc,
+        &driver.creature_source(),
+        &rp,
     );
+    driver.queue.submit([enc.finish()]);
+    let args = renderer.readback_draw_args(&driver.device, &driver.queue);
+    let visible = args[0][1];
+    assert_eq!(visible, 2);
+    for (i, layer) in CreatureLayerKind::ALL.iter().enumerate() {
+        assert_eq!(
+            args[i],
+            [layer.vertices_per_instance(), visible, 0, 0],
+            "cull output must be DrawIndirectArgs {{vertex_count, instance_count, first_vertex, first_instance}}"
+        );
+    }
 }
 
 #[test]
 fn test_instanced_darts_drawn_at_camera_relative_position() {
+    use clank_app::gpu::creature_render::{
+        CreatureDrawKey, CreatureLayerKind, CreatureRenderParams, CreatureRenderer,
+    };
     let Some(driver) = driver() else { return };
+    let mut renderer = CreatureRenderer::new(&driver.device, driver.max_agents);
     // Camera looks at the top half of the arena, centred on a creature at sim (450, 150).
     let sim = quiet_world(vec![quiet_agent(1, 450.0, 150.0, 20.0)], 0.0);
     let mut params = upload(&driver, &sim);
     params.camera_pos = [450.0, 150.0];
     params.camera_size = [300.0, 300.0];
-    let visible = driver.dispatch_culling(&params);
-    assert_eq!(visible, 1);
+
+    let cam_y = params.world_size[1] - params.camera_pos[1];
+    let left = params.camera_pos[0] - params.camera_size[0] * 0.5;
+    let right = params.camera_pos[0] + params.camera_size[0] * 0.5;
+    let bottom = cam_y - params.camera_size[1] * 0.5;
+    let top = cam_y + params.camera_size[1] * 0.5;
+    let clip_from_world =
+        bevy::math::Mat4::orthographic_rh(left, right, bottom, top, -1000.0, 1000.0)
+            .to_cols_array_2d();
+    let rp = CreatureRenderParams {
+        clip_from_world,
+        camera_pos: params.camera_pos,
+        camera_size: params.camera_size,
+        world_size: params.world_size,
+        slot_count: params.max_agents.max(params.agent_count),
+        _pad: 0,
+    };
 
     let size = 256u32;
     let tex = driver.device.create_texture(&wgpu::TextureDescriptor {
@@ -379,7 +441,45 @@ fn test_instanced_darts_drawn_at_camera_relative_position() {
         view_formats: &[],
     });
     let view = tex.create_view(&Default::default());
-    driver.render_darts_instanced(&view, &params);
+    let draw_key = CreatureDrawKey {
+        color_format: wgpu::TextureFormat::Rgba8Unorm,
+        samples: 1,
+        depth: None,
+    };
+    renderer.ensure_draw_pipelines(&driver.device, draw_key);
+
+    let mut enc = driver.device.create_command_encoder(&Default::default());
+    renderer.encode_cull(
+        &driver.device,
+        &driver.queue,
+        &mut enc,
+        &driver.creature_source(),
+        &rp,
+    );
+    {
+        let mut rpass = enc.begin_render_pass(&wgpu::RenderPassDescriptor {
+            label: Some("dart_render_pass"),
+            color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                view: &view,
+                resolve_target: None,
+                depth_slice: None,
+                ops: wgpu::Operations {
+                    load: wgpu::LoadOp::Clear(wgpu::Color::TRANSPARENT),
+                    store: wgpu::StoreOp::Store,
+                },
+            })],
+            depth_stencil_attachment: None,
+            timestamp_writes: None,
+            occlusion_query_set: None,
+            multiview_mask: None,
+        });
+        renderer.draw_layer(&mut rpass, draw_key, CreatureLayerKind::Body);
+        renderer.draw_layer(&mut rpass, draw_key, CreatureLayerKind::Outline);
+    }
+    driver.queue.submit([enc.finish()]);
+
+    let visible = renderer.readback_draw_args(&driver.device, &driver.queue)[0][1];
+    assert_eq!(visible, 1);
 
     let pixels = read_texture(&driver, &tex, size);
     let lit: Vec<(u32, u32)> = (0..size * size)

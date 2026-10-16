@@ -1,6 +1,5 @@
 // crates/clank_app/assets/shaders/trail_step.wgsl
-// Per-tick motion trails (clankolution.html: `a.trail.push([a.x,a.y]); if(a.trail.length>9)a.trail.shift()`)
-// and the gather of visible trails for rendering.
+// Per-tick motion trails (clankolution.html: `a.trail.push([a.x,a.y]); if(a.trail.length>9)a.trail.shift()`).
 
 struct GpuSimParams {
     tick: u32,
@@ -52,19 +51,9 @@ struct GpuAgentTrail {
     pad: vec4u,
 }
 
-struct CullOutput {
-    vertex_count: u32,
-    instance_count: u32,
-    first_vertex: u32,
-    first_instance: u32,
-}
-
 @group(0) @binding(0) var<storage, read> agent_states: array<GpuAgentState>;
 @group(0) @binding(1) var<storage, read_write> agent_trails: array<GpuAgentTrail>;
 @group(0) @binding(2) var<uniform> params: GpuSimParams;
-@group(0) @binding(3) var<storage, read> visible_instances: array<u32>;
-@group(0) @binding(4) var<storage, read> cull_output: CullOutput;
-@group(0) @binding(5) var<storage, read_write> dart_trails: array<GpuAgentTrail>;
 
 // Runs once per sub-tick after the agent step: append each living creature's new position.
 @compute @workgroup_size(64)
@@ -95,14 +84,4 @@ fn trail_record_main(@builtin(global_invocation_id) id: vec3u) {
         trail.pts[TRAIL_LEN - 1u] = p;
     }
     agent_trails[idx] = trail;
-}
-
-// Runs after frustum culling: dart_trails[i] is the trail of dart_instances[i].
-@compute @workgroup_size(64)
-fn trail_gather_main(@builtin(global_invocation_id) id: vec3u) {
-    let i = id.x;
-    if (i >= min(cull_output.instance_count, params.max_agents)) {
-        return;
-    }
-    dart_trails[i] = agent_trails[visible_instances[i]];
 }

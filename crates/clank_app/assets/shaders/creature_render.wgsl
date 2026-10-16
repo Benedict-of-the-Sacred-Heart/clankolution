@@ -84,7 +84,7 @@ fn cull_main(@builtin(global_invocation_id) id: vec3u) {
     if ((s.meta_flags & (1u << 13u)) != 0u || s.visual_cache == 0u || agent_atomics[idx].dead_claimed != 0u) {
         return;
     }
-    // Toroidal frustum test with a 24px margin (as spatial_query.wgsl frustum_cull_main).
+    // Toroidal frustum test with a 24px margin.
     let dx = abs(s.pos_vel.x - params.camera_pos.x);
     let dy = abs(s.pos_vel.y - params.camera_pos.y);
     let half = params.camera_size * 0.5 + vec2f(24.0);

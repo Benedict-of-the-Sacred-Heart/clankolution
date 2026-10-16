@@ -94,20 +94,6 @@ struct ConsolidatedQueue {
     chronicle: array<ChronicleEvent, 64>,
 }
 
-struct CullOutput {
-    vertex_count: u32,
-    instance_count: atomic<u32>,
-    first_vertex: u32,
-    first_instance: u32,
-}
-
-struct DartInstance {
-    pos_angle: vec3f,
-    pad0: f32,
-    vis_data: vec2u,
-    pad1: vec2u,
-}
-
 struct GpuAgentAtomic {
     energy_milli: atomic<i32>,
     mate_claim: atomic<u32>,
@@ -120,9 +106,6 @@ struct GpuAgentAtomic {
 @group(0) @binding(1) var<storage, read> spatial_keys: array<vec2u>;
 @group(0) @binding(2) var<storage, read_write> queue_buffer: ConsolidatedQueue;
 @group(0) @binding(3) var<uniform> params: GpuSimParams;
-@group(0) @binding(4) var<storage, read_write> visible_instances: array<u32>;
-@group(0) @binding(5) var<storage, read_write> cull_output: CullOutput;
-@group(0) @binding(6) var<storage, read_write> dart_instances: array<DartInstance>;
 @group(0) @binding(7) var<storage, read_write> agent_atomics: array<GpuAgentAtomic>;
 
 @compute @workgroup_size(64)
@@ -190,55 +173,3 @@ fn spatial_query_main(@builtin(global_invocation_id) id: vec3u) {
         }
     }
 }
-
-@compute @workgroup_size(64)
-fn frustum_cull_clear(@builtin(global_invocation_id) id: vec3u) {
-    if (id.x == 0u) {
-        cull_output.vertex_count = 12u;
-        atomicStore(&cull_output.instance_count, 0u);
-        cull_output.first_vertex = 0u;
-        cull_output.first_instance = 0u;
-    }
-}
-
-@compute @workgroup_size(64)
-fn frustum_cull_main(@builtin(global_invocation_id) id: vec3u) {
-    let agent_idx = id.x;
-    if (agent_idx >= params.max_agents) {
-        return;
-    }
-
-    let state = agent_states[agent_idx];
-
-    // Culling invariant: dead agents (dead flag in meta_flags, visual_cache == 0, or dead_claimed) are culled
-    if ((state.meta_flags & (1u << 13u)) != 0u || state.visual_cache == 0u || atomicLoad(&agent_atomics[agent_idx].dead_claimed) != 0u) {
-        return;
-    }
-
-    // Toroidal frustum test
-    let pos = state.pos_vel.xy;
-    let cam_pos = params.camera_pos;
-    let cam_size = params.camera_size;
-    let half_w = cam_size.x * 0.5 + 24.0;
-    let half_h = cam_size.y * 0.5 + 24.0;
-
-    let dx = abs(pos.x - cam_pos.x);
-    let dist_x = min(dx, params.world_size.x - dx);
-    let dy = abs(pos.y - cam_pos.y);
-    let dist_y = min(dy, params.world_size.y - dy);
-
-    if (dist_x <= half_w && dist_y <= half_h) {
-        let slot = atomicAdd(&cull_output.instance_count, 1u);
-        if (slot < params.max_agents) {
-            visible_instances[slot] = agent_idx;
-            let angle = state.angle_energy[0];
-            dart_instances[slot].pos_angle = vec3f(pos.x, pos.y, angle);
-            dart_instances[slot].pad0 = state.traits[0].w;
-            dart_instances[slot].vis_data = vec2u(state.root, state.visual_cache);
-            let carn_u8 = u32(clamp(state.traits[1].y, 0.0, 1.0) * 255.0);
-            let packed_carn_id = (carn_u8 << 24u) | (state.id & 0x00FFFFFFu);
-            dart_instances[slot].pad1 = vec2u(packed_carn_id, bitcast<u32>(state.traits[0].z));
-        }
-    }
-}
-

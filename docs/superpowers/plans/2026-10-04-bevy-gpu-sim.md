@@ -432,11 +432,11 @@ Ticks verified on 2026-10-11 at `f681c8d`: each ticked task's items were checked
   - Run the agent pass's threads in Morton order (thread `i` takes slot `spatial_keys[i].y`; see Cross-Cutting Morton Code Optimizations).
 
 - [ ] **Task 6: Frustum Culling, Minimap LOD, Dual-Engine UI, Audio & Verification**
-  - *Verified 2026-10-11: not done.* Open: the Morton-ordered draw (Step 3) and the on-screen check with the user (Step 5).
+  - *Verified 2026-10-15: Steps 1–3 done.* Open: the on-screen check with the user (Step 5).
   - Implement **GPU Camera Viewport Frustum Culling** streaming 128-byte `GpuAgentState` ($4.0\times$ less bandwidth than 512B structs) into an Indirect Draw Buffer. One thread per slot, not via the LBVH (Subsystem 2 explains why).
   - Implement **instanced dart rendering loading contiguous `vec2u(root, visual_cache)`** directly from Cache Line 1, completely bypassing Cache Line 0 traits and saving ~72 MB of vertex fetch bandwidth per frame.
   - ~~Implement **Minimap LOD Cluster Rendering** sampling intermediate LBVH depth nodes for density circles.~~ Deferred: the minimap was removed from the UI on 2026-10-06.
-  - Implement **spatially coherent instanced dart rasterization** using Morton-ordered agent index streams for tile-cache efficiency.
+  - ~~Implement **spatially coherent instanced dart rasterization** using Morton-ordered agent index streams for tile-cache efficiency.~~ Dropped (see Task 6 Files: per-slot cull so newborns from the final sub-tick and Rust-mode snapshots share the same `CreatureRenderer` path).
   - Implement **Granular Bevy Audio playback** reading 256-voice audio queue with zoom loudness modulation.
   - Implement **Non-Blocking Pipelined Staging Ring** for 128-byte `GpuTelemetry` and audio queue readback (0 CPU wait cycles); built by Task 8 Step 2 as a 3-deep ring.
   - Implement **32x Speed Visual Consistency Picking** locking selection on Sub-Tick 1 across 32-tick batches with **Specimen Picking Identity Guard** `(slot_idx, agent_id)`.
@@ -450,9 +450,9 @@ Ticks verified on 2026-10-11 at `f681c8d`: each ticked task's items were checked
 
   - Run the desktop app in GPU mode and confirm with the user on screen before committing.
 
-- [ ] **Task 8: Zero-Copy Presentation (one device, GPU-resident rendering, no per-frame blocking readbacks)**
-  - *Verified 2026-10-11: Steps 1–4 done.* Open: the on-screen check with the user (Step 5) and deleting the old copy path (Step 6: nothing deleted yet).
-  - Build the compute driver on Bevy's `RenderDevice`; cull, gather and draw creatures from the simulation buffers with `draw_indirect` in the `Transparent2d` phase; render both engines through the same GPU renderer; copy the soil colormap GPU→GPU; replace per-frame blocking readbacks with an async ring.
+- [ ] **Task 8: Shared-Device GPU Presentation (one shared `RenderDevice`, GPU-resident rendering, 0 blocking readback bytes per frame in steady state)**
+  - *Verified 2026-10-15: Steps 1–4 and Step 6 done.* Open: the on-screen check with the user (Step 5).
+  - Build the compute driver on Bevy's `RenderDevice`; cull, gather and draw creatures from the simulation buffers with `draw_indirect` in the `Transparent2d` phase; render both engines through the same GPU renderer; copy the soil colormap GPU→GPU; replace per-frame blocking readbacks with an async 3-deep ring (blocking bytes per frame = 0 in steady state).
 
 ---
 
@@ -1638,8 +1638,8 @@ fn test_reference_mating() {
 }
 ```
 - [x] **Step 2: Run test to verify it fails**
-- [ ] **Step 3: Implement engine switch in Bevy UI, bi-directional state bridge (`sync_rust_to_gpu` synthesizing `visual_cache` / `sync_gpu_to_rust`), the non-blocking staging ring (Task 8 Step 2) for 128B telemetry and 4 KB audio readbacks without CPU stalls, GPU-mode GENERATION / LINEAGES from `max_generation` / `living_lineages`, direct 128-byte `GpuAgentState` streaming for per-slot frustum culling and instanced dart rendering loading contiguous `vec2u(root, visual_cache)` ($4.0\times$ bandwidth boost over reading full 480B agents, bypassing Cache Line 0 traits and saving ~72 MB/frame vertex fetch bandwidth), 32x speed picking locking on Sub-Tick 1 with `(slot_idx, agent_id)` identity guard, Two-Tier uncapped LBVH distance disambiguation, Bevy audio playback reading 256-voice queue, connect frustum culling**
-  - *Open (verified 2026-10-11):* built except the Morton-ordered draw: `creature_render.wgsl` culls and draws in slot order. The "Two-Tier uncapped LBVH distance disambiguation" went with the LBVH; picking reads the grid (Task 4).
+- [x] **Step 3: Implement engine switch in Bevy UI, bi-directional state bridge (`sync_rust_to_gpu` synthesizing `visual_cache` / `sync_gpu_to_rust`), the non-blocking staging ring (Task 8 Step 2) for 128B telemetry and 4 KB audio readbacks without CPU stalls, GPU-mode GENERATION / LINEAGES from `max_generation` / `living_lineages`, direct 128-byte `GpuAgentState` streaming for per-slot frustum culling and instanced dart rendering loading contiguous `vec2u(root, visual_cache)` ($4.0\times$ bandwidth boost over reading full 480B agents, bypassing Cache Line 0 traits and saving ~72 MB/frame vertex fetch bandwidth), 32x speed picking locking on Sub-Tick 1 with `(slot_idx, agent_id)` identity guard, ~~Two-Tier uncapped LBVH distance disambiguation~~ (grid pick, Task 4), Bevy audio playback reading 256-voice queue, connect frustum culling**
+  - *Done (2026-10-15):* `creature_render.wgsl` culls and draws per slot (Morton-ordered draw dropped so final-sub-tick newborns and Rust-mode snapshots share the same `CreatureRenderer` path; see Task 6 Files).
 - [ ] **Step 4: Run all workspace tests (`cargo test --workspace`) ensuring 100% pass** *(withdrawn: forbidden by `AGENTS.md` §10; these tests did not exercise the shaders)*
 - [ ] **Step 5: Run the debug build (`cargo run -p clank_app`; never `--release` to mask a debug failure) in GPU mode and confirm with the user on screen (Visual & Manual Confirmation checklist); a `POST /screenshot` capture may supplement but does not replace the live check**
   - *Open:* screenshots through the API covered Rust/GPU parity, speeds 1 and 32, picking and NEW WORLD (2026-10-10). Still to confirm with the user on screen: zoom/pan pop-in, dragging the AoE tools, zoom-modulated and seam-panned audio, the cap change, dense-swarm picking at 32x, trail length at 1x vs 32x.
@@ -1647,9 +1647,9 @@ fn test_reference_mating() {
 
 ---
 
-### Task 8: Zero-Copy Presentation (one device, GPU-resident rendering, no per-frame blocking readbacks)
+### Task 8: Shared-Device GPU Presentation (one shared `RenderDevice`, GPU-resident rendering, 0 blocking readback bytes per frame in steady state)
 
-**Why:** The plan promised zero-copy rendering, but the app never had it. `GpuComputeDriver::create_for_world` requests its **own** `wgpu::Device`, so Bevy's renderer cannot bind the simulation buffers. Every GPU-mode frame therefore makes these blocking `poll(wait_indefinitely)` round trips:
+**Why:** Earlier versions of this plan claimed "zero-copy rendering," when in fact `GpuComputeDriver::create_for_world` requested its **own** `wgpu::Device` so Bevy's renderer could not bind the simulation buffers, forcing blocking `poll(wait_indefinitely)` readbacks every frame:
 - the cull count, the visible darts and their trails (`update_agent_mesh_system`);
 - the soil colormap every second tick (`copy_soil_display_rgba`);
 - telemetry, audio voices and the selected creature (`sim_step_system`).
@@ -2194,7 +2194,7 @@ impl CreatureLayerKind { pub const ALL: [Self; 4]; pub fn vertices_per_instance(
 
     Commit only after the user confirms: `feat(render): draw creatures and soil straight from GPU buffers in both engines`.
 
-- [ ] **Step 6: Delete the superseded copy paths and correct the record**
+- [x] **Step 6: Delete the superseded copy paths and correct the record**
   - **Delete:**
     - `dart_instanced.wgsl`, `dart_render_pipeline`, `render_darts_instanced`, `dart_render_bind_group`, `view_uniform_buf`, `dart_template_buf`, `DartVertex`;
     - the driver's `visible_instances_buf`, `cull_output_buf`, `dart_instances_buf`, `dart_trails_buf` and their staging buffers, plus `dispatch_culling`, `readback_dart_instances`, `readback_dart_trails`, `readback_visible_instances`, `readback_cull_args`;
@@ -2204,7 +2204,7 @@ impl CreatureLayerKind { pub const ALL: [Self; 4]; pub fn vertices_per_instance(
   - **Update this plan:**
     - record in the Verification Plan that readbacks are no longer blocking per frame;
     - replace "zero-copy" claims with the measured facts (blocking bytes per frame = 0 in steady state; one shared device);
-    - mark Task 8 done.
+    - mark Task 8 Step 6 done (Step 5 awaits the live on-screen confirmation with the user).
   - Run every `clank_app` test file individually, `cargo fmt --all`, `git diff --check`. Commit `refactor(gpu): remove the CPU-readback rendering path`.
 
 **Out of scope (recorded, not hidden):**
@@ -2222,6 +2222,7 @@ impl CreatureLayerKind { pub const ALL: [Self; 4]; pub fn vertices_per_instance(
 - **Soil**: one tick cell by cell within 2e-6 (spawn cells excluded); 600 empty ticks with total food within 3% of the reference at ticks 100..600.
 - **Long run** (`plan_t6_integration_test`, `long_run_behavior_test`): population, cumulative births, kills and total soil food within ±20% of the reference at ticks 200..1000 (or 3√n for small counts).
 - **Exact invariants**: struct layouts, slot accounting, single death counting, tombstones, tool effects.
+- **Presentation & readbacks**: one shared `RenderDevice` (`driver.on_render_device == true` in the app); creatures and soil are drawn directly from GPU buffers in both engines (`CreatureRenderer`, GPU→GPU soil copy); per-frame telemetry, audio voices, chronicle events, and selected specimen are read back asynchronously via the 3-deep `ReadbackRing` with **0 blocking bytes per frame in steady state** (`gpu_frame_readback_test`).
 
 ### Rules for every step
 Follow `superpowers:systematic-debugging` and `superpowers:test-driven-development`: the new test must fail on the current shader for the intended reason before production code changes. One step per commit. Run `cargo fmt --all -- --check` and `git diff --check`. Run only the targeted tests named in the step plus the existing GPU behavior tests (`long_run_behavior_test`, `multi_tick_parity_test`). Never dispatch anything that can loop without bound on bad data: prove such defects from CPU readbacks (the harness refuses picks until 100 consecutive trees read back valid).

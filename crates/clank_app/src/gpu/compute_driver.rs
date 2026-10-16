@@ -10,22 +10,6 @@ use crate::gpu::types::{
 };
 use std::sync::Arc;
 
-#[repr(C, align(16))]
-#[derive(Clone, Copy, bytemuck::Pod, bytemuck::Zeroable)]
-pub struct DartVertex {
-    pub position: [f32; 2],
-    pub edge_flag: f32,
-    pub _pad: f32,
-}
-
-#[repr(C, align(16))]
-#[derive(Clone, Copy, bytemuck::Pod, bytemuck::Zeroable)]
-pub struct ViewUniform {
-    pub view_proj: [f32; 16],
-    pub world_size: [f32; 2],
-    pub _pad: [f32; 2],
-}
-
 pub struct GpuComputeDriver {
     pub device: Arc<wgpu::Device>,
     pub queue: Arc<wgpu::Queue>,
@@ -39,18 +23,12 @@ pub struct GpuComputeDriver {
     pub spatial_keys_buf: wgpu::Buffer,
     pub freelist_buf: wgpu::Buffer,
     pub queue_buffer: wgpu::Buffer,
-    pub visible_instances_buf: wgpu::Buffer,
-    pub cull_output_buf: wgpu::Buffer,
-    pub dart_instances_buf: wgpu::Buffer,
     pub agent_trails_buf: wgpu::Buffer,
-    pub dart_trails_buf: wgpu::Buffer,
-    pub dart_template_buf: wgpu::Buffer,
     pub soil_display_tex: wgpu::Texture,
 
     // Uniform Buffers
     pub sim_params_buf: wgpu::Buffer,
     pub soil_params_buf: wgpu::Buffer,
-    pub view_uniform_buf: wgpu::Buffer,
 
     // Staging Buffers for readbacks
     pub staging_telemetry: wgpu::Buffer,
@@ -59,10 +37,6 @@ pub struct GpuComputeDriver {
     pub staging_soil: wgpu::Buffer,
     pub staging_soil_display: wgpu::Buffer,
     pub staging_atomics: wgpu::Buffer,
-    pub staging_cull_buf: wgpu::Buffer,
-    pub staging_visible_instances: wgpu::Buffer,
-    pub staging_dart_instances: wgpu::Buffer,
-    pub staging_dart_trails: wgpu::Buffer,
     pub staging_freelist: wgpu::Buffer,
     pub staging_audio: wgpu::Buffer,
 
@@ -78,12 +52,8 @@ pub struct GpuComputeDriver {
     census: crate::gpu::census_pipeline::CensusPass,
     pub merge_pending_free_pipeline: wgpu::ComputePipeline,
     pub spatial_query_pipeline: wgpu::ComputePipeline,
-    pub cull_clear_pipeline: wgpu::ComputePipeline,
-    pub cull_pipeline: wgpu::ComputePipeline,
     pub trail_record_pipeline: wgpu::ComputePipeline,
-    pub trail_gather_pipeline: wgpu::ComputePipeline,
     pub capacity_pipeline: wgpu::ComputePipeline,
-    pub dart_render_pipeline: wgpu::RenderPipeline,
 
     // Bind Groups
     pub soil_bind_group: wgpu::BindGroup,
@@ -97,7 +67,6 @@ pub struct GpuComputeDriver {
     pub spatial_query_bind_group: wgpu::BindGroup,
     pub trail_bind_group: wgpu::BindGroup,
     pub capacity_bind_group: wgpu::BindGroup,
-    pub dart_render_bind_group: wgpu::BindGroup,
 
     pub max_agents: u32,
     pub soil_cols: u32,
@@ -373,158 +342,11 @@ impl GpuComputeDriver {
             mapped_at_creation: false,
         });
 
-        let visible_instances_size = (max_agents as u64) * 4;
-        let visible_instances_buf = device.create_buffer(&wgpu::BufferDescriptor {
-            label: Some("visible_instances_buf"),
-            size: visible_instances_size,
-            usage: BufferUsages::STORAGE
-                | BufferUsages::COPY_SRC
-                | BufferUsages::COPY_DST
-                | BufferUsages::VERTEX,
-            mapped_at_creation: false,
-        });
-
-        let cull_output_buf = device.create_buffer(&wgpu::BufferDescriptor {
-            label: Some("cull_output_buf"),
-            size: 16,
-            usage: BufferUsages::STORAGE
-                | BufferUsages::COPY_SRC
-                | BufferUsages::COPY_DST
-                | BufferUsages::INDIRECT,
-            mapped_at_creation: false,
-        });
-
-        let staging_cull_buf = device.create_buffer(&wgpu::BufferDescriptor {
-            label: Some("staging_cull_buf"),
-            size: 16,
-            usage: BufferUsages::MAP_READ | BufferUsages::COPY_DST,
-            mapped_at_creation: false,
-        });
-
-        let staging_visible_instances = device.create_buffer(&wgpu::BufferDescriptor {
-            label: Some("staging_visible_instances"),
-            size: visible_instances_size,
-            usage: BufferUsages::MAP_READ | BufferUsages::COPY_DST,
-            mapped_at_creation: false,
-        });
-
-        let dart_template: [DartVertex; 12] = [
-            // Body fill (2 triangles):
-            DartVertex {
-                position: [0.0, 1.3],
-                edge_flag: 0.0,
-                _pad: 0.0,
-            },
-            DartVertex {
-                position: [-1.0, -1.0],
-                edge_flag: 0.0,
-                _pad: 0.0,
-            },
-            DartVertex {
-                position: [0.0, -0.4],
-                edge_flag: 0.0,
-                _pad: 0.0,
-            },
-            DartVertex {
-                position: [0.0, 1.3],
-                edge_flag: 0.0,
-                _pad: 0.0,
-            },
-            DartVertex {
-                position: [0.0, -0.4],
-                edge_flag: 0.0,
-                _pad: 0.0,
-            },
-            DartVertex {
-                position: [1.0, -1.0],
-                edge_flag: 0.0,
-                _pad: 0.0,
-            },
-            // Outline border (2 triangles):
-            DartVertex {
-                position: [0.0, 1.4],
-                edge_flag: 1.0,
-                _pad: 0.0,
-            },
-            DartVertex {
-                position: [-1.1, -1.1],
-                edge_flag: 1.0,
-                _pad: 0.0,
-            },
-            DartVertex {
-                position: [0.0, -0.5],
-                edge_flag: 1.0,
-                _pad: 0.0,
-            },
-            DartVertex {
-                position: [0.0, 1.4],
-                edge_flag: 1.0,
-                _pad: 0.0,
-            },
-            DartVertex {
-                position: [0.0, -0.5],
-                edge_flag: 1.0,
-                _pad: 0.0,
-            },
-            DartVertex {
-                position: [1.1, -1.1],
-                edge_flag: 1.0,
-                _pad: 0.0,
-            },
-        ];
-
-        let dart_template_buf = device.create_buffer(&wgpu::BufferDescriptor {
-            label: Some("dart_template_buf"),
-            size: 12 * 16,
-            usage: BufferUsages::VERTEX | BufferUsages::COPY_DST,
-            mapped_at_creation: false,
-        });
-        queue.write_buffer(&dart_template_buf, 0, bytemuck::cast_slice(&dart_template));
-
-        let dart_instances_size = (max_agents as u64) * 32;
-        let dart_instances_buf = device.create_buffer(&wgpu::BufferDescriptor {
-            label: Some("dart_instances_buf"),
-            size: dart_instances_size,
-            usage: BufferUsages::STORAGE
-                | BufferUsages::VERTEX
-                | BufferUsages::COPY_SRC
-                | BufferUsages::COPY_DST,
-            mapped_at_creation: false,
-        });
-
-        let staging_dart_instances = device.create_buffer(&wgpu::BufferDescriptor {
-            label: Some("staging_dart_instances"),
-            size: dart_instances_size,
-            usage: BufferUsages::MAP_READ | BufferUsages::COPY_DST,
-            mapped_at_creation: false,
-        });
-
         let trails_size = (max_agents as u64) * std::mem::size_of::<GpuAgentTrail>() as u64;
         let agent_trails_buf = device.create_buffer(&wgpu::BufferDescriptor {
             label: Some("agent_trails_buf"),
             size: trails_size,
             usage: BufferUsages::STORAGE | BufferUsages::COPY_SRC | BufferUsages::COPY_DST,
-            mapped_at_creation: false,
-        });
-
-        let dart_trails_buf = device.create_buffer(&wgpu::BufferDescriptor {
-            label: Some("dart_trails_buf"),
-            size: trails_size,
-            usage: BufferUsages::STORAGE | BufferUsages::COPY_SRC,
-            mapped_at_creation: false,
-        });
-
-        let staging_dart_trails = device.create_buffer(&wgpu::BufferDescriptor {
-            label: Some("staging_dart_trails"),
-            size: trails_size,
-            usage: BufferUsages::MAP_READ | BufferUsages::COPY_DST,
-            mapped_at_creation: false,
-        });
-
-        let view_uniform_buf = device.create_buffer(&wgpu::BufferDescriptor {
-            label: Some("view_uniform_buf"),
-            size: 80,
-            usage: BufferUsages::UNIFORM | BufferUsages::COPY_DST,
             mapped_at_creation: false,
         });
 
@@ -1090,36 +912,6 @@ impl GpuComputeDriver {
                     count: None,
                 },
                 wgpu::BindGroupLayoutEntry {
-                    binding: 4,
-                    visibility: wgpu::ShaderStages::COMPUTE,
-                    ty: wgpu::BindingType::Buffer {
-                        ty: wgpu::BufferBindingType::Storage { read_only: false },
-                        has_dynamic_offset: false,
-                        min_binding_size: None,
-                    },
-                    count: None,
-                },
-                wgpu::BindGroupLayoutEntry {
-                    binding: 5,
-                    visibility: wgpu::ShaderStages::COMPUTE,
-                    ty: wgpu::BindingType::Buffer {
-                        ty: wgpu::BufferBindingType::Storage { read_only: false },
-                        has_dynamic_offset: false,
-                        min_binding_size: None,
-                    },
-                    count: None,
-                },
-                wgpu::BindGroupLayoutEntry {
-                    binding: 6,
-                    visibility: wgpu::ShaderStages::COMPUTE,
-                    ty: wgpu::BindingType::Buffer {
-                        ty: wgpu::BufferBindingType::Storage { read_only: false },
-                        has_dynamic_offset: false,
-                        min_binding_size: None,
-                    },
-                    count: None,
-                },
-                wgpu::BindGroupLayoutEntry {
                     binding: 7,
                     visibility: wgpu::ShaderStages::COMPUTE,
                     ty: wgpu::BindingType::Buffer {
@@ -1153,18 +945,6 @@ impl GpuComputeDriver {
                     resource: sim_params_buf.as_entire_binding(),
                 },
                 wgpu::BindGroupEntry {
-                    binding: 4,
-                    resource: visible_instances_buf.as_entire_binding(),
-                },
-                wgpu::BindGroupEntry {
-                    binding: 5,
-                    resource: cull_output_buf.as_entire_binding(),
-                },
-                wgpu::BindGroupEntry {
-                    binding: 6,
-                    resource: dart_instances_buf.as_entire_binding(),
-                },
-                wgpu::BindGroupEntry {
                     binding: 7,
                     resource: agent_atomics_buf.as_entire_binding(),
                 },
@@ -1186,25 +966,6 @@ impl GpuComputeDriver {
                 compilation_options: wgpu::PipelineCompilationOptions::default(),
                 cache: None,
             });
-
-        let cull_clear_pipeline =
-            device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
-                label: Some("cull_clear_pipeline"),
-                layout: Some(&spatial_query_pl),
-                module: &spatial_query_sm,
-                entry_point: Some("frustum_cull_clear"),
-                compilation_options: wgpu::PipelineCompilationOptions::default(),
-                cache: None,
-            });
-
-        let cull_pipeline = device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
-            label: Some("cull_pipeline"),
-            layout: Some(&spatial_query_pl),
-            module: &spatial_query_sm,
-            entry_point: Some("frustum_cull_main"),
-            compilation_options: wgpu::PipelineCompilationOptions::default(),
-            cache: None,
-        });
 
         let trail_sm = device.create_shader_module(wgpu::ShaderModuleDescriptor {
             label: Some("trail_step_sm"),
@@ -1238,9 +999,6 @@ impl GpuComputeDriver {
                     },
                     count: None,
                 },
-                storage_entry(3, true),
-                storage_entry(4, true),
-                storage_entry(5, false),
             ],
         });
 
@@ -1260,18 +1018,6 @@ impl GpuComputeDriver {
                     binding: 2,
                     resource: sim_params_buf.as_entire_binding(),
                 },
-                wgpu::BindGroupEntry {
-                    binding: 3,
-                    resource: visible_instances_buf.as_entire_binding(),
-                },
-                wgpu::BindGroupEntry {
-                    binding: 4,
-                    resource: cull_output_buf.as_entire_binding(),
-                },
-                wgpu::BindGroupEntry {
-                    binding: 5,
-                    resource: dart_trails_buf.as_entire_binding(),
-                },
             ],
         });
 
@@ -1287,16 +1033,6 @@ impl GpuComputeDriver {
                 layout: Some(&trail_pl),
                 module: &trail_sm,
                 entry_point: Some("trail_record_main"),
-                compilation_options: wgpu::PipelineCompilationOptions::default(),
-                cache: None,
-            });
-
-        let trail_gather_pipeline =
-            device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
-                label: Some("trail_gather_pipeline"),
-                layout: Some(&trail_pl),
-                module: &trail_sm,
-                entry_point: Some("trail_gather_main"),
                 compilation_options: wgpu::PipelineCompilationOptions::default(),
                 cache: None,
             });
@@ -1447,109 +1183,6 @@ impl GpuComputeDriver {
             cache: None,
         });
 
-        let dart_sm = device.create_shader_module(wgpu::ShaderModuleDescriptor {
-            label: Some("dart_instanced_sm"),
-            source: wgpu::ShaderSource::Wgsl(std::borrow::Cow::Borrowed(include_str!(
-                "../../assets/shaders/dart_instanced.wgsl"
-            ))),
-        });
-
-        let dart_render_bgl = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
-            label: Some("dart_render_bgl"),
-            entries: &[wgpu::BindGroupLayoutEntry {
-                binding: 0,
-                visibility: wgpu::ShaderStages::VERTEX,
-                ty: wgpu::BindingType::Buffer {
-                    ty: wgpu::BufferBindingType::Uniform,
-                    has_dynamic_offset: false,
-                    min_binding_size: None,
-                },
-                count: None,
-            }],
-        });
-
-        let dart_render_bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
-            label: Some("dart_render_bg"),
-            layout: &dart_render_bgl,
-            entries: &[wgpu::BindGroupEntry {
-                binding: 0,
-                resource: view_uniform_buf.as_entire_binding(),
-            }],
-        });
-
-        let dart_render_pl = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
-            label: Some("dart_render_pl"),
-            bind_group_layouts: &[Some(&dart_render_bgl)],
-            immediate_size: 0,
-        });
-
-        let dart_render_pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
-            label: Some("dart_render_pipeline"),
-            layout: Some(&dart_render_pl),
-            vertex: wgpu::VertexState {
-                module: &dart_sm,
-                entry_point: Some("vs_main"),
-                compilation_options: wgpu::PipelineCompilationOptions::default(),
-                buffers: &[
-                    wgpu::VertexBufferLayout {
-                        array_stride: 16,
-                        step_mode: wgpu::VertexStepMode::Vertex,
-                        attributes: &[
-                            wgpu::VertexAttribute {
-                                format: wgpu::VertexFormat::Float32x2,
-                                offset: 0,
-                                shader_location: 0,
-                            },
-                            wgpu::VertexAttribute {
-                                format: wgpu::VertexFormat::Float32,
-                                offset: 8,
-                                shader_location: 1,
-                            },
-                        ],
-                    },
-                    wgpu::VertexBufferLayout {
-                        array_stride: 32,
-                        step_mode: wgpu::VertexStepMode::Instance,
-                        attributes: &[
-                            wgpu::VertexAttribute {
-                                format: wgpu::VertexFormat::Float32x3,
-                                offset: 0,
-                                shader_location: 2,
-                            },
-                            wgpu::VertexAttribute {
-                                format: wgpu::VertexFormat::Uint32x2,
-                                offset: 16,
-                                shader_location: 3,
-                            },
-                        ],
-                    },
-                ],
-            },
-            fragment: Some(wgpu::FragmentState {
-                module: &dart_sm,
-                entry_point: Some("fs_main"),
-                compilation_options: wgpu::PipelineCompilationOptions::default(),
-                targets: &[Some(wgpu::ColorTargetState {
-                    format: wgpu::TextureFormat::Rgba8Unorm,
-                    blend: Some(wgpu::BlendState::ALPHA_BLENDING),
-                    write_mask: wgpu::ColorWrites::ALL,
-                })],
-            }),
-            primitive: wgpu::PrimitiveState {
-                topology: wgpu::PrimitiveTopology::TriangleList,
-                strip_index_format: None,
-                front_face: wgpu::FrontFace::Ccw,
-                cull_mode: None,
-                unclipped_depth: false,
-                polygon_mode: wgpu::PolygonMode::Fill,
-                conservative: false,
-            },
-            depth_stencil: None,
-            multisample: wgpu::MultisampleState::default(),
-            multiview_mask: None,
-            cache: None,
-        });
-
         let frame_ring = ReadbackRing::new(&device);
 
         Self {
@@ -1563,26 +1196,16 @@ impl GpuComputeDriver {
             spatial_keys_buf,
             freelist_buf,
             queue_buffer,
-            visible_instances_buf,
-            cull_output_buf,
-            dart_instances_buf,
             agent_trails_buf,
-            dart_trails_buf,
-            dart_template_buf,
             soil_display_tex,
             sim_params_buf,
             soil_params_buf,
-            view_uniform_buf,
             staging_telemetry,
             staging_agent_states,
             staging_genomes,
             staging_soil,
             staging_soil_display,
             staging_atomics,
-            staging_cull_buf,
-            staging_visible_instances,
-            staging_dart_instances,
-            staging_dart_trails,
             staging_freelist,
             staging_audio,
             soil_pipeline,
@@ -1596,12 +1219,8 @@ impl GpuComputeDriver {
             census,
             merge_pending_free_pipeline,
             spatial_query_pipeline,
-            cull_clear_pipeline,
-            cull_pipeline,
             trail_record_pipeline,
-            trail_gather_pipeline,
             capacity_pipeline,
-            dart_render_pipeline,
             soil_bind_group,
             preamble_bg0,
             preamble_bg1,
@@ -1613,7 +1232,6 @@ impl GpuComputeDriver {
             spatial_query_bind_group,
             trail_bind_group,
             capacity_bind_group,
-            dart_render_bind_group,
             max_agents,
             soil_cols,
             soil_rows,
@@ -2293,192 +1911,33 @@ impl GpuComputeDriver {
         atomics
     }
 
-    pub fn dispatch_culling(&self, params: &GpuSimParams) -> u32 {
-        self.queue
-            .write_buffer(&self.sim_params_buf, 0, bytemuck::bytes_of(params));
-
-        let mut encoder = self
-            .device
-            .create_command_encoder(&wgpu::CommandEncoderDescriptor {
-                label: Some("cull_encoder"),
-            });
-
-        {
-            let mut cpass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {
-                label: Some("cull_pass"),
-                timestamp_writes: None,
-            });
-            cpass.set_bind_group(0, &self.spatial_query_bind_group, &[]);
-
-            // Clear cull counter to 0
-            cpass.set_pipeline(&self.cull_clear_pipeline);
-            cpass.dispatch_workgroups(1, 1, 1);
-
-            // Frustum cull active agents
-            let active_slots = params.max_agents.max(params.agent_count);
-            let workgroups = (active_slots + 63) / 64;
-            if workgroups > 0 {
-                cpass.set_pipeline(&self.cull_pipeline);
-                cpass.dispatch_workgroups(workgroups, 1, 1);
-            }
-        }
-
-        // Gather the trails of the visible darts (needs the final cull count, so a new pass)
-        {
-            let mut cpass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {
-                label: Some("trail_gather_pass"),
-                timestamp_writes: None,
-            });
-            let workgroups = (params.max_agents + 63) / 64;
-            if workgroups > 0 {
-                cpass.set_pipeline(&self.trail_gather_pipeline);
-                cpass.set_bind_group(0, &self.trail_bind_group, &[]);
-                cpass.dispatch_workgroups(workgroups, 1, 1);
-            }
-        }
-
-        encoder.copy_buffer_to_buffer(&self.cull_output_buf, 0, &self.staging_cull_buf, 0, 16);
-        self.queue.submit([encoder.finish()]);
-
-        let slice = self.staging_cull_buf.slice(0..16);
-        let (sender, receiver) = std::sync::mpsc::channel();
-        slice.map_async(wgpu::MapMode::Read, move |res| {
-            let _ = sender.send(res);
-        });
-        self.wait_blocking();
-        receiver.recv().unwrap().unwrap();
-
-        let visible_count = {
-            let data = slice.get_mapped_range();
-            let count = u32::from_le_bytes(data[4..8].try_into().unwrap());
-            drop(data);
-            count
-        };
-        self.staging_cull_buf.unmap();
-
-        visible_count
-            .min(params.max_capacity)
-            .min(params.max_agents)
-    }
-
-    pub fn readback_visible_instances(&self, count: usize) -> Vec<u32> {
-        let count = count.min(self.max_agents as usize);
-        if count == 0 {
-            return Vec::new();
-        }
-        let byte_len = (count * 4) as u64;
-        let mut encoder = self
-            .device
-            .create_command_encoder(&wgpu::CommandEncoderDescriptor {
-                label: Some("readback_visible_encoder"),
-            });
-        encoder.copy_buffer_to_buffer(
-            &self.visible_instances_buf,
-            0,
-            &self.staging_visible_instances,
-            0,
-            byte_len,
-        );
-        self.queue.submit([encoder.finish()]);
-
-        let slice = self.staging_visible_instances.slice(0..byte_len);
-        let (sender, receiver) = std::sync::mpsc::channel();
-        slice.map_async(wgpu::MapMode::Read, move |res| {
-            let _ = sender.send(res);
-        });
-        self.wait_blocking();
-        receiver.recv().unwrap().unwrap();
-
-        let result = {
-            let data = slice.get_mapped_range();
-            bytemuck::cast_slice(&data).to_vec()
-        };
-        self.staging_visible_instances.unmap();
-        result
-    }
-
-    pub fn readback_dart_instances(&self, count: usize) -> Vec<crate::gpu::types::GpuDartInstance> {
-        if count == 0 {
-            return Vec::new();
-        }
-        let byte_len = (count * 32) as u64;
-        let mut encoder = self
-            .device
-            .create_command_encoder(&wgpu::CommandEncoderDescriptor {
-                label: Some("readback_dart_instances_encoder"),
-            });
-        encoder.copy_buffer_to_buffer(
-            &self.dart_instances_buf,
-            0,
-            &self.staging_dart_instances,
-            0,
-            byte_len,
-        );
-        self.queue.submit([encoder.finish()]);
-
-        let slice = self.staging_dart_instances.slice(0..byte_len);
-        let (sender, receiver) = std::sync::mpsc::channel();
-        slice.map_async(wgpu::MapMode::Read, move |res| {
-            let _ = sender.send(res);
-        });
-        self.wait_blocking();
-        receiver.recv().unwrap().unwrap();
-
-        let result = {
-            let data = slice.get_mapped_range();
-            bytemuck::cast_slice::<u8, crate::gpu::types::GpuDartInstance>(
-                &data[0..byte_len as usize],
-            )
-            .to_vec()
-        };
-        self.staging_dart_instances.unmap();
-        result
-    }
-
-    /// Trails of the darts from the last `dispatch_culling`, index-aligned with `readback_dart_instances`.
-    pub fn readback_dart_trails(&self, count: usize) -> Vec<GpuAgentTrail> {
-        self.readback_trails_from(
-            &self.dart_trails_buf,
-            0,
-            count.min(self.max_agents as usize),
-        )
-    }
-
-    /// Trail of the creature in `slot`.
+    /// Trail of the creature in `slot` (diagnostic/test helper).
     pub fn readback_agent_trail(&self, slot: u32) -> Option<GpuAgentTrail> {
         if slot >= self.max_agents {
             return None;
         }
-        self.readback_trails_from(&self.agent_trails_buf, slot as usize, 1)
-            .pop()
-    }
-
-    fn readback_trails_from(
-        &self,
-        src: &wgpu::Buffer,
-        first: usize,
-        count: usize,
-    ) -> Vec<GpuAgentTrail> {
-        if count == 0 {
-            return Vec::new();
-        }
-        let stride = std::mem::size_of::<GpuAgentTrail>();
-        let byte_len = (count * stride) as u64;
+        let stride = std::mem::size_of::<GpuAgentTrail>() as u64;
+        let staging = self.device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("readback_agent_trail_staging"),
+            size: stride,
+            usage: wgpu::BufferUsages::MAP_READ | wgpu::BufferUsages::COPY_DST,
+            mapped_at_creation: false,
+        });
         let mut encoder = self
             .device
             .create_command_encoder(&wgpu::CommandEncoderDescriptor {
-                label: Some("readback_trails_encoder"),
+                label: Some("readback_agent_trail_encoder"),
             });
         encoder.copy_buffer_to_buffer(
-            src,
-            (first * stride) as u64,
-            &self.staging_dart_trails,
+            &self.agent_trails_buf,
+            (slot as u64) * stride,
+            &staging,
             0,
-            byte_len,
+            stride,
         );
         self.queue.submit([encoder.finish()]);
 
-        let slice = self.staging_dart_trails.slice(0..byte_len);
+        let slice = staging.slice(..);
         let (sender, receiver) = std::sync::mpsc::channel();
         slice.map_async(wgpu::MapMode::Read, move |res| {
             let _ = sender.send(res);
@@ -2486,111 +1945,12 @@ impl GpuComputeDriver {
         self.wait_blocking();
         receiver.recv().unwrap().unwrap();
 
-        let result = {
+        let trail = {
             let data = slice.get_mapped_range();
-            bytemuck::cast_slice::<u8, GpuAgentTrail>(&data[0..byte_len as usize]).to_vec()
+            bytemuck::pod_read_unaligned::<GpuAgentTrail>(&data)
         };
-        self.staging_dart_trails.unmap();
-        result
-    }
-
-    pub fn readback_cull_args(&self) -> [u32; 4] {
-        let mut encoder = self
-            .device
-            .create_command_encoder(&wgpu::CommandEncoderDescriptor {
-                label: Some("readback_cull_args_encoder"),
-            });
-        encoder.copy_buffer_to_buffer(&self.cull_output_buf, 0, &self.staging_cull_buf, 0, 16);
-        self.queue.submit([encoder.finish()]);
-
-        let slice = self.staging_cull_buf.slice(0..16);
-        let (sender, receiver) = std::sync::mpsc::channel();
-        slice.map_async(wgpu::MapMode::Read, move |res| {
-            let _ = sender.send(res);
-        });
-        self.wait_blocking();
-        receiver.recv().unwrap().unwrap();
-
-        let args = {
-            let data = slice.get_mapped_range();
-            let mut arr = [0u32; 4];
-            arr[0] = u32::from_le_bytes(data[0..4].try_into().unwrap());
-            arr[1] = u32::from_le_bytes(data[4..8].try_into().unwrap());
-            arr[2] = u32::from_le_bytes(data[8..12].try_into().unwrap());
-            arr[3] = u32::from_le_bytes(data[12..16].try_into().unwrap());
-            drop(data);
-            arr
-        };
-        self.staging_cull_buf.unmap();
-        args
-    }
-
-    pub fn render_darts_instanced(&self, target_view: &wgpu::TextureView, params: &GpuSimParams) {
-        // Update view uniform with orthographic projection matching dart_instanced.wgsl inverted Y
-        let cam_y = params.world_size[1] - params.camera_pos[1];
-        let left = params.camera_pos[0] - params.camera_size[0] * 0.5;
-        let right = params.camera_pos[0] + params.camera_size[0] * 0.5;
-        let bottom = cam_y - params.camera_size[1] * 0.5;
-        let top = cam_y + params.camera_size[1] * 0.5;
-
-        let sx = 2.0 / (right - left);
-        let sy = 2.0 / (top - bottom);
-        let tx = -(right + left) / (right - left);
-        let ty = -(top + bottom) / (top - bottom);
-
-        let mut view_proj = [0.0f32; 16];
-        view_proj[0] = sx;
-        view_proj[5] = sy;
-        view_proj[10] = 0.0;
-        view_proj[12] = tx;
-        view_proj[13] = ty;
-        view_proj[14] = 0.5;
-        view_proj[15] = 1.0;
-
-        let vu = ViewUniform {
-            view_proj,
-            world_size: params.world_size,
-            _pad: [0.0; 2],
-        };
-        self.queue
-            .write_buffer(&self.view_uniform_buf, 0, bytemuck::bytes_of(&vu));
-
-        let mut encoder = self
-            .device
-            .create_command_encoder(&wgpu::CommandEncoderDescriptor {
-                label: Some("dart_render_encoder"),
-            });
-
-        {
-            let mut rpass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
-                label: Some("dart_render_pass"),
-                color_attachments: &[Some(wgpu::RenderPassColorAttachment {
-                    view: target_view,
-                    resolve_target: None,
-                    depth_slice: None,
-                    ops: wgpu::Operations {
-                        load: wgpu::LoadOp::Load,
-                        store: wgpu::StoreOp::Store,
-                    },
-                })],
-                depth_stencil_attachment: None,
-                timestamp_writes: None,
-                occlusion_query_set: None,
-                multiview_mask: None,
-            });
-
-            rpass.set_pipeline(&self.dart_render_pipeline);
-            rpass.set_bind_group(0, &self.dart_render_bind_group, &[]);
-            rpass.set_vertex_buffer(0, self.dart_template_buf.slice(..));
-            rpass.set_vertex_buffer(1, self.dart_instances_buf.slice(..));
-            rpass.draw_indirect(&self.cull_output_buf, 0);
-        }
-
-        self.queue.submit([encoder.finish()]);
-    }
-
-    pub fn dart_template_vertex_count(&self) -> u32 {
-        12
+        staging.unmap();
+        Some(trail)
     }
 
     /// Newborns and founders take ids from at least `next_id` on (the world's `next_id`, which
