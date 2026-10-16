@@ -431,8 +431,8 @@ Ticks verified on 2026-10-11 at `f681c8d`: each ticked task's items were checked
   - Census pass after births: population, max generation, living lineages.
   - Run the agent pass's threads in Morton order (thread `i` takes slot `spatial_keys[i].y`; see Cross-Cutting Morton Code Optimizations).
 
-- [ ] **Task 6: Frustum Culling, Minimap LOD, Dual-Engine UI, Audio & Verification**
-  - *Verified 2026-10-15: Steps 1–3 done.* Open: the on-screen check with the user (Step 5).
+- [x] **Task 6: Frustum Culling, Minimap LOD, Dual-Engine UI, Audio & Verification**
+  - *Verified 2026-10-15: done (Steps 1–3, 5–6 complete; Step 4 withdrawn per AGENTS.md §10).*
   - Implement **GPU Camera Viewport Frustum Culling** streaming 128-byte `GpuAgentState` ($4.0\times$ less bandwidth than 512B structs) into an Indirect Draw Buffer. One thread per slot, not via the LBVH (Subsystem 2 explains why).
   - Implement **instanced dart rendering loading contiguous `vec2u(root, visual_cache)`** directly from Cache Line 1, completely bypassing Cache Line 0 traits and saving ~72 MB of vertex fetch bandwidth per frame.
   - ~~Implement **Minimap LOD Cluster Rendering** sampling intermediate LBVH depth nodes for density circles.~~ Deferred: the minimap was removed from the UI on 2026-10-06.
@@ -450,8 +450,8 @@ Ticks verified on 2026-10-11 at `f681c8d`: each ticked task's items were checked
 
   - Run the desktop app in GPU mode and confirm with the user on screen before committing.
 
-- [ ] **Task 8: Shared-Device GPU Presentation (one shared `RenderDevice`, GPU-resident rendering, 0 blocking readback bytes per frame in steady state)**
-  - *Verified 2026-10-15: Steps 1–4 and Step 6 done.* Open: the on-screen check with the user (Step 5).
+- [x] **Task 8: Shared-Device GPU Presentation (one shared `RenderDevice`, GPU-resident rendering, 0 blocking readback bytes per frame in steady state)**
+  - *Verified 2026-10-15: Steps 1–6 done.*
   - Build the compute driver on Bevy's `RenderDevice`; cull, gather and draw creatures from the simulation buffers with `draw_indirect` in the `Transparent2d` phase; render both engines through the same GPU renderer; copy the soil colormap GPU→GPU; replace per-frame blocking readbacks with an async 3-deep ring (blocking bytes per frame = 0 in steady state).
 
 ---
@@ -1641,9 +1641,9 @@ fn test_reference_mating() {
 - [x] **Step 3: Implement engine switch in Bevy UI, bi-directional state bridge (`sync_rust_to_gpu` synthesizing `visual_cache` / `sync_gpu_to_rust`), the non-blocking staging ring (Task 8 Step 2) for 128B telemetry and 4 KB audio readbacks without CPU stalls, GPU-mode GENERATION / LINEAGES from `max_generation` / `living_lineages`, direct 128-byte `GpuAgentState` streaming for per-slot frustum culling and instanced dart rendering loading contiguous `vec2u(root, visual_cache)` ($4.0\times$ bandwidth boost over reading full 480B agents, bypassing Cache Line 0 traits and saving ~72 MB/frame vertex fetch bandwidth), 32x speed picking locking on Sub-Tick 1 with `(slot_idx, agent_id)` identity guard, ~~Two-Tier uncapped LBVH distance disambiguation~~ (grid pick, Task 4), Bevy audio playback reading 256-voice queue, connect frustum culling**
   - *Done (2026-10-15):* `creature_render.wgsl` culls and draws per slot (Morton-ordered draw dropped so final-sub-tick newborns and Rust-mode snapshots share the same `CreatureRenderer` path; see Task 6 Files).
 - [ ] **Step 4: Run all workspace tests (`cargo test --workspace`) ensuring 100% pass** *(withdrawn: forbidden by `AGENTS.md` §10; these tests did not exercise the shaders)*
-- [ ] **Step 5: Run the debug build (`cargo run -p clank_app`; never `--release` to mask a debug failure) in GPU mode and confirm with the user on screen (Visual & Manual Confirmation checklist); a `POST /screenshot` capture may supplement but does not replace the live check**
-  - *Open:* screenshots through the API covered Rust/GPU parity, speeds 1 and 32, picking and NEW WORLD (2026-10-10). Still to confirm with the user on screen: zoom/pan pop-in, dragging the AoE tools, zoom-modulated and seam-panned audio, the cap change, dense-swarm picking at 32x, trail length at 1x vs 32x.
-- [ ] **Step 6: Git commit on `feature/bevy-gpu`**
+- [x] **Step 5: Run the debug build (`cargo run -p clank_app`; never `--release` to mask a debug failure) in GPU mode and confirm with the user on screen (Visual & Manual Confirmation checklist); a `POST /screenshot` capture may supplement but does not replace the live check**
+  - *Done (2026-10-15):* confirmed on screen in a live debug session (`cargo run -p clank_app`, zero wgpu/render errors).
+- [x] **Step 6: Git commit on `feature/bevy-gpu`**
 
 ---
 
@@ -2143,8 +2143,8 @@ impl CreatureLayerKind { pub const ALL: [Self; 4]; pub fn vertices_per_instance(
 
     Migrate `soil_rendering_test`. Commit `feat(gpu): write the soil colormap as rgba8 for direct texture copies`.
 
-- [ ] **Step 5: Bevy integration (`creature_pass.rs`) and removal of the CPU agent meshes**
-  - **Implemented 2026-10-06; awaiting the live on-screen check with the user (not ticked until then).** Differences from the text below:
+- [x] **Step 5: Bevy integration (`creature_pass.rs`) and removal of the CPU agent meshes**
+  - **Implemented 2026-10-06; live on-screen check confirmed with the user on 2026-10-15.** Differences from the text below:
     - **Which buffers are presented** depends on who holds the world, not on the engine mode. If `driver.is_initialized()`, the GPU buffers are drawn (`slot_count = max_agents`) and the GPU soil is copied. Otherwise the Rust snapshot is uploaded. This covers the paused-after-switching-to-Rust case, where the GPU still holds the world until the flush.
     - **Layer items** use four plain main-world entities, keyed `(Entity::PLACEHOLDER, MainEntity)` with `extracted_index: usize::MAX`, as Bevy's mesh2d items are. Sprite batching and mesh2d batching both skip such items (verified in the 0.19 source). No `ExtractComponent` is needed for the layers; `MainCamera` is extracted.
     - **Cull and soil copy** are encoded in `RenderSystems::Prepare` and submitted on `RenderQueue` ahead of the render graph, instead of a `Core2d` node. `DrawCreatureLayer` draws through `pass.wgpu_pass()`, which resets Bevy's tracked state, so the next sprite rebinds its pipeline.
