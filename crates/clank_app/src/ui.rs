@@ -167,6 +167,7 @@ pub fn clank_ui_system(
     mut sim: ResMut<SimWorld>,
     mut state: ResMut<UiState>,
     time: Res<Time>,
+    gpu_res: Option<Res<crate::sim::GpuDriverResource>>,
 ) {
     let Ok(ctx) = contexts.ctx_mut() else { return };
 
@@ -465,7 +466,7 @@ pub fn clank_ui_system(
                         // KEEP YOUR WORLD Section
                         ui.label(RichText::new("KEEP YOUR WORLD").size(10.5).monospace().strong().color(COLOR_GOLD));
                         ui.add_space(4.0);
-                        render_persistence_section(ui, &mut state, &mut sim);
+                        render_persistence_section(ui, &mut state, &mut sim, gpu_res.as_deref());
 
                         ui.add_space(14.0);
                         ui.separator();
@@ -643,7 +644,41 @@ fn render_tool_matrix(ui: &mut egui::Ui, state: &mut UiState, sim: &mut SimWorld
         });
 }
 
-fn render_persistence_section(ui: &mut egui::Ui, state: &mut UiState, sim: &mut SimWorld) {
+fn flush_gpu_before_export(sim: &mut SimWorld, gpu_res: Option<&crate::sim::GpuDriverResource>) {
+    if sim.active_engine == crate::sim::ActiveEngine::Gpu {
+        if let Some(driver) = gpu_res
+            .and_then(|g| g.driver.as_ref())
+            .filter(|d| d.is_initialized())
+        {
+            crate::sim::flush_gpu_to_rust(sim, driver);
+        }
+    }
+}
+
+pub fn export_clank_world(
+    sim: &mut SimWorld,
+    gpu_res: Option<&crate::sim::GpuDriverResource>,
+    filename: &str,
+) -> Result<usize, crate::persistence::PersistenceError> {
+    flush_gpu_before_export(sim, gpu_res);
+    save_clank_file(sim, filename)
+}
+
+pub fn export_json_world(
+    sim: &mut SimWorld,
+    gpu_res: Option<&crate::sim::GpuDriverResource>,
+    filename: &str,
+) -> Result<usize, crate::persistence::PersistenceError> {
+    flush_gpu_before_export(sim, gpu_res);
+    export_json_file(sim, filename)
+}
+
+fn render_persistence_section(
+    ui: &mut egui::Ui,
+    state: &mut UiState,
+    sim: &mut SimWorld,
+    gpu_res: Option<&crate::sim::GpuDriverResource>,
+) {
     egui::Grid::new("persist_grid")
         .num_columns(3)
         .spacing([6.0, 6.0])
@@ -659,7 +694,7 @@ fn render_persistence_section(ui: &mut egui::Ui, state: &mut UiState, sim: &mut 
             .corner_radius(CornerRadius::same(3));
             if ui.add_sized([92.0, 30.0], btn_clank).clicked() {
                 let filename = compute_export_clank_filename(sim.world.tick);
-                match save_clank_file(sim, &filename) {
+                match export_clank_world(sim, gpu_res, &filename) {
                     Ok(bytes) => {
                         state.status_message =
                             Some(compute_export_clank_status(sim.world.tick, bytes));
@@ -680,7 +715,7 @@ fn render_persistence_section(ui: &mut egui::Ui, state: &mut UiState, sim: &mut 
             .corner_radius(CornerRadius::same(3));
             if ui.add_sized([92.0, 30.0], btn_json).clicked() {
                 let filename = compute_export_json_filename(sim.world.tick);
-                match export_json_file(sim, &filename) {
+                match export_json_world(sim, gpu_res, &filename) {
                     Ok(_bytes) => {
                         state.status_message = Some(compute_export_json_status(sim.world.tick));
                         state.file_path = filename;

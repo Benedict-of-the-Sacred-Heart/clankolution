@@ -159,7 +159,7 @@ pub fn flush_gpu_to_rust(
     driver: &crate::gpu::compute_driver::GpuComputeDriver,
 ) {
     let telem = driver.readback_telemetry();
-    let read_count = sim.world.max_cap.min(driver.max_agents as usize);
+    let read_count = driver.active_slots(sim.world.max_cap as u32) as usize;
     let updated_states = driver.readback_agent_states(read_count);
     let updated_genomes = driver.readback_agent_genomes(read_count);
     let updated_atomics = driver.readback_atomics(read_count);

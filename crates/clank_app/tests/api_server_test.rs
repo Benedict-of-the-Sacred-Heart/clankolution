@@ -192,3 +192,70 @@ fn test_state_generation_comes_from_the_engine_that_owns_the_world() {
     let generation = shared.read().unwrap().state.as_ref().unwrap().generation;
     assert_eq!(generation, 12, "dead creatures do not count");
 }
+
+#[test]
+fn test_gpu_settings_selected_agent_beyond_500_and_invalid_id() {
+    use bevy::prelude::*;
+    use clank_app::sim::{ActiveEngine, ClankSimPlugin, GpuDriverResource, SimWorld};
+    use std::sync::{mpsc, Arc, Mutex};
+
+    let mut app = App::new();
+    let (tx, rx) = mpsc::channel::<ApiCommand>();
+    app.add_plugins(MinimalPlugins)
+        .add_plugins(ClankSimPlugin)
+        .insert_resource(ApiSenderResource(tx.clone()))
+        .insert_resource(ApiReceiverResource(Arc::new(Mutex::new(rx))))
+        .add_systems(Update, api_dispatch_system);
+
+    {
+        let mut sim = app.world_mut().resource_mut::<SimWorld>();
+        sim.paused = true;
+        sim.world.set_max_capacity(700);
+        sim.world.agents.clear();
+        for idx in 0..601u32 {
+            let mut a = clank_core::agent::AgentData::default();
+            a.id = 1000 + idx;
+            a.dead = if idx == 600 { 0 } else { 1 };
+            a.energy = 100.0;
+            sim.world.agents.push(a);
+        }
+        sim.active_engine = ActiveEngine::Gpu;
+    }
+    app.update();
+    if app.world().resource::<GpuDriverResource>().driver.is_none() {
+        eprintln!("Skipping test: No GPU adapter available");
+        return;
+    }
+
+    // Select creature at slot 600 (id = 1600), which is beyond the old 500-slot cap.
+    tx.send(ApiCommand::UpdateSettings(ApiSettingsRequest {
+        selected_agent: Some(1600),
+        ..Default::default()
+    }))
+    .unwrap();
+    app.update();
+
+    {
+        let sim = app.world().resource::<SimWorld>();
+        assert_eq!(sim.selected_agent_id, Some(1600));
+        assert_eq!(
+            sim.selected_agent_slot,
+            Some(600),
+            "must resolve actual buffer slot beyond 500 rather than falling back to agent_id"
+        );
+    }
+
+    // Selecting a non-existent creature ID must clear selection rather than setting slot = id.
+    tx.send(ApiCommand::UpdateSettings(ApiSettingsRequest {
+        selected_agent: Some(999_999),
+        ..Default::default()
+    }))
+    .unwrap();
+    app.update();
+
+    {
+        let sim = app.world().resource::<SimWorld>();
+        assert_eq!(sim.selected_agent_id, None);
+        assert_eq!(sim.selected_agent_slot, None);
+    }
+}

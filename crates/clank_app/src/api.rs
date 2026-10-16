@@ -618,21 +618,30 @@ pub fn api_dispatch_system(
                     if let Some(agent_id) = req.selected_agent {
                         if agent_id == 0 {
                             if sim.active_engine == crate::sim::ActiveEngine::Gpu {
-                                if let Some(ref gpu) = gpu_res {
-                                    if let Some(ref driver) = gpu.driver {
-                                        let states = driver.readback_agent_states(
-                                            driver.max_agents.min(500) as usize,
-                                        );
-                                        if let Some((idx, s)) =
-                                            states.iter().enumerate().find(|(_, a)| {
+                                let found = gpu_res
+                                    .as_ref()
+                                    .and_then(|g| g.driver.as_ref())
+                                    .filter(|d| d.is_initialized())
+                                    .and_then(|driver| {
+                                        let count =
+                                            driver.active_slots(sim.world.max_cap as u32) as usize;
+                                        let states = driver.readback_agent_states(count);
+                                        states
+                                            .iter()
+                                            .enumerate()
+                                            .find(|(_, a)| {
                                                 (a.meta_flags & (1 << 13)) == 0
                                                     && a.visual_cache != 0
                                             })
-                                        {
-                                            sim.selected_agent_id = Some(s.id);
-                                            sim.selected_agent_slot = Some(idx as u32);
-                                        }
-                                    }
+                                            .map(|(idx, s)| (idx as u32, s.id))
+                                    });
+                                if let Some((slot, id)) = found {
+                                    sim.selected_agent_id = Some(id);
+                                    sim.selected_agent_slot = Some(slot);
+                                } else {
+                                    sim.selected_agent_id = None;
+                                    sim.selected_agent_slot = None;
+                                    sim.selected_agent_cache = None;
                                 }
                             } else {
                                 sim.selected_agent_id =
@@ -642,30 +651,40 @@ pub fn api_dispatch_system(
                             sim.selected_agent_id = None;
                             sim.selected_agent_slot = None;
                             sim.selected_agent_cache = None;
-                        } else {
-                            sim.selected_agent_id = Some(agent_id);
-                            if sim.active_engine == crate::sim::ActiveEngine::Gpu {
-                                if let Some(ref gpu) = gpu_res {
-                                    if let Some(ref driver) = gpu.driver {
-                                        let states = driver.readback_agent_states(
-                                            driver.max_agents.min(500) as usize,
-                                        );
-                                        if let Some((idx, _)) =
-                                            states.iter().enumerate().find(|(_, a)| {
-                                                a.id == agent_id && (a.meta_flags & (1 << 13)) == 0
-                                            })
-                                        {
-                                            sim.selected_agent_slot = Some(idx as u32);
-                                        } else {
-                                            sim.selected_agent_slot = Some(agent_id);
-                                        }
-                                    } else {
-                                        sim.selected_agent_slot = Some(agent_id);
-                                    }
-                                } else {
-                                    sim.selected_agent_slot = Some(agent_id);
-                                }
+                        } else if sim.active_engine == crate::sim::ActiveEngine::Gpu {
+                            let found = gpu_res
+                                .as_ref()
+                                .and_then(|g| g.driver.as_ref())
+                                .filter(|d| d.is_initialized())
+                                .and_then(|driver| {
+                                    let count =
+                                        driver.active_slots(sim.world.max_cap as u32) as usize;
+                                    let states = driver.readback_agent_states(count);
+                                    states
+                                        .iter()
+                                        .enumerate()
+                                        .find(|(_, a)| {
+                                            a.id == agent_id
+                                                && (a.meta_flags & (1 << 13)) == 0
+                                                && a.visual_cache != 0
+                                        })
+                                        .map(|(idx, s)| (idx as u32, s.id))
+                                });
+                            if let Some((slot, id)) = found {
+                                sim.selected_agent_id = Some(id);
+                                sim.selected_agent_slot = Some(slot);
+                            } else {
+                                sim.selected_agent_id = None;
+                                sim.selected_agent_slot = None;
+                                sim.selected_agent_cache = None;
                             }
+                        } else {
+                            sim.selected_agent_id = sim
+                                .world
+                                .agents
+                                .iter()
+                                .find(|a| a.dead == 0 && a.id == agent_id)
+                                .map(|a| a.id);
                         }
                     }
                     if let Some(ref engine) = req.active_engine {

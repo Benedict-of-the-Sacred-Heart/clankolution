@@ -159,3 +159,102 @@ fn test_switching_to_rust_keeps_the_gpus_spent_ids() {
 
     assert_eq!(app.world().resource::<SimWorld>().world.next_id, 5000);
 }
+
+#[test]
+fn test_flush_gpu_to_rust_reads_all_active_slots_when_max_cap_lowered_while_paused() {
+    let Some(mut app) = app_with_driver(ActiveEngine::Rust) else {
+        return;
+    };
+    {
+        let mut sim = app.world_mut().resource_mut::<SimWorld>();
+        sim.paused = true;
+        sim.world.set_max_capacity(600);
+        sim.world.agents.clear();
+        for idx in 0..501u32 {
+            let mut a = clank_core::agent::AgentData::default();
+            a.id = 7000 + idx;
+            a.dead = if idx == 500 { 0 } else { 1 };
+            a.energy = 100.0;
+            sim.world.agents.push(a);
+        }
+        sim.active_engine = ActiveEngine::Gpu;
+    }
+    app.update();
+
+    // Lower max_cap while paused (before any GPU capacity_step runs) and switch back to Rust.
+    {
+        let mut sim = app.world_mut().resource_mut::<SimWorld>();
+        sim.world.set_max_capacity(100);
+        sim.active_engine = ActiveEngine::Rust;
+    }
+    app.update();
+
+    let sim = app.world().resource::<SimWorld>();
+    assert!(
+        sim.world.agents.iter().any(|a| a.id == 7500 && a.dead == 0),
+        "creature at slot 500 must not be dropped when flushing after lowering max_cap while paused"
+    );
+}
+
+#[test]
+fn test_ui_export_in_gpu_mode_flushes_gpu_world_before_saving() {
+    use clank_app::persistence::{import_json_file, load_clank_file};
+    use clank_app::ui::{export_clank_world, export_json_world};
+
+    let Some(mut app) = app_with_driver(ActiveEngine::Gpu) else {
+        return;
+    };
+    app.world_mut().resource_mut::<SimWorld>().speed = 4;
+    for _ in 0..10 {
+        app.update();
+    }
+
+    let clank_path = std::env::temp_dir().join("clank_gpu_ui_export_test.clank");
+    let json_path = std::env::temp_dir().join("clank_gpu_ui_export_test.json");
+    let clank_str = clank_path.to_string_lossy().to_string();
+    let json_str = json_path.to_string_lossy().to_string();
+
+    app.world_mut()
+        .resource_scope(|world, mut sim: Mut<SimWorld>| {
+            let gpu_res = world.get_resource::<GpuDriverResource>();
+            export_clank_world(&mut sim, gpu_res, &clank_str).expect("export .clank");
+        });
+
+    let mut loaded_clank = SimWorld::new(1);
+    load_clank_file(&mut loaded_clank, &clank_str).expect("load .clank");
+    let _ = std::fs::remove_file(&clank_path);
+    assert!(
+        loaded_clank
+            .world
+            .agents
+            .iter()
+            .any(|a| a.dead == 0 && a.age > 0),
+        "exported .clank in GPU mode must contain evolved GPU creatures (age > 0), not stale tick-0 CPU creatures"
+    );
+
+    // Run another few GPU steps and test JSON export before flushing.
+    for _ in 0..5 {
+        app.update();
+    }
+    // Reset CPU agent ages to 0 to prove export_json_world flushes from GPU.
+    for a in &mut app.world_mut().resource_mut::<SimWorld>().world.agents {
+        a.age = 0;
+    }
+    app.world_mut()
+        .resource_scope(|world, mut sim: Mut<SimWorld>| {
+            let gpu_res = world.get_resource::<GpuDriverResource>();
+            export_json_world(&mut sim, gpu_res, &json_str).expect("export .json");
+        });
+
+    let mut loaded_json = SimWorld::new(1);
+    import_json_file(&mut loaded_json, &json_str).expect("load .json");
+    let _ = std::fs::remove_file(&json_path);
+    assert!(
+        loaded_json
+            .world
+            .agents
+            .iter()
+            .any(|a| a.dead == 0 && a.age > 0),
+        "exported .json in GPU mode must contain evolved GPU creatures (age > 0), not stale CPU creatures"
+    );
+}
