@@ -362,3 +362,121 @@ fn test_gpu_events_reach_the_chronicle() {
         sim.world.events
     );
 }
+
+/// In GPU mode, interactive tools (picking, Nourish, Blight, Extinguish) take effect at once
+/// even while the simulation is paused, without advancing the simulation tick.
+#[test]
+fn test_gpu_tools_act_at_once_while_paused() {
+    use clank_app::gpu::soil_pipeline::GpuSoilPipeline;
+    use clank_app::sim::{GpuDriverResource, PendingTool};
+
+    let Some(mut app) = gpu_app(|_| {}) else {
+        return;
+    };
+    run(&mut app, 4);
+    app.world_mut().resource_mut::<SimWorld>().paused = true;
+    settle(&mut app);
+
+    let paused_tick = app.world().resource::<SimWorld>().world.tick;
+    let live_before = gpu_creatures(app_driver(&app));
+    let target = live_before
+        .iter()
+        .find(|a| {
+            live_before
+                .iter()
+                .all(|b| b.id == a.id || torus_dist(a.x, a.y, b.x, b.y, 900.0, 600.0) > 50.0)
+        })
+        .expect("an isolated live creature")
+        .clone();
+
+    // 1. Picking while paused selects the creature and populates its specimen cache.
+    app.world_mut().resource_mut::<SimWorld>().pending_tool = Some(PendingTool {
+        tool_type: 0,
+        tool_pos: [target.x as f32, target.y as f32],
+        tool_radius: 25.0,
+    });
+    app.update();
+    settle(&mut app);
+    {
+        let sim = app.world().resource::<SimWorld>();
+        assert_eq!(
+            sim.world.tick, paused_tick,
+            "paused pick must not advance tick"
+        );
+        assert_eq!(
+            sim.selected_agent_id,
+            Some(target.id),
+            "paused pick must select the creature under the cursor"
+        );
+        assert_eq!(
+            sim.get_selected_agent().map(|a| a.id),
+            Some(target.id),
+            "paused pick must populate the selected specimen cache"
+        );
+    }
+
+    // 2. Nourish while paused immediately increases GPU soil food at the target cell.
+    let cell_idx = 10 * 75 + 10; // (126.0, 126.0)
+    let food_before = {
+        let gpu = app.world().resource::<GpuDriverResource>();
+        let soil = gpu.driver.as_ref().unwrap().readback_soil();
+        GpuSoilPipeline::to_physics(&soil[cell_idx]).0
+    };
+    app.world_mut().resource_mut::<SimWorld>().pending_tool = Some(PendingTool {
+        tool_type: 1,
+        tool_pos: [126.0, 126.0],
+        tool_radius: 45.0,
+    });
+    app.update();
+    let food_after = {
+        let gpu = app.world().resource::<GpuDriverResource>();
+        let soil = gpu.driver.as_ref().unwrap().readback_soil();
+        GpuSoilPipeline::to_physics(&soil[cell_idx]).0
+    };
+    assert!(
+        food_after > food_before + 0.1,
+        "Nourish while paused must increase GPU soil food immediately ({food_before} -> {food_after})"
+    );
+
+    // 3. Blight while paused immediately increases GPU soil taint at the target cell.
+    let blight_cell = 20 * 75 + 20; // (246.0, 246.0)
+    let taint_before = {
+        let gpu = app.world().resource::<GpuDriverResource>();
+        let soil = gpu.driver.as_ref().unwrap().readback_soil();
+        GpuSoilPipeline::to_physics(&soil[blight_cell]).1
+    };
+    app.world_mut().resource_mut::<SimWorld>().pending_tool = Some(PendingTool {
+        tool_type: 2,
+        tool_pos: [246.0, 246.0],
+        tool_radius: 45.0,
+    });
+    app.update();
+    let taint_after = {
+        let gpu = app.world().resource::<GpuDriverResource>();
+        let soil = gpu.driver.as_ref().unwrap().readback_soil();
+        GpuSoilPipeline::to_physics(&soil[blight_cell]).1
+    };
+    assert!(
+        taint_after > taint_before + 0.1,
+        "Blight while paused must increase GPU soil taint immediately ({taint_before} -> {taint_after})"
+    );
+
+    // 4. Extinguish while paused immediately removes the target creature on the GPU.
+    app.world_mut().resource_mut::<SimWorld>().pending_tool = Some(PendingTool {
+        tool_type: 3,
+        tool_pos: [target.x as f32, target.y as f32],
+        tool_radius: 23.0,
+    });
+    app.update();
+    let live_after = gpu_creatures(app_driver(&app));
+    assert!(
+        live_after.iter().all(|a| a.id != target.id),
+        "Extinguish while paused must remove creature {} immediately",
+        target.id
+    );
+    assert_eq!(
+        app.world().resource::<SimWorld>().world.tick,
+        paused_tick,
+        "paused tools must never advance the simulation tick"
+    );
+}

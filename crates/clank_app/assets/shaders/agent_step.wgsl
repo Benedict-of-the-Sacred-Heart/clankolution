@@ -542,15 +542,26 @@ fn agent_main(@builtin(global_invocation_id) id: vec3u) {
     let cy = min(u32(max(0.0, new_pos.y) / cell_h), params.soil_grid.y - 1u);
     let cell_idx = cy * params.soil_grid.x + cx;
     let intake_cap = (0.016 + 0.064 * a_feed) * (0.7 + tr4);
-    let cur_food_micro = atomicLoad(&soil_buffer[cell_idx].food_micro);
-    let cur_food_float = max(0.0, f32(cur_food_micro) / SOIL_SCALE);
-    let eaten_float = min(intake_cap, cur_food_float);
-    let eaten_micro = i32(round(eaten_float * SOIL_SCALE));
-    if (eaten_micro > 0) {
-        let prev_food = atomicSub(&soil_buffer[cell_idx].food_micro, eaten_micro);
-        if (prev_food < eaten_micro) {
-            atomicStore(&soil_buffer[cell_idx].food_micro, 0);
+    let intake_micro = i32(round(intake_cap * SOIL_SCALE));
+    var eaten_micro = 0;
+    if (intake_micro > 0) {
+        var cur_food_micro = atomicLoad(&soil_buffer[cell_idx].food_micro);
+        while (cur_food_micro > 0) {
+            let take = min(intake_micro, cur_food_micro);
+            let cas = atomicCompareExchangeWeak(
+                &soil_buffer[cell_idx].food_micro,
+                cur_food_micro,
+                cur_food_micro - take,
+            );
+            if (cas.exchanged) {
+                eaten_micro = take;
+                break;
+            }
+            cur_food_micro = cas.old_value;
         }
+    }
+    let eaten_float = f32(eaten_micro) / SOIL_SCALE;
+    if (eaten_micro > 0) {
         atomicAdd(&queue_buffer.telemetry.food_grazed_milli, u32(round(eaten_float * 1000.0)));
     }
 
@@ -604,7 +615,8 @@ fn agent_main(@builtin(global_invocation_id) id: vec3u) {
                 if (in_view) {
                     let zoom_factor = clamp(1.0 - (params.camera_size.x - 150.0) / (params.world_size.x - 150.0), 0.0, 1.0);
                     let kill_volume = mix(0.08, 1.0, zoom_factor);
-                    let density_filter = select(1u, 4u, params.agent_count > 10000u);
+                    let live_pop = max(params.agent_count, atomicLoad(&queue_buffer.telemetry.live_count));
+                    let density_filter = select(1u, 4u, live_pop > 10000u);
                     if (pcg3d(agent_idx, AUDIO_STREAM ^ victim_idx, step_tick) % density_filter == 0u) {
                         let voice_slot = atomicAdd(&queue_buffer.telemetry.audio_voice_count, 1u);
                         if (voice_slot < 256u) {

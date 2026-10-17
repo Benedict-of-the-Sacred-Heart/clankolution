@@ -1808,7 +1808,7 @@ impl CreatureLayerKind { pub const ALL: [Self; 4]; pub fn vertices_per_instance(
     - Frames are applied before the pause check (so the ring drains while paused) and after `flush_gpu_to_rust` when switching to the Rust engine.
     - Agent replenishment drains the ring right after `replenish_agents_gpu`, which already waits. Without that, pre-seed frames landing afterwards reset `gpu_population` and seeded again (3 creatures → 27 instead of 15). Covered by `test_agent_replenishment_seeds_once_despite_lagged_frames`.
     - Extra tests: `test_ring_returns_each_frame_once_in_order` (driver level: 30 requests → 30 frames, in order, the last one equal to a synchronous read), plus the agent replenishment test above. Red-checked by mutation: a blocking telemetry read in the frame path fails the first test (40 waits); returning each frame twice fails the ordering test (60 ≠ 30).
-    - **Residual:** `GpuSimParams.agent_count` (reproduction cap) comes from the newest landed frame, so it now lags by up to `RING_DEPTH` frames instead of one. The fix is to have the passes read the population from `queue_buffer`; this is not done yet.
+    - `agent_step.wgsl` reads `queue_buffer.telemetry.live_count` (counted by the spatial sort on the current sub-tick) for both reproduction capacity (`live_count < params.max_capacity`) and the audio density filter (`max(params.agent_count, live_count) > 10000u`), so neither lags behind `ReadbackRing`.
   - **Failing test** `gpu_frame_readback_test.rs`:
     ```rust
     use bevy::prelude::*;
@@ -2320,12 +2320,10 @@ Measured on the working tree, which holds uncommitted work not yet in any commit
 | 6 | `engine_switch_test` (4) | pass | was: an engine switch while paused handed nothing over (the panel showed population 74 and lineages 0 until the first tick; Rust-mode picks used the world from before the GPU ran); GPU ids continued from 10,000 (a 1,000 floor and a driver counter that NEW WORLD never reset), unlike the reference's 1, 2, 3...; ids the GPU issued to creatures already gone were forgotten on switching back. Mutation-checked: without raising the counter to the world's `next_id`, id 72 is issued again |
 | 6 | `gpu_frame_readback_test::test_a_selected_creature_that_dies_is_deselected` | pass | was: the panel kept showing the dead creature, or the newborn now in its slot (seen in the app 2026-10-10: specimen 1906 on the panel with 1389 selected). Now deselected, as the reference's `selected = null` |
 | 6 | `api_server_test::test_state_generation_comes_from_the_engine_that_owns_the_world` | pass | was: `/state` generation 0 in GPU mode (read from the CPU copy, which GPU mode does not update, and counting dead creatures) |
+| 5 | `plan_t5::test_crowded_cell_grazing_cannot_eat_more_food_than_the_cell_holds` | pass | was: 60 creatures grazing one cell in the same tick all fed from `0.33` food (reference ran out after 17); fixed with an `atomicCompareExchangeWeak` loop on `soil_buffer[cell_idx].food_micro` |
+| 6 | `plan_t6::test_gpu_tools_act_at_once_while_paused` | pass | was: in GPU mode the tools (picking, Nourish, Blight, Extinguish) waited for the next running tick and did nothing while paused; now `dispatch_pick_paused` and immediate paused tool sync apply them at once without advancing `tick` |
 
 The `plan_t6` file compiles since 2026-10-07; before that, its results other than the stats test were measured from a copy of the file without that test.
-
-Found while writing these tests, not yet covered by any task: when many creatures graze one cell in the same tick, the GPU feeds all of them from the same food (60 creatures fed from 0.33 food; the reference runs out after 29).
-
-Found in the app on 2026-10-10, not yet covered by any task: in GPU mode the tools (picking, Nourish, Blight, Extinguish) run inside the next tick, so they do nothing while paused and act once the world runs; the reference applies them at once, paused or not.
 
 ### Visual & Manual Confirmation
 1. Build and run the debug binary (`cargo run -p clank_app`); debug builds must work, so never use `--release` to mask a debug failure.

@@ -1114,3 +1114,45 @@ fn test_the_census_counts_every_lineage_in_a_large_world() {
         "GPU census (population, living_lineages) does not describe its creatures"
     );
 }
+
+/// When 60 creatures graze the same cell in one tick, they cannot eat more food than the cell
+/// holds: once the cell's food reaches 0, remaining creatures in that cell get 0 food, matching
+/// the reference's total energy and fed count.
+#[test]
+fn test_crowded_cell_grazing_cannot_eat_more_food_than_the_cell_holds() {
+    let agents: Vec<AgentData> = (0..60)
+        .map(|k| {
+            let mut a = creature(
+                1 + k,
+                450.0 + (k % 8) as f64 * 0.5,
+                300.0 + (k / 8) as f64 * 0.5,
+                0.0,
+            );
+            a.age = 10;
+            a.energy = 20.0;
+            a.genes[output_bias(1)] = -127; // minimal thrust
+            a
+        })
+        .collect();
+    let mut sim = world_with(agents, 0.0);
+    let Some(mut gpu) = upload(&sim) else {
+        return;
+    };
+    gpu.tick();
+    sim.world.evolve();
+
+    let ref_fed = sim.world.agents.iter().filter(|a| a.energy > 20.0).count();
+    let gpu_live = gpu.live();
+    let gpu_fed = gpu_live.iter().filter(|(_, a)| a.energy > 20.0).count();
+    let ref_total_e: f64 = sim.world.agents.iter().map(|a| a.energy).sum();
+    let gpu_total_e: f64 = gpu_live.iter().map(|(_, a)| a.energy).sum();
+
+    assert_eq!(
+        gpu_fed, ref_fed,
+        "GPU fed {gpu_fed} of 60 creatures from one cell; reference ran out after {ref_fed}"
+    );
+    assert!(
+        (gpu_total_e - ref_total_e).abs() < 0.2,
+        "GPU total energy {gpu_total_e:.3} vs reference {ref_total_e:.3}"
+    );
+}

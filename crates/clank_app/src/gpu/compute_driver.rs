@@ -1653,6 +1653,54 @@ impl GpuComputeDriver {
         }
     }
 
+    /// Runs the spatial grid, picking, and census passes without advancing the simulation tick,
+    /// so clicking a creature in GPU mode while paused selects it immediately.
+    pub fn dispatch_pick_paused(&self, params: &GpuSimParams) {
+        let mut cur_params = *params;
+        cur_params.sub_tick = 0;
+        cur_params.sub_ticks_per_frame = 1;
+        cur_params.tool_type = 0;
+        self.apply_capacity(&cur_params);
+        self.queue
+            .write_buffer(&self.sim_params_buf, 0, bytemuck::bytes_of(&cur_params));
+
+        let active_slots = cur_params.max_agents.max(cur_params.agent_count);
+        let agent_workgroups = (active_slots + 63) / 64;
+        if agent_workgroups == 0 {
+            return;
+        }
+
+        let mut encoder = self
+            .device
+            .create_command_encoder(&wgpu::CommandEncoderDescriptor {
+                label: Some("gpu_pick_paused_encoder"),
+            });
+        {
+            let mut cpass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {
+                label: Some("gpu_pick_paused_pass"),
+                timestamp_writes: None,
+            });
+
+            cpass.set_pipeline(&self.preamble_pipeline);
+            cpass.set_bind_group(0, &self.preamble_bg0, &[]);
+            cpass.set_bind_group(1, &self.preamble_bg1, &[]);
+            cpass.dispatch_workgroups(agent_workgroups, 1, 1);
+
+            cpass.set_pipeline(&self.morton_encode_pipeline);
+            cpass.set_bind_group(0, &self.morton_bind_group, &[]);
+            cpass.dispatch_workgroups(agent_workgroups, 1, 1);
+
+            self.spatial_sort.encode(&mut cpass, cur_params.max_agents);
+
+            cpass.set_pipeline(&self.spatial_query_pipeline);
+            cpass.set_bind_group(0, &self.spatial_query_bind_group, &[]);
+            cpass.dispatch_workgroups(1, 1, 1);
+
+            self.census.encode(&mut cpass, agent_workgroups);
+        }
+        self.queue.submit([encoder.finish()]);
+    }
+
     pub fn readback_telemetry(&self) -> GpuTelemetry {
         let mut encoder = self
             .device
