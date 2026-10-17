@@ -614,6 +614,7 @@ pub fn api_dispatch_system(
                     }
                     if let Some(cap) = req.max_cap {
                         sim.world.set_max_capacity(cap.clamp(50, 65_536) as u32);
+                        sim.validate_cpu_selection();
                     }
                     if let Some(agent_id) = req.selected_agent {
                         if agent_id == 0 {
@@ -792,6 +793,7 @@ pub fn api_dispatch_system(
                         }
                         "extinguish" | "kill" => {
                             sim.world.extinguish_at(x, y, 23.0);
+                            sim.validate_cpu_selection();
                             if sim.active_engine == crate::sim::ActiveEngine::Gpu {
                                 sim.pending_tool = Some(crate::sim::PendingTool {
                                     tool_type: 3,
@@ -825,6 +827,7 @@ pub fn api_dispatch_system(
                     if let Some(ref mut ui) = ui_res {
                         ui.history.clear();
                         ui.history_timer = 0.0;
+                        ui.last_sampled_tick = 0;
                         ui.chronicle.clear();
                         ui.add_chronicle(format!(
                             "{:05}  The first hunger begins.",
@@ -844,7 +847,12 @@ pub fn api_dispatch_system(
                             }
                         }
                     }
-                    let res = save_clank_file(sim, &path).map_err(|e| e.to_string());
+                    let res = if path.ends_with(".json") {
+                        crate::persistence::export_json_file(sim, &path)
+                    } else {
+                        save_clank_file(sim, &path)
+                    }
+                    .map_err(|e| e.to_string());
                     let _ = response_tx.send(res);
                 } else {
                     let _ = response_tx.send(Err("Simulation not initialized".to_string()));
@@ -852,13 +860,22 @@ pub fn api_dispatch_system(
             }
             ApiCommand::PersistLoad { path, response_tx } => {
                 if let Some(ref mut sim) = sim_res {
-                    let res = load_clank_file(sim, &path).map_err(|e| e.to_string());
+                    let is_json = path.ends_with(".json");
+                    let res = if is_json {
+                        crate::persistence::import_json_file(sim, &path)
+                    } else {
+                        load_clank_file(sim, &path)
+                    }
+                    .map_err(|e| e.to_string());
                     if res.is_ok() {
                         if let Some(ref mut ui) = ui_res {
-                            ui.add_chronicle(format!(
-                                "{:05}  A world returns from its .clank record.",
-                                sim.world.tick
-                            ));
+                            ui.last_sampled_tick = sim.world.tick;
+                            let msg = if is_json {
+                                "A world returns from its record."
+                            } else {
+                                "A world returns from its .clank record."
+                            };
+                            ui.add_chronicle(format!("{:05}  {}", sim.world.tick, msg));
                         }
                     }
                     let _ = response_tx.send(res);

@@ -133,6 +133,21 @@ impl SimWorld {
             .len()
     }
 
+    pub fn validate_cpu_selection(&mut self) {
+        if self.active_engine == ActiveEngine::Rust {
+            if let Some(sel_id) = self.selected_agent_id {
+                if !self
+                    .world
+                    .agents
+                    .iter()
+                    .any(|a| a.dead == 0 && a.id == sel_id)
+                {
+                    self.selected_agent_id = None;
+                }
+            }
+        }
+    }
+
     pub fn step(&mut self, substeps: u32) {
         if self.paused {
             return;
@@ -140,12 +155,14 @@ impl SimWorld {
         for _ in 0..substeps {
             self.world.evolve();
         }
+        self.validate_cpu_selection();
     }
 
     pub fn force_step(&mut self, substeps: u32) {
         for _ in 0..substeps {
             self.world.evolve();
         }
+        self.validate_cpu_selection();
     }
 
     pub fn sync_gpu_cached_stats_from_cpu(&mut self) {
@@ -171,7 +188,10 @@ impl SimWorld {
             self.selected_agent_cache.as_ref()
         } else {
             let target_id = self.selected_agent_id?;
-            self.world.agents.iter().find(|a| a.id == target_id)
+            self.world
+                .agents
+                .iter()
+                .find(|a| a.id == target_id && a.dead == 0)
         }
     }
 }
@@ -285,7 +305,7 @@ pub fn upload_world_to_gpu(
 }
 
 /// Seeds founders at `positions` on the active engine, updating GPU telemetry and cached
-/// population/lineage counters immediately (including while paused).
+/// population/lineage/births counters and spark events immediately (including while paused).
 pub fn seed_life_gpu_aware(
     sim: &mut SimWorld,
     driver: Option<&crate::gpu::compute_driver::GpuComputeDriver>,
@@ -293,14 +313,19 @@ pub fn seed_life_gpu_aware(
 ) {
     if sim.active_engine == ActiveEngine::Gpu {
         if let Some(driver) = driver.filter(|d| d.is_initialized()) {
-            let added = driver.seed_agents_gpu(positions);
             for frame in driver.poll_frame_readbacks() {
                 apply_frame_readback(sim, driver, &frame, None);
             }
+            if sim.gpu_population >= sim.world.max_cap as u32 {
+                return;
+            }
+            let added = driver.seed_agents_gpu(positions);
             if !added.is_empty() {
                 let n = added.len() as u32;
                 sim.gpu_population = sim.gpu_population.saturating_add(n);
                 sim.gpu_living_lineages = sim.gpu_living_lineages.saturating_add(n);
+                sim.gpu_births_base = sim.gpu_births_base.saturating_add(n);
+                sim.world.births = sim.world.births.saturating_add(n);
                 sim.world.next_id = sim.world.next_id.max(
                     driver
                         .next_agent_id
@@ -311,6 +336,18 @@ pub fn seed_life_gpu_aware(
                         .next_agent_root
                         .load(std::sync::atomic::Ordering::Relaxed),
                 );
+                let seeded_clicks = (added.len() + 1) / 2;
+                for &(sx, sy) in positions.iter().take(seeded_clicks) {
+                    sim.world.spark_prng(5);
+                    if sim.world.spark_events.len() < 512 {
+                        sim.world.spark_events.push(clank_core::SparkEvent {
+                            x: sx,
+                            y: sy,
+                            color_idx: 12,
+                            count: 5,
+                        });
+                    }
+                }
             }
             return;
         }
@@ -366,6 +403,8 @@ pub fn sim_step_system(
         if sim.active_engine == ActiveEngine::Gpu {
             if let Some(driver) = gpu_res.as_ref().and_then(|g| g.driver.as_ref()) {
                 if driver.is_initialized() {
+                    let target_cap = (sim.world.max_cap as u32).min(driver.max_agents);
+                    let cap_changed = driver.current_capacity() != target_cap;
                     if let Some(pt) = sim.pending_tool.take() {
                         match pt.tool_type {
                             0 => {
@@ -437,6 +476,38 @@ pub fn sim_step_system(
                             }
                             _ => {}
                         }
+                    } else if cap_changed {
+                        let current_count = if sim.gpu_population > 0 {
+                            sim.gpu_population
+                        } else {
+                            sim.world.agents.len() as u32
+                        };
+                        let params = crate::gpu::types::GpuSimParams {
+                            tick: sim.world.tick,
+                            agent_count: current_count,
+                            max_agents: driver.active_slots(sim.world.max_cap as u32),
+                            max_capacity: sim.world.max_cap as u32,
+                            hostility: (sim.world.hostility / 100.0) as f32,
+                            mut_rate: (sim.world.mutation / 100.0) as f32,
+                            speed: sim.speed as f32,
+                            renewal: (sim.world.growth / 100.0) as f32,
+                            sub_tick: 0,
+                            sub_ticks_per_frame: 1,
+                            tool_type: 0xFFFFFFFF,
+                            tool_radius: 45.0,
+                            tool_pos: [0.0, 0.0],
+                            camera_pos: [
+                                (sim.world_width * 0.5) as f32,
+                                (sim.world_height * 0.5) as f32,
+                            ],
+                            camera_size: [sim.world_width as f32, sim.world_height as f32],
+                            world_size: [sim.world_width as f32, sim.world_height as f32],
+                            soil_grid: [sim.world.soil.cols as u32, sim.world.soil.rows as u32],
+                            eclipse: sim.world.eclipse,
+                            epoch: 0,
+                        };
+                        driver.dispatch_capacity_paused(&params);
+                        driver.request_frame_readback(sim.selected_agent_slot, false);
                     } else if sim.selected_agent_slot.is_some()
                         && sim.selected_agent_cache.is_none()
                         && driver.pending_frame_readbacks() == 0
@@ -549,7 +620,22 @@ pub fn sim_step_system(
                                 audio_queue.as_deref_mut(),
                             );
                         }
-                        sim.gpu_population += new_slots.len() as u32;
+                        let added_count = new_slots.len() as u32;
+                        sim.gpu_population += added_count;
+                        sim.gpu_living_lineages =
+                            sim.gpu_living_lineages.saturating_add(added_count);
+                        sim.gpu_births_base = sim.gpu_births_base.saturating_add(added_count);
+                        sim.world.births = sim.world.births.saturating_add(added_count);
+                        sim.world.next_id = sim.world.next_id.max(
+                            driver
+                                .next_agent_id
+                                .load(std::sync::atomic::Ordering::Relaxed),
+                        );
+                        sim.world.roots = sim.world.roots.max(
+                            driver
+                                .next_agent_root
+                                .load(std::sync::atomic::Ordering::Relaxed),
+                        );
                         let cur_tick = sim.world.tick;
                         if sim.world.events.len() < 1024 {
                             sim.world.events.push(clank_core::SimEvent {

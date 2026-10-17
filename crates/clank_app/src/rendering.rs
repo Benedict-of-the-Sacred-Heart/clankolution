@@ -20,6 +20,9 @@ pub struct SoilSprite;
 #[derive(Component)]
 pub struct VignetteSprite;
 
+#[derive(Component)]
+pub struct EclipseOverlaySprite;
+
 #[derive(Clone, Copy, Debug)]
 pub struct SparkParticle {
     pub x: f32,
@@ -287,6 +290,17 @@ pub fn setup_soil_rendering(mut commands: Commands, mut images: ResMut<Assets<Im
         VignetteSprite,
     ));
     commands.insert_resource(VignetteTextureHandle(vig_handle));
+
+    // 3. Eclipse Darkening Overlay Quad (`clankolution.html`: rgba(20, 5, 7, (eclipse / 210) * 0.42))
+    commands.spawn((
+        Sprite {
+            color: Color::srgba(20.0 / 255.0, 5.0 / 255.0, 7.0 / 255.0, 0.0),
+            custom_size: Some(Vec2::new(900.0, 600.0)),
+            ..default()
+        },
+        Transform::from_xyz(450.0, 300.0, 6.0),
+        EclipseOverlaySprite,
+    ));
 }
 
 pub fn update_soil_texture_system(
@@ -294,10 +308,29 @@ pub fn update_soil_texture_system(
     gpu_driver: Option<Res<crate::sim::GpuDriverResource>>,
     soil_handle: Option<Res<SoilTextureHandle>>,
     mut images: ResMut<Assets<Image>>,
-    mut query: Query<(&mut Sprite, &mut Transform), (With<SoilSprite>, Without<VignetteSprite>)>,
+    mut query: Query<
+        (&mut Sprite, &mut Transform),
+        (
+            With<SoilSprite>,
+            Without<VignetteSprite>,
+            Without<EclipseOverlaySprite>,
+        ),
+    >,
     mut vig_query: Query<
         (&mut Sprite, &mut Transform),
-        (With<VignetteSprite>, Without<SoilSprite>),
+        (
+            With<VignetteSprite>,
+            Without<SoilSprite>,
+            Without<EclipseOverlaySprite>,
+        ),
+    >,
+    mut eclipse_query: Query<
+        (&mut Sprite, &mut Transform),
+        (
+            With<EclipseOverlaySprite>,
+            Without<SoilSprite>,
+            Without<VignetteSprite>,
+        ),
     >,
 ) {
     let (Some(sim), Some(soil_handle)) = (sim, soil_handle) else {
@@ -348,6 +381,17 @@ pub fn update_soil_texture_system(
         transform.translation.y = h * 0.5;
     }
     if let Ok((mut sprite, mut transform)) = vig_query.single_mut() {
+        sprite.custom_size = Some(Vec2::new(w, h));
+        transform.translation.x = w * 0.5;
+        transform.translation.y = h * 0.5;
+    }
+    if let Ok((mut sprite, mut transform)) = eclipse_query.single_mut() {
+        let alpha = if sim.world.eclipse > 0 {
+            ((sim.world.eclipse as f32 / 210.0) * 0.42).clamp(0.0, 0.42)
+        } else {
+            0.0
+        };
+        sprite.color = Color::srgba(20.0 / 255.0, 5.0 / 255.0, 7.0 / 255.0, alpha);
         sprite.custom_size = Some(Vec2::new(w, h));
         transform.translation.x = w * 0.5;
         transform.translation.y = h * 0.5;
@@ -508,22 +552,24 @@ pub fn update_particles_system(
     for spark in events {
         let spark_pos = sim_to_bevy_coord(Vec2::new(spark.x as f32, spark.y as f32), h);
         let color = if spark.color_idx == 8 {
-            Color::srgb(1.0, 0.46, 0.40)
+            Color::srgb(1.0, 0.46, 0.40) // #ff7667 death
         } else if spark.color_idx == 9 {
-            Color::srgb(0.61, 0.91, 0.84)
+            Color::srgb(1.0, 0.40, 0.35) // #ff6659 eclipse
         } else if spark.color_idx == 10 {
-            Color::srgb(0.87, 0.74, 0.47)
+            Color::srgb(0.87, 0.74, 0.47) // #dfbd79 nourish
         } else if spark.color_idx == 11 {
-            Color::srgb(0.88, 0.47, 0.48)
+            Color::srgb(0.88, 0.47, 0.48) // #e0777a blight
+        } else if spark.color_idx == 12 {
+            Color::srgb(0.61, 0.91, 0.84) // #9ce7d5 seed life
         } else {
             lineage_color(spark.color_idx)
         };
 
-        let count = spark.count.clamp(1, 15);
+        let count = spark.count.clamp(1, 30);
         for _ in 0..count {
             let vx = res.next_f32(-2.4, 2.4);
             let vy = res.next_f32(-2.4, 2.4);
-            let life = res.next_f32(36.0, 86.0);
+            let life = res.next_f32(15.0, 36.0);
 
             res.particles.push(SparkParticle {
                 x: spark_pos.x,
@@ -531,7 +577,7 @@ pub fn update_particles_system(
                 vx,
                 vy,
                 life,
-                max_life: 86.0,
+                max_life: 36.0,
                 color,
             });
         }
@@ -587,11 +633,14 @@ pub fn render_sim_gizmos_system(sim: Option<Res<SimWorld>>, mut gizmos: Gizmos) 
         }
     }
 
-    // Eclipse Visual Overlay
+    // Eclipse Visual Border (`clankolution.html`: rgba(244, 102, 83, 0.4) at strokeRect(1, 1, W-2, H-2))
     if sim.world.eclipse > 0 {
-        let alpha = ((sim.world.eclipse as f32 / 210.0) * 0.42).clamp(0.0, 0.5);
-        let eclipse_color = Color::srgba(0.95, 0.4, 0.32, alpha);
-        gizmos.rect_2d(Vec2::new(w * 0.5, h * 0.5), Vec2::new(w, h), eclipse_color);
+        let eclipse_border = Color::srgba(244.0 / 255.0, 102.0 / 255.0, 83.0 / 255.0, 0.4);
+        gizmos.rect_2d(
+            Vec2::new(w * 0.5, h * 0.5),
+            Vec2::new((w - 2.0).max(1.0), (h - 2.0).max(1.0)),
+            eclipse_border,
+        );
     }
 }
 
@@ -708,6 +757,7 @@ pub fn agent_picking_system(
         crate::ui::ActiveTool::Extinguish => {
             sim.world
                 .extinguish_at(sim_pos.x as f64, sim_pos.y as f64, 23.0);
+            sim.validate_cpu_selection();
             if sim.active_engine == crate::sim::ActiveEngine::Gpu {
                 sim.pending_tool = Some(crate::sim::PendingTool {
                     tool_type: 3,

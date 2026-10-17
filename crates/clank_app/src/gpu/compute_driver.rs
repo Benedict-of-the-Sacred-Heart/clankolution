@@ -1722,6 +1722,42 @@ impl GpuComputeDriver {
         self.queue.submit([encoder.finish()]);
     }
 
+    pub fn current_capacity(&self) -> u32 {
+        self.freelist_capacity
+            .load(std::sync::atomic::Ordering::Relaxed)
+    }
+
+    /// Rebuilds the freelist and runs the census pass without advancing the simulation tick,
+    /// so changing `Creature capacity` in GPU mode while paused takes effect immediately.
+    pub fn dispatch_capacity_paused(&self, params: &GpuSimParams) {
+        self.apply_capacity(params);
+        let active_slots = params.max_agents.max(params.agent_count);
+        let agent_workgroups = (active_slots + 63) / 64;
+        if agent_workgroups == 0 {
+            return;
+        }
+        self.queue
+            .write_buffer(&self.sim_params_buf, 0, bytemuck::bytes_of(params));
+        let mut encoder = self
+            .device
+            .create_command_encoder(&wgpu::CommandEncoderDescriptor {
+                label: Some("gpu_capacity_paused_encoder"),
+            });
+        {
+            let mut cpass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {
+                label: Some("gpu_capacity_paused_pass"),
+                timestamp_writes: None,
+            });
+            cpass.set_pipeline(&self.preamble_pipeline);
+            cpass.set_bind_group(0, &self.preamble_bg0, &[]);
+            cpass.set_bind_group(1, &self.preamble_bg1, &[]);
+            cpass.dispatch_workgroups(agent_workgroups, 1, 1);
+
+            self.census.encode(&mut cpass, agent_workgroups);
+        }
+        self.queue.submit([encoder.finish()]);
+    }
+
     pub fn readback_telemetry(&self) -> GpuTelemetry {
         let mut encoder = self
             .device

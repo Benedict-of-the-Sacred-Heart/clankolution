@@ -113,6 +113,10 @@ pub fn load_clank_snapshot(sim: &mut SimWorld, bytes: &[u8]) -> Result<(), Persi
 
     w.agents.clear();
     w.agents.extend(snap_agents);
+    for a in &w.agents {
+        w.next_id = w.next_id.max(a.id.saturating_add(1));
+        w.roots = w.roots.max(a.root.saturating_add(1));
+    }
     w.build_grid();
 
     sim.world_width = target_w;
@@ -127,16 +131,31 @@ pub fn load_clank_snapshot(sim: &mut SimWorld, bytes: &[u8]) -> Result<(), Persi
     Ok(())
 }
 
+#[derive(Clone, Debug, SerdeSerialize, SerdeDeserialize)]
+pub struct JsonHistoryPoint {
+    #[serde(alias = "population")]
+    pub p: usize,
+    #[serde(alias = "food")]
+    pub f: f32,
+    #[serde(alias = "kills")]
+    pub k: usize,
+}
+
 #[derive(SerdeSerialize, SerdeDeserialize)]
 pub struct JsonAgent {
     pub id: u32,
     pub root: u32,
     pub gen: u32,
     pub age: u32,
+    #[serde(default)]
     pub cooldown: u32,
+    #[serde(default)]
     pub birth: u32,
+    #[serde(default)]
     pub kills: u32,
+    #[serde(default)]
     pub dead: bool,
+    #[serde(default, alias = "lastVictim")]
     pub last_victim: Option<u32>,
     pub x: f64,
     pub y: f64,
@@ -144,12 +163,17 @@ pub struct JsonAgent {
     pub vy: f64,
     pub angle: f64,
     pub energy: f64,
+    #[serde(default)]
     pub feeding: f64,
+    #[serde(default)]
     pub attack: f64,
+    #[serde(default)]
     pub signal: f64,
     pub tr: Vec<f64>,
     pub w: Vec<i8>,
     pub h: Vec<f32>,
+    #[serde(default)]
+    pub trail: Vec<[f64; 2]>,
 }
 
 #[derive(SerdeSerialize, SerdeDeserialize)]
@@ -157,22 +181,44 @@ pub struct JsonWorld {
     pub version: u32,
     pub width: f64,
     pub height: f64,
+    #[serde(default)]
     pub cap: usize,
+    #[serde(default)]
     pub tick: u32,
+    #[serde(default)]
     pub kills: u32,
+    #[serde(default)]
     pub births: u32,
+    #[serde(default, alias = "nextId")]
     pub next_id: u32,
+    #[serde(default)]
     pub roots: u32,
+    #[serde(default)]
     pub eclipse: u32,
     pub cols: u32,
     pub rows: u32,
     pub food: Vec<f32>,
+    #[serde(default)]
     pub taint: Vec<f32>,
+    #[serde(default)]
     pub scent: Vec<f32>,
+    #[serde(default)]
+    pub history: Vec<JsonHistoryPoint>,
+    #[serde(default = "default_mutation")]
     pub mutation: f64,
+    #[serde(default = "default_hundred")]
     pub growth: f64,
+    #[serde(default = "default_hundred")]
     pub hostility: f64,
     pub agents: Vec<JsonAgent>,
+}
+
+fn default_mutation() -> f64 {
+    16.0
+}
+
+fn default_hundred() -> f64 {
+    100.0
 }
 
 pub fn save_json_world(sim: &SimWorld) -> Result<String, PersistenceError> {
@@ -180,32 +226,39 @@ pub fn save_json_world(sim: &SimWorld) -> Result<String, PersistenceError> {
     let json_agents = w
         .agents
         .iter()
-        .map(|a| JsonAgent {
-            id: a.id,
-            root: a.root,
-            gen: a.gen,
-            age: a.age,
-            cooldown: a.cooldown,
-            birth: a.birth,
-            kills: a.kills,
-            dead: a.dead != 0,
-            last_victim: if a.last_victim != 0 {
-                Some(a.last_victim)
-            } else {
-                None
-            },
-            x: a.x,
-            y: a.y,
-            vx: a.vx,
-            vy: a.vy,
-            angle: a.angle,
-            energy: a.energy,
-            feeding: a.feeding,
-            attack: a.attack,
-            signal: a.signal,
-            tr: a.tr.to_vec(),
-            w: a.genes.to_vec(),
-            h: a.h.to_vec(),
+        .map(|a| {
+            let trail_len = (a.trail_count as usize).min(9);
+            let trail = (0..trail_len)
+                .map(|i| [a.trail_x[i], a.trail_y[i]])
+                .collect();
+            JsonAgent {
+                id: a.id,
+                root: a.root,
+                gen: a.gen,
+                age: a.age,
+                cooldown: a.cooldown,
+                birth: a.birth,
+                kills: a.kills,
+                dead: a.dead != 0,
+                last_victim: if a.last_victim != 0 {
+                    Some(a.last_victim)
+                } else {
+                    None
+                },
+                x: a.x,
+                y: a.y,
+                vx: a.vx,
+                vy: a.vy,
+                angle: a.angle,
+                energy: a.energy,
+                feeding: a.feeding,
+                attack: a.attack,
+                signal: a.signal,
+                tr: a.tr.to_vec(),
+                w: a.genes.to_vec(),
+                h: a.h.to_vec(),
+                trail,
+            }
         })
         .collect();
 
@@ -225,6 +278,7 @@ pub fn save_json_world(sim: &SimWorld) -> Result<String, PersistenceError> {
         food: w.soil.food.clone(),
         taint: w.soil.taint.clone(),
         scent: w.soil.scent.clone(),
+        history: Vec::new(),
         mutation: w.mutation,
         growth: w.growth,
         hostility: w.hostility,
@@ -240,6 +294,16 @@ pub fn load_json_world(sim: &mut SimWorld, json_str: &str) -> Result<(), Persist
 
     if data.version != 1 {
         return Err(PersistenceError::UnsupportedVersion(data.version));
+    }
+    if data.cols < 1
+        || data.rows < 1
+        || data.width < 1.0
+        || data.height < 1.0
+        || (data.cols as usize).saturating_mul(data.rows as usize) != data.food.len()
+    {
+        return Err(PersistenceError::InvalidArchive(
+            "Invalid world grid dimensions".to_string(),
+        ));
     }
 
     let w = &mut sim.world;
@@ -259,28 +323,43 @@ pub fn load_json_world(sim: &mut SimWorld, json_str: &str) -> Result<(), Persist
     w.tick = data.tick;
     w.kills = data.kills;
     w.births = data.births;
-    w.next_id = data.next_id;
-    w.roots = data.roots;
-    w.eclipse = data.eclipse;
-    w.mutation = data.mutation;
-    w.growth = data.growth;
-    w.hostility = data.hostility;
+    w.eclipse = data.eclipse.min(210);
+    w.mutation = data.mutation.clamp(0.0, 50.0);
+    w.growth = data.growth.clamp(0.0, 200.0);
+    w.hostility = data.hostility.clamp(0.0, 200.0);
+
+    w.soil.food.fill(0.0);
+    w.soil.taint.fill(0.0);
+    w.soil.scent.fill(0.0);
 
     let food_len = data.food.len().min(w.soil.food.len());
-    w.soil.food[..food_len].copy_from_slice(&data.food[..food_len]);
+    for i in 0..food_len {
+        w.soil.food[i] = data.food[i].clamp(0.0, 2.5);
+    }
 
     let taint_len = data.taint.len().min(w.soil.taint.len());
-    w.soil.taint[..taint_len].copy_from_slice(&data.taint[..taint_len]);
+    for i in 0..taint_len {
+        w.soil.taint[i] = data.taint[i].clamp(0.0, 3.0);
+    }
 
     let scent_len = data.scent.len().min(w.soil.scent.len());
-    w.soil.scent[..scent_len].copy_from_slice(&data.scent[..scent_len]);
-
-    if data.agents.len() > w.max_cap {
-        w.set_max_capacity(data.agents.len() as u32);
+    for i in 0..scent_len {
+        w.soil.scent[i] = data.scent[i].clamp(0.0, 3.0);
     }
+
+    let req_cap = data.cap.max(data.agents.len());
+    if req_cap > 0 {
+        w.set_max_capacity(req_cap.clamp(50, 65_536) as u32);
+    }
+
+    let mut max_id = data.next_id.max(1);
+    let mut max_root = data.roots.max(1);
 
     w.agents.clear();
     for ja in data.agents {
+        if ja.dead {
+            continue;
+        }
         let mut a = clank_core::agent::AgentData::default();
         a.id = ja.id;
         a.root = ja.root;
@@ -289,10 +368,10 @@ pub fn load_json_world(sim: &mut SimWorld, json_str: &str) -> Result<(), Persist
         a.cooldown = ja.cooldown;
         a.birth = ja.birth;
         a.kills = ja.kills;
-        a.dead = if ja.dead { 1 } else { 0 };
+        a.dead = 0;
         a.last_victim = ja.last_victim.unwrap_or(0);
-        a.x = ja.x;
-        a.y = ja.y;
+        a.x = clank_core::math::wrap(ja.x, w.w);
+        a.y = clank_core::math::wrap(ja.y, w.h);
         a.vx = ja.vx;
         a.vy = ja.vy;
         a.angle = ja.angle;
@@ -301,7 +380,7 @@ pub fn load_json_world(sim: &mut SimWorld, json_str: &str) -> Result<(), Persist
         a.attack = ja.attack;
         a.signal = ja.signal;
         for (i, v) in ja.tr.iter().enumerate().take(6) {
-            a.tr[i] = *v;
+            a.tr[i] = v.clamp(0.0, 1.0);
         }
         for (i, v) in ja.w.iter().enumerate().take(clank_core::agent::GENES) {
             a.genes[i] = *v;
@@ -310,8 +389,18 @@ pub fn load_json_world(sim: &mut SimWorld, json_str: &str) -> Result<(), Persist
             a.h[i] = *v;
             a.h_next[i] = *v;
         }
+        let trail_len = ja.trail.len().min(9);
+        for (i, pt) in ja.trail.iter().take(trail_len).enumerate() {
+            a.trail_x[i] = pt[0];
+            a.trail_y[i] = pt[1];
+        }
+        a.trail_count = trail_len as u32;
+        max_id = max_id.max(a.id.saturating_add(1));
+        max_root = max_root.max(a.root.saturating_add(1));
         w.agents.push(a);
     }
+    w.next_id = max_id;
+    w.roots = max_root;
 
     w.build_grid();
     sim.world_width = data.width;

@@ -156,3 +156,99 @@ fn test_load_and_reset_in_gpu_mode_immediately_sync_cached_stats_and_clear_selec
     assert_eq!(sim.max_generation(), 0);
     assert_eq!(sim.living_lineages(), 72);
 }
+
+#[test]
+fn test_html_json_export_compatibility_and_trail_roundtrip() {
+    // JSON shaped like clankolution.html's exportWorld() in JS mode:
+    // camelCase `nextId` & `lastVictim`, omitted `dead`, `trail` array, and `history` array.
+    let genes: Vec<i8> = (0..326).map(|i| ((i % 50) as i8) - 25).collect();
+    let agent_json = serde_json::json!({
+        "id": 250,
+        "x": 120.5,
+        "y": 340.25,
+        "angle": 1.25,
+        "vx": 0.5,
+        "vy": -0.25,
+        "energy": 64.0,
+        "age": 88,
+        "gen": 4,
+        "root": 77,
+        "w": genes,
+        "tr": [0.5, 0.6, 0.7, 0.4, 0.55, 0.65],
+        "h": [0.1, -0.1, 0.2, 0.0, 0.3, -0.2, 0.05, 0.15, -0.05, 0.25],
+        "signal": 0.3,
+        "attack": 0.1,
+        "feeding": 0.8,
+        "cooldown": 1,
+        "birth": 40,
+        "trail": [[118.0, 339.0], [119.5, 340.0], [120.5, 340.25]],
+        "lastVictim": 199,
+        "kills": 3
+    });
+    let mut root_map = serde_json::Map::new();
+    root_map.insert("version".into(), 1.into());
+    root_map.insert("width".into(), 900.0.into());
+    root_map.insert("height".into(), 600.0.into());
+    root_map.insert("cap".into(), 600.into());
+    root_map.insert("tick".into(), 420.into());
+    root_map.insert("kills".into(), 9.into());
+    root_map.insert("births".into(), 150.into());
+    root_map.insert("nextId".into(), 10.into());
+    root_map.insert("roots".into(), 5.into());
+    root_map.insert("eclipse".into(), 45.into());
+    root_map.insert("cols".into(), 75.into());
+    root_map.insert("rows".into(), 50.into());
+    root_map.insert(
+        "food".into(),
+        serde_json::to_value(vec![0.4f32; 75 * 50]).unwrap(),
+    );
+    root_map.insert(
+        "taint".into(),
+        serde_json::to_value(vec![0.05f32; 75 * 50]).unwrap(),
+    );
+    root_map.insert(
+        "scent".into(),
+        serde_json::to_value(vec![0.02f32; 75 * 50]).unwrap(),
+    );
+    root_map.insert(
+        "history".into(),
+        serde_json::json!([
+            { "p": 72, "f": 0.35, "k": 0 },
+            { "p": 85, "f": 0.42, "k": 9 }
+        ]),
+    );
+    root_map.insert("mutation".into(), 22.0.into());
+    root_map.insert("growth".into(), 115.0.into());
+    root_map.insert("hostility".into(), 95.0.into());
+    root_map.insert("agents".into(), serde_json::Value::Array(vec![agent_json]));
+    let html_json = serde_json::Value::Object(root_map).to_string();
+
+    let mut sim = SimWorld::new(42);
+    load_json_world(&mut sim, &html_json).expect("Should parse clankolution.html JSON export");
+
+    assert_eq!(sim.world.tick, 420);
+    assert_eq!(
+        sim.world.max_cap, 600,
+        "cap from JSON must update world.max_cap"
+    );
+    assert_eq!(sim.world.agents.len(), 1);
+    // next_id and roots must be raised above the highest restored agent id/root (HTML lines 2382-2389).
+    assert!(sim.world.next_id >= 251);
+    assert!(sim.world.roots >= 78);
+
+    let a = &sim.world.agents[0];
+    assert_eq!(a.id, 250);
+    assert_eq!(a.root, 77);
+    assert_eq!(a.last_victim, 199);
+    assert_eq!(a.trail_count, 3);
+    assert!((a.trail_x[2] - 120.5).abs() < 1e-6);
+    assert!((a.trail_y[2] - 340.25).abs() < 1e-6);
+
+    // Round-trip back through save_json_world and verify trail and cap survive.
+    let exported = save_json_world(&sim).expect("Failed to export JSON");
+    let mut sim2 = SimWorld::new(1);
+    load_json_world(&mut sim2, &exported).expect("Failed to reload exported JSON");
+    assert_eq!(sim2.world.max_cap, 600);
+    assert_eq!(sim2.world.agents[0].trail_count, 3);
+    assert_eq!(sim2.world.agents[0].last_victim, 199);
+}

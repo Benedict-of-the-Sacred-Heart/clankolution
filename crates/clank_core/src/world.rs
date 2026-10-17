@@ -349,7 +349,7 @@ impl World {
             self.spark_events.push(SparkEvent {
                 x: x as f32,
                 y: y as f32,
-                color_idx: 8,
+                color_idx: 11,
                 count: 2,
             });
         }
@@ -368,7 +368,7 @@ impl World {
                 self.spark_events.push(SparkEvent {
                     x: x as f32,
                     y: y as f32,
-                    color_idx: 9,
+                    color_idx: 12,
                     count: 5,
                 });
             }

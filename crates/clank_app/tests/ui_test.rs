@@ -151,6 +151,53 @@ fn test_history_recorder_pauses_when_sim_is_paused() {
 }
 
 #[test]
+fn test_history_recorder_samples_every_60_ticks_and_caps_at_180_like_html() {
+    use clank_app::ui::step_history_recorder;
+
+    let mut sim = SimWorld::new(42);
+    let mut state = UiState::default();
+
+    // Ticks 1..59 do not cross a 60-tick boundary (matching clankolution.html lines 1473 & 2778).
+    sim.world.tick = 59;
+    step_history_recorder(&mut state, &sim, 0.016);
+    assert_eq!(state.history.len(), 0);
+
+    // Crossing tick 60 pushes 1 sample.
+    sim.world.tick = 60;
+    step_history_recorder(&mut state, &sim, 0.016);
+    assert_eq!(state.history.len(), 1);
+
+    // High-speed step crossing two 60-tick boundaries (120 and 180) pushes 2 samples.
+    sim.world.tick = 185;
+    step_history_recorder(&mut state, &sim, 0.016);
+    assert_eq!(state.history.len(), 3);
+
+    // Buffer caps at 180 samples, dropping the oldest (matching clankolution.html line 1479).
+    for i in 0..200 {
+        state.record_history(i, 0.5, i);
+    }
+    assert_eq!(state.history.len(), 180);
+    assert_eq!(state.history.last().unwrap().population, 199);
+}
+
+#[test]
+fn test_cpu_selected_agent_clears_when_creature_dies() {
+    let mut sim = SimWorld::new(42);
+    let target_id = sim.world.agents[0].id;
+    sim.selected_agent_id = Some(target_id);
+    assert!(sim.get_selected_agent().is_some());
+
+    // Kill the selected creature and step 1 tick so it is removed.
+    sim.world.agents[0].energy = -1.0;
+    sim.step(1);
+
+    assert!(
+        sim.selected_agent_id.is_none(),
+        "selected_agent_id must become None when the selected creature dies in ENGINE: RUST"
+    );
+}
+
+#[test]
 fn test_living_roots_count() {
     let mut sim = SimWorld::new(42);
     // Genesis starts with 72 creatures, all root 1..72

@@ -486,9 +486,15 @@ fn test_gpu_tools_act_at_once_while_paused() {
         target.id
     );
 
-    // 5. Seed Life while paused immediately spawns two founders in VRAM and updates population/lineages.
+    // 5. Seed Life while paused immediately spawns two founders in VRAM and updates population/lineages/births/sparks.
     let pop_before_seed = app.world().resource::<SimWorld>().active_population();
     let lineages_before_seed = app.world().resource::<SimWorld>().living_lineages();
+    let births_before_seed = app.world().resource::<SimWorld>().world.births;
+    app.world_mut()
+        .resource_mut::<SimWorld>()
+        .world
+        .spark_events
+        .clear();
     app.world_mut()
         .resource_scope(|world, mut sim: bevy::prelude::Mut<SimWorld>| {
             let gpu = world.resource::<GpuDriverResource>();
@@ -505,13 +511,38 @@ fn test_gpu_tools_act_at_once_while_paused() {
         "Seed Life while paused must immediately increment living_lineages by 2"
     );
     assert_eq!(
+        app.world().resource::<SimWorld>().world.births,
+        births_before_seed + 2,
+        "Seed Life in GPU mode must increment world.births by 2 like clankolution.html"
+    );
+    assert!(
+        !app.world()
+            .resource::<SimWorld>()
+            .world
+            .spark_events
+            .is_empty(),
+        "Seed Life in GPU mode must emit a teal spark event like clankolution.html"
+    );
+    assert_eq!(
         app_driver(&app).readback_telemetry().population as usize,
         pop_before_seed + 2,
         "Seed Life while paused must immediately update GPU telemetry population"
     );
+
+    // 6. Lowering Creature capacity while paused in GPU mode immediately trims excess creatures.
+    app.world_mut()
+        .resource_mut::<SimWorld>()
+        .world
+        .set_max_capacity(50);
+    app.update();
+    settle(&mut app);
+    assert!(
+        app.world().resource::<SimWorld>().active_population() <= 50,
+        "Lowering max_cap to 50 while paused in GPU mode must trim population to <= 50"
+    );
     assert_eq!(
         app.world().resource::<SimWorld>().world.tick,
         paused_tick,
-        "paused tools must never advance the simulation tick"
+        "paused tools and capacity changes must never advance the simulation tick"
     );
 }

@@ -37,6 +37,7 @@ pub struct UiState {
     pub status_message: Option<String>,
     pub theme_initialized: bool,
     pub history_timer: f32,
+    pub last_sampled_tick: u32,
     pub scroll_offset: Option<f32>,
 }
 
@@ -55,6 +56,7 @@ impl Default for UiState {
             status_message: None,
             theme_initialized: false,
             history_timer: 0.0,
+            last_sampled_tick: 0,
             scroll_offset: None,
         }
     }
@@ -62,7 +64,7 @@ impl Default for UiState {
 
 impl UiState {
     pub fn record_history(&mut self, population: usize, food: f32, kills: usize) {
-        if self.history.len() >= 300 {
+        if self.history.len() >= 180 {
             self.history.remove(0);
         }
         self.history.push(HistoryPoint {
@@ -166,13 +168,30 @@ pub fn step_history_recorder(state: &mut UiState, sim: &SimWorld, dt_secs: f32) 
     if sim.paused {
         return;
     }
-    state.history_timer += dt_secs;
-    if state.history_timer >= 0.25 {
-        state.history_timer = 0.0;
+    if sim.world.tick < state.last_sampled_tick {
+        state.last_sampled_tick = sim.world.tick;
+    }
+    let prev_bucket = state.last_sampled_tick / 60;
+    let curr_bucket = sim.world.tick / 60;
+    if curr_bucket > prev_bucket {
+        let crossed = (curr_bucket - prev_bucket).min(180);
         let pop = sim.active_population();
         let food_mean = sim.active_mean_food();
         let kills = sim.world.kills as usize;
-        state.record_history(pop, food_mean, kills);
+        for _ in 0..crossed {
+            state.record_history(pop, food_mean, kills);
+        }
+        state.last_sampled_tick = sim.world.tick;
+        state.history_timer = 0.0;
+    } else if sim.world.tick == 0 {
+        state.history_timer += dt_secs;
+        if state.history_timer >= 0.25 {
+            state.history_timer = 0.0;
+            let pop = sim.active_population();
+            let food_mean = sim.active_mean_food();
+            let kills = sim.world.kills as usize;
+            state.record_history(pop, food_mean, kills);
+        }
     }
 }
 
@@ -281,6 +300,7 @@ pub fn clank_ui_system(
                         sim.reset();
                         state.history.clear();
                         state.history_timer = 0.0;
+                        state.last_sampled_tick = 0;
                         state.chronicle.clear();
                         state.add_chronicle(format!(
                             "{:05}  The first hunger begins.",
@@ -757,6 +777,7 @@ fn render_persistence_section(
                     match result {
                         Ok(()) => {
                             sim.selected_agent_id = None;
+                            state.last_sampled_tick = sim.world.tick;
                             let (event_msg, status_msg) = if is_json {
                                 (
                                     "A world returns from its record.",
@@ -874,10 +895,15 @@ fn render_pressure_sliders(ui: &mut egui::Ui, sim: &mut SimWorld) {
     let mut cap = sim.world.max_cap;
     render_slider_row(ui, "Creature capacity", &format!("{}", cap), slider_w);
     if ui
-        .add(egui::Slider::new(&mut cap, 50..=10000).show_value(false))
+        .add(
+            egui::Slider::new(&mut cap, 50..=10000)
+                .step_by(50.0)
+                .show_value(false),
+        )
         .changed()
     {
         sim.world.set_max_capacity(cap as u32);
+        sim.validate_cpu_selection();
     }
 }
 
