@@ -33,6 +33,17 @@ fn test_gpu_mode_stats_follow_the_gpu() {
         (max_gen, distinct_roots(&live)),
         "UI (GENERATION, LINEAGES) vs the live GPU creatures"
     );
+    let gpu_soil = app_driver(&app).readback_soil();
+    let expected_mean_food: f32 = gpu_soil
+        .iter()
+        .map(|c| GpuSoilPipeline::to_physics(c).0)
+        .sum::<f32>()
+        / gpu_soil.len() as f32;
+    assert!(
+        (sim.active_mean_food() - expected_mean_food).abs() < 2e-3,
+        "UI THE RECORD mean food ({}) must track live GPU soil ({expected_mean_food})",
+        sim.active_mean_food()
+    );
 }
 
 /// The census counts the creatures alive after the tick, that tick's newborns included, and

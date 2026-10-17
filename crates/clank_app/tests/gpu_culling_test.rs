@@ -67,13 +67,15 @@ fn test_gpu_frustum_culling_indirection() {
         );
     }
 
-    for inst in &instances {
-        let id = inst.pad1[0] & 0x00FF_FFFF;
-        assert!(
-            states.iter().any(|s| s.id == id && s.visual_cache != 0),
-            "Visible instance id {id} must correspond to a live uploaded agent"
-        );
-    }
+    let got_ids: Vec<u32> = instances
+        .iter()
+        .map(|inst| inst.pad1[0] & 0x00FF_FFFF)
+        .collect();
+    let expected_ids: Vec<u32> = states.iter().take(72).map(|s| s.id).collect();
+    assert_eq!(
+        got_ids, expected_ids,
+        "Visible instances must be compacted in deterministic slot order so alpha-blended overlapping darts never flicker"
+    );
 
     // 2. Tightly zoomed view: fewer agents should be visible
     params.camera_pos = [450.0, 300.0];

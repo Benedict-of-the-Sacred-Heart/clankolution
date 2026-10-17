@@ -23,9 +23,10 @@ pub struct SimWorld {
     pub world_height: f64,
     pub active_engine: ActiveEngine,
     pub gpu_population: u32,
-    /// The GPU census's highest living generation and distinct living lineages.
+    /// The GPU census's highest living generation, distinct living lineages, and mean soil food.
     pub gpu_max_generation: u32,
     pub gpu_living_lineages: u32,
+    pub gpu_mean_food: f32,
     /// Set when the CPU world was replaced (NEW WORLD, API reset, load); the GPU copy is
     /// stale and must be re-uploaded rather than flushed back.
     pub gpu_resync_pending: bool,
@@ -49,6 +50,8 @@ impl Default for SimWorld {
 impl SimWorld {
     pub fn new(seed: u32) -> Self {
         let world = World::new(seed);
+        let initial_mean_food =
+            world.soil.food.iter().sum::<f32>() / (world.soil.cols * world.soil.rows).max(1) as f32;
         Self {
             world,
             speed: 1,
@@ -64,6 +67,7 @@ impl SimWorld {
             gpu_population: 0,
             gpu_max_generation: 0,
             gpu_living_lineages: 0,
+            gpu_mean_food: initial_mean_food,
             gpu_resync_pending: false,
             gpu_births_base: 0,
         }
@@ -75,6 +79,20 @@ impl SimWorld {
         } else {
             self.world.agents.iter().filter(|a| a.dead == 0).count()
         }
+    }
+
+    /// Mean food per soil cell from the engine that owns the world.
+    pub fn active_mean_food(&self) -> f32 {
+        if self.active_engine == ActiveEngine::Gpu {
+            self.gpu_mean_food
+        } else {
+            self.cpu_mean_food()
+        }
+    }
+
+    fn cpu_mean_food(&self) -> f32 {
+        self.world.soil.food.iter().sum::<f32>()
+            / (self.world.soil.cols * self.world.soil.rows).max(1) as f32
     }
 
     /// The highest generation among living creatures, from the engine that owns them.
@@ -130,6 +148,14 @@ impl SimWorld {
         }
     }
 
+    pub fn sync_gpu_cached_stats_from_cpu(&mut self) {
+        self.gpu_population = self.world.agents.iter().filter(|a| a.dead == 0).count() as u32;
+        self.gpu_max_generation = self.cpu_max_generation();
+        self.gpu_living_lineages = self.cpu_living_lineages() as u32;
+        self.gpu_mean_food = self.cpu_mean_food();
+        self.gpu_births_base = self.world.births;
+    }
+
     pub fn reset(&mut self) {
         self.world.reset();
         self.selected_agent_id = None;
@@ -137,6 +163,7 @@ impl SimWorld {
         self.selected_agent_cache = None;
         self.pending_tool = None;
         self.gpu_resync_pending = true;
+        self.sync_gpu_cached_stats_from_cpu();
     }
 
     pub fn get_selected_agent(&self) -> Option<&AgentData> {
@@ -253,6 +280,7 @@ pub fn upload_world_to_gpu(
     // Until the first GPU frame lands, the census is the uploaded world's.
     sim.gpu_max_generation = sim.cpu_max_generation();
     sim.gpu_living_lineages = sim.cpu_living_lineages() as u32;
+    sim.gpu_mean_food = sim.cpu_mean_food();
     sim.gpu_births_base = sim.world.births;
 }
 
@@ -555,6 +583,8 @@ fn apply_frame_readback(
     sim.gpu_population = telemetry.population;
     sim.gpu_max_generation = telemetry.max_generation;
     sim.gpu_living_lineages = telemetry.living_lineages;
+    let grid_cells = (sim.world.soil.cols * sim.world.soil.rows).max(1) as f32;
+    sim.gpu_mean_food = (telemetry._reserved1[0] as f32 / 1000.0) / grid_cells;
 
     if telemetry.apex_agent_id > 0 {
         driver.next_agent_id.fetch_max(

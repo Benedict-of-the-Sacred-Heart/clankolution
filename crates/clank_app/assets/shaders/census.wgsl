@@ -11,10 +11,13 @@
 // Open-addressed set of `root + 1` (0 = empty): a power of two of at least twice the slots, so
 // it never fills.
 @group(0) @binding(3) var<storage, read_write> root_table: array<atomic<u32>>;
+// GpuSoilCell as 4 i32s per cell (word 0 = food_micro).
+@group(0) @binding(4) var<storage, read> soil_words: array<i32>;
 
 const POPULATION_WORD: u32 = 0u;       // GpuTelemetry.population
 const MAX_GENERATION_WORD: u32 = 14u;  // GpuTelemetry.max_generation
 const LIVING_LINEAGES_WORD: u32 = 15u; // GpuTelemetry.living_lineages
+const SOIL_FOOD_MILLI_WORD: u32 = 20u; // GpuTelemetry._reserved1[0]: total soil food in milli-units
 
 const STATE_WORDS: u32 = 32u;
 const META_FLAGS_WORD: u32 = 27u;
@@ -32,12 +35,18 @@ fn census_clear_main(@builtin(global_invocation_id) id: vec3u) {
         atomicStore(&telemetry_words[POPULATION_WORD], 0u);
         atomicStore(&telemetry_words[MAX_GENERATION_WORD], 0u);
         atomicStore(&telemetry_words[LIVING_LINEAGES_WORD], 0u);
+        atomicStore(&telemetry_words[SOIL_FOOD_MILLI_WORD], 0u);
     }
 }
 
 @compute @workgroup_size(64)
 fn census_main(@builtin(global_invocation_id) id: vec3u) {
     let slot = id.x;
+    let soil_cells = arrayLength(&soil_words) / 4u;
+    if (slot < soil_cells) {
+        let food_milli = u32(max(soil_words[slot * 4u], 0)) / 1000u;
+        atomicAdd(&telemetry_words[SOIL_FOOD_MILLI_WORD], food_milli);
+    }
     if (slot >= arrayLength(&agent_words) / STATE_WORDS) { return; }
     let base = slot * STATE_WORDS;
     // A creature killed this sub-tick is claimed dead before its own flag is set.

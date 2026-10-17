@@ -65,7 +65,7 @@ pub fn publish_creature_frame(
     let world_size = [sim.world_width as f32, sim.world_height as f32];
     let (slot_count, soil) = if driver.is_initialized() {
         let soil = soil_handle.map(|h| (driver.soil_display_texture().clone(), h.0.id()));
-        (driver.max_agents, soil)
+        (driver.active_slots(sim.world.max_cap as u32), soil)
     } else {
         let (states, trails) = crate::gpu::bridge::render_snapshot(&sim);
         (driver.upload_render_snapshot(&states, &trails), None)

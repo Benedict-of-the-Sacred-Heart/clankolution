@@ -118,6 +118,39 @@ fn test_history_buffer_push() {
 }
 
 #[test]
+fn test_history_recorder_pauses_when_sim_is_paused() {
+    use clank_app::ui::step_history_recorder;
+
+    let mut sim = SimWorld::new(42);
+    let mut state = UiState::default();
+
+    // While paused, THE RECORD must not advance its timer or push history points.
+    sim.paused = true;
+    step_history_recorder(&mut state, &sim, 0.30);
+    step_history_recorder(&mut state, &sim, 0.30);
+    assert!(
+        state.history.is_empty(),
+        "THE RECORD must not record points while paused"
+    );
+    assert_eq!(
+        state.history_timer, 0.0,
+        "history_timer must not accumulate while paused"
+    );
+
+    // When unpaused, THE RECORD samples every 0.25s using active_mean_food().
+    sim.paused = false;
+    step_history_recorder(&mut state, &sim, 0.30);
+    assert_eq!(state.history.len(), 1);
+    assert_eq!(state.history[0].population, sim.active_population());
+    assert!((state.history[0].food - sim.active_mean_food()).abs() < 1e-6);
+
+    // Pausing again freezes THE RECORD at its current length.
+    sim.paused = true;
+    step_history_recorder(&mut state, &sim, 1.0);
+    assert_eq!(state.history.len(), 1);
+}
+
+#[test]
 fn test_living_roots_count() {
     let mut sim = SimWorld::new(42);
     // Genesis starts with 72 creatures, all root 1..72

@@ -105,3 +105,54 @@ fn test_file_save_and_load_roundtrip() {
     let _ = std::fs::remove_file(clank_path);
     let _ = std::fs::remove_file(json_path);
 }
+
+#[test]
+fn test_load_and_reset_in_gpu_mode_immediately_sync_cached_stats_and_clear_selection() {
+    use clank_app::sim::ActiveEngine;
+
+    let mut source = SimWorld::new(42);
+    source.world.agents[0].gen = 7;
+    let saved_bytes = save_clank_snapshot(&source).unwrap();
+    let saved_json = save_json_world(&source).unwrap();
+
+    let mut sim = SimWorld::new(99);
+    sim.active_engine = ActiveEngine::Gpu;
+    sim.gpu_population = 300;
+    sim.gpu_max_generation = 40;
+    sim.gpu_living_lineages = 3;
+    sim.selected_agent_id = Some(12);
+    sim.selected_agent_slot = Some(4);
+    sim.selected_agent_cache = Some(source.world.agents[0]);
+
+    // 1. Loading a .clank snapshot in GPU mode immediately updates active stats and clears selection.
+    load_clank_snapshot(&mut sim, &saved_bytes).unwrap();
+    assert_eq!(sim.active_population(), 72);
+    assert_eq!(sim.max_generation(), 7);
+    assert_eq!(sim.living_lineages(), 72);
+    assert!(sim.selected_agent_id.is_none());
+    assert!(sim.selected_agent_slot.is_none());
+    assert!(sim.get_selected_agent().is_none());
+    assert!(sim.gpu_resync_pending);
+
+    // 2. Loading a .json world in GPU mode also immediately updates active stats and clears selection.
+    sim.gpu_population = 250;
+    sim.selected_agent_id = Some(8);
+    sim.selected_agent_slot = Some(2);
+    sim.selected_agent_cache = Some(source.world.agents[0]);
+    load_json_world(&mut sim, &saved_json).unwrap();
+    assert_eq!(sim.active_population(), 72);
+    assert_eq!(sim.max_generation(), 7);
+    assert_eq!(sim.living_lineages(), 72);
+    assert!(sim.selected_agent_id.is_none());
+    assert!(sim.selected_agent_slot.is_none());
+    assert!(sim.get_selected_agent().is_none());
+
+    // 3. Resetting in GPU mode immediately resets active stats to the fresh 72-founder world.
+    sim.gpu_population = 340;
+    sim.gpu_max_generation = 25;
+    sim.gpu_living_lineages = 2;
+    sim.reset();
+    assert_eq!(sim.active_population(), 72);
+    assert_eq!(sim.max_generation(), 0);
+    assert_eq!(sim.living_lineages(), 72);
+}

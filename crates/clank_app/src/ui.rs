@@ -162,6 +162,20 @@ pub fn compute_tool_hint(active_tool: ActiveTool) -> &'static str {
     }
 }
 
+pub fn step_history_recorder(state: &mut UiState, sim: &SimWorld, dt_secs: f32) {
+    if sim.paused {
+        return;
+    }
+    state.history_timer += dt_secs;
+    if state.history_timer >= 0.25 {
+        state.history_timer = 0.0;
+        let pop = sim.active_population();
+        let food_mean = sim.active_mean_food();
+        let kills = sim.world.kills as usize;
+        state.record_history(pop, food_mean, kills);
+    }
+}
+
 pub fn clank_ui_system(
     mut contexts: EguiContexts,
     mut sim: ResMut<SimWorld>,
@@ -177,16 +191,8 @@ pub fn clank_ui_system(
         return;
     }
 
-    // Periodic history recorder
-    state.history_timer += time.delta_secs();
-    if state.history_timer >= 0.25 {
-        state.history_timer = 0.0;
-        let pop = sim.active_population();
-        let food_sum: f32 = sim.world.soil.food.iter().sum::<f32>()
-            / (sim.world.soil.cols * sim.world.soil.rows) as f32;
-        let kills = sim.world.kills as usize;
-        state.record_history(pop, food_sum, kills);
-    }
+    // Periodic history recorder (paused while the simulation is paused)
+    step_history_recorder(&mut state, &sim, time.delta_secs());
 
     // Drain simulation chronicle events from clank_core
     let sim_events: Vec<_> = sim.world.events.drain(..).collect();
@@ -273,6 +279,9 @@ pub fn clank_ui_system(
                     .corner_radius(CornerRadius::same(3));
                     if ui.add_sized([95.0, 28.0], btn_new).clicked() {
                         sim.reset();
+                        state.history.clear();
+                        state.history_timer = 0.0;
+                        state.chronicle.clear();
                         state.add_chronicle(format!(
                             "{:05}  The first hunger begins.",
                             sim.world.tick

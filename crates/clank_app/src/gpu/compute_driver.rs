@@ -583,6 +583,8 @@ impl GpuComputeDriver {
             &queue_buffer,
             &agent_states_buf,
             &agent_atomics_buf,
+            &soil_buf,
+            soil_cols * soil_rows,
             max_agents,
         );
 
@@ -1484,8 +1486,14 @@ impl GpuComputeDriver {
             .map(|s| s.root)
             .collect::<std::collections::HashSet<_>>()
             .len() as u32;
+        let initial_soil_food_milli: u32 = soil
+            .iter()
+            .map(|c| (c.food_micro.max(0) as u32) / 1000)
+            .sum();
+        let mut reserved1 = [0u32; 12];
+        reserved1[0] = initial_soil_food_milli;
         // Lifetime counters (births, deaths) describe the uploaded world only, while
-        // population, max_generation, and living_lineages reflect the uploaded living agents.
+        // population, max_generation, living_lineages, and soil food reflect the uploaded state.
         let init_telem = GpuTelemetry {
             population: initial_population,
             apex_agent_id: next_id,
@@ -1493,6 +1501,7 @@ impl GpuComputeDriver {
             selected_agent_idx: 0xFFFF_FFFF,
             max_generation: initial_max_gen,
             living_lineages: initial_lineages,
+            _reserved1: reserved1,
             ..Default::default()
         };
         self.queue

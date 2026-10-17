@@ -7,6 +7,7 @@ pub struct CensusPass {
     bind_group: wgpu::BindGroup,
     _root_table: wgpu::Buffer,
     clear_workgroups: u32,
+    soil_workgroups: u32,
 }
 
 impl CensusPass {
@@ -15,6 +16,8 @@ impl CensusPass {
         queue_buffer: &wgpu::Buffer,
         agent_states: &wgpu::Buffer,
         agent_atomics: &wgpu::Buffer,
+        soil_buf: &wgpu::Buffer,
+        soil_cells: u32,
         max_agents: u32,
     ) -> Self {
         // Every living creature may head its own lineage, so the root set gets at least twice
@@ -43,6 +46,7 @@ impl CensusPass {
                 entry(1, true),
                 entry(2, true),
                 entry(3, false),
+                entry(4, true),
             ],
         });
         let bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
@@ -68,6 +72,10 @@ impl CensusPass {
                 wgpu::BindGroupEntry {
                     binding: 3,
                     resource: root_table.as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 4,
+                    resource: soil_buf.as_entire_binding(),
                 },
             ],
         });
@@ -98,15 +106,16 @@ impl CensusPass {
             bind_group,
             _root_table: root_table,
             clear_workgroups: table_len / 64,
+            soil_workgroups: (soil_cells + 63) / 64,
         }
     }
 
-    /// Clears the census and recounts it over `workgroups` × 64 slots.
+    /// Clears the census and recounts it over `workgroups` × 64 slots (and all soil cells).
     pub fn encode(&self, cpass: &mut wgpu::ComputePass<'_>, workgroups: u32) {
         cpass.set_bind_group(0, &self.bind_group, &[]);
         cpass.set_pipeline(&self.clear_pipeline);
         cpass.dispatch_workgroups(self.clear_workgroups, 1, 1);
         cpass.set_pipeline(&self.count_pipeline);
-        cpass.dispatch_workgroups(workgroups, 1, 1);
+        cpass.dispatch_workgroups(workgroups.max(self.soil_workgroups), 1, 1);
     }
 }

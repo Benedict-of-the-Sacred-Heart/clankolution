@@ -117,7 +117,12 @@ pub fn load_clank_snapshot(sim: &mut SimWorld, bytes: &[u8]) -> Result<(), Persi
 
     sim.world_width = target_w;
     sim.world_height = target_h;
+    sim.selected_agent_id = None;
+    sim.selected_agent_slot = None;
+    sim.selected_agent_cache = None;
+    sim.pending_tool = None;
     sim.gpu_resync_pending = true;
+    sim.sync_gpu_cached_stats_from_cpu();
 
     Ok(())
 }
@@ -311,7 +316,12 @@ pub fn load_json_world(sim: &mut SimWorld, json_str: &str) -> Result<(), Persist
     w.build_grid();
     sim.world_width = data.width;
     sim.world_height = data.height;
+    sim.selected_agent_id = None;
+    sim.selected_agent_slot = None;
+    sim.selected_agent_cache = None;
+    sim.pending_tool = None;
     sim.gpu_resync_pending = true;
+    sim.sync_gpu_cached_stats_from_cpu();
 
     Ok(())
 }

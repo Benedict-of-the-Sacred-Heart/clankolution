@@ -74,40 +74,75 @@ struct DrawArgs {
 @group(0) @binding(6) var<storage, read_write> instance_trails: array<GpuAgentTrail>;
 @group(0) @binding(7) var<storage, read_write> draw_args: array<DrawArgs, 4>;
 
+var<workgroup> wg_flags: array<u32, 64>;
+var<workgroup> wg_base: u32;
+
 @compute @workgroup_size(64)
-fn cull_main(@builtin(global_invocation_id) id: vec3u) {
-    let idx = id.x;
-    if (idx >= params.slot_count) {
-        return;
+fn cull_main(@builtin(local_invocation_id) lid: vec3u) {
+    let tid = lid.x;
+    if (tid == 0u) {
+        wg_base = 0u;
     }
-    let s = agent_states[idx];
-    if ((s.meta_flags & (1u << 13u)) != 0u || s.visual_cache == 0u || agent_atomics[idx].dead_claimed != 0u) {
-        return;
-    }
-    // Toroidal frustum test with a 24px margin.
-    let dx = abs(s.pos_vel.x - params.camera_pos.x);
-    let dy = abs(s.pos_vel.y - params.camera_pos.y);
+    workgroupBarrier();
+
     let half = params.camera_size * 0.5 + vec2f(24.0);
-    if (min(dx, params.world_size.x - dx) > half.x || min(dy, params.world_size.y - dy) > half.y) {
-        return;
+    let max_inst = arrayLength(&instances);
+
+    for (var base = 0u; base < params.slot_count; base += 64u) {
+        let idx = base + tid;
+        var vis = 0u;
+        var s: GpuAgentState;
+        if (idx < params.slot_count) {
+            s = agent_states[idx];
+            if ((s.meta_flags & (1u << 13u)) == 0u && s.visual_cache != 0u && agent_atomics[idx].dead_claimed == 0u) {
+                // Toroidal frustum test with a 24px margin.
+                let dx = abs(s.pos_vel.x - params.camera_pos.x);
+                let dy = abs(s.pos_vel.y - params.camera_pos.y);
+                if (min(dx, params.world_size.x - dx) <= half.x && min(dy, params.world_size.y - dy) <= half.y) {
+                    vis = 1u;
+                }
+            }
+        }
+        wg_flags[tid] = vis;
+        workgroupBarrier();
+
+        let chunk_base = wg_base;
+        if (vis == 1u) {
+            var offset = 0u;
+            for (var k = 0u; k < tid; k++) {
+                offset += wg_flags[k];
+            }
+            let slot = chunk_base + offset;
+            if (slot < max_inst) {
+                let carn_u8 = u32(clamp(s.traits[1].y, 0.0, 1.0) * 255.0);
+                instances[slot] = DartInstance(
+                    vec3f(s.pos_vel.xy, s.angle_energy.x),
+                    s.traits[0].w,
+                    vec2u(s.root, s.visual_cache),
+                    vec2u((carn_u8 << 24u) | (s.id & 0x00FFFFFFu), bitcast<u32>(s.traits[0].z)),
+                );
+                // A slot reused by another creature carries no trail yet.
+                var t = agent_trails[idx];
+                if (t.owner_id != s.id) {
+                    t.count = 0u;
+                }
+                instance_trails[slot] = t;
+            }
+        }
+        workgroupBarrier();
+        if (tid == 0u) {
+            var chunk_sum = 0u;
+            for (var k = 0u; k < 64u; k++) {
+                chunk_sum += wg_flags[k];
+            }
+            wg_base = chunk_base + chunk_sum;
+        }
+        workgroupBarrier();
     }
-    let slot = atomicAdd(&cull_count.count, 1u);
-    if (slot >= arrayLength(&instances)) {
-        return;
+
+    if (tid == 0u) {
+        atomicStore(&cull_count.count, wg_base);
     }
-    let carn_u8 = u32(clamp(s.traits[1].y, 0.0, 1.0) * 255.0);
-    instances[slot] = DartInstance(
-        vec3f(s.pos_vel.xy, s.angle_energy.x),
-        s.traits[0].w,
-        vec2u(s.root, s.visual_cache),
-        vec2u((carn_u8 << 24u) | (s.id & 0x00FFFFFFu), bitcast<u32>(s.traits[0].z)),
-    );
-    // A slot reused by another creature carries no trail yet.
-    var t = agent_trails[idx];
-    if (t.owner_id != s.id) {
-        t.count = 0u;
-    }
-    instance_trails[slot] = t;
 }
 
 // Vertices per instance: Glow 20 fan triangles, Trail 8 segments, Body 2 triangles,

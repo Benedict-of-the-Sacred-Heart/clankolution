@@ -817,8 +817,15 @@ pub fn api_dispatch_system(
                 if let Some(ref mut sim) = sim_res {
                     sim.world = clank_core::world::World::new(seed as u32);
                     sim.selected_agent_id = None;
+                    sim.selected_agent_slot = None;
+                    sim.selected_agent_cache = None;
+                    sim.pending_tool = None;
                     sim.gpu_resync_pending = true;
+                    sim.sync_gpu_cached_stats_from_cpu();
                     if let Some(ref mut ui) = ui_res {
+                        ui.history.clear();
+                        ui.history_timer = 0.0;
+                        ui.chronicle.clear();
                         ui.add_chronicle(format!(
                             "{:05}  The first hunger begins.",
                             sim.world.tick

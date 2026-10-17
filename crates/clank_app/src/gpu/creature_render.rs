@@ -323,10 +323,9 @@ impl CreatureRenderer {
                 timestamp_writes: None,
             });
             pass.set_bind_group(0, group, &[]);
-            let workgroups = rp.slot_count.div_ceil(64);
-            if workgroups > 0 {
+            if rp.slot_count > 0 {
                 pass.set_pipeline(&self.cull_pipeline);
-                pass.dispatch_workgroups(workgroups, 1, 1);
+                pass.dispatch_workgroups(1, 1, 1);
             }
         }
         // The args need the final count, so they are written in a pass of their own.
