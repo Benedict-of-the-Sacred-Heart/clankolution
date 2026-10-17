@@ -138,10 +138,10 @@ fn test_sim_world_blight_tool() {
     let idx = row * soil.cols + col;
     assert!(soil.taint[idx] > 0.0);
 
-    // Sparks should include color_idx 8 (red)
+    // Sparks should include color_idx 11 (#e0777a blight red)
     assert!(sim.world.spark_events.len() > initial_sparks);
     let last_spark = sim.world.spark_events.last().unwrap();
-    assert_eq!(last_spark.color_idx, 8);
+    assert_eq!(last_spark.color_idx, 11);
     assert_eq!(last_spark.count, 2);
 }
 
@@ -155,9 +155,9 @@ fn test_sim_world_seed_life_tool() {
     let new_living = sim.world.agents.iter().filter(|a| a.dead == 0).count();
     assert_eq!(new_living, initial_living + 2);
 
-    // Sparks should include color_idx 9 (cyan)
+    // Sparks should include color_idx 12 (#9ce7d5 seed life teal)
     assert!(sim.world.spark_events.len() > initial_sparks);
     let last_spark = sim.world.spark_events.last().unwrap();
-    assert_eq!(last_spark.color_idx, 9);
+    assert_eq!(last_spark.color_idx, 12);
     assert_eq!(last_spark.count, 5);
 }

@@ -210,6 +210,7 @@ pub fn flush_gpu_to_rust(
     let updated_states = driver.readback_agent_states(read_count);
     let updated_genomes = driver.readback_agent_genomes(read_count);
     let updated_atomics = driver.readback_atomics(read_count);
+    let updated_trails = driver.readback_agent_trails(read_count);
     let updated_soil = driver.readback_soil();
     let params = crate::gpu::types::GpuSimParams {
         tick: sim.world.tick,
@@ -226,6 +227,7 @@ pub fn flush_gpu_to_rust(
         &params,
         sim,
     );
+    crate::gpu::bridge::apply_gpu_trails(&updated_trails, sim);
     sim.world.roots = sim.world.roots.max(
         driver
             .next_agent_root
@@ -320,6 +322,10 @@ pub fn seed_life_gpu_aware(
                 return;
             }
             let added = driver.seed_agents_gpu(positions);
+            // `seed_agents_gpu` waits on the device, completing any earlier in-flight readbacks.
+            for frame in driver.poll_frame_readbacks() {
+                apply_frame_readback(sim, driver, &frame, None);
+            }
             if !added.is_empty() {
                 let n = added.len() as u32;
                 sim.gpu_population = sim.gpu_population.saturating_add(n);

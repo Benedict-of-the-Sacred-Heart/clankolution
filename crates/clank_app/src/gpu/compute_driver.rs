@@ -2058,6 +2058,43 @@ impl GpuComputeDriver {
         Some(trail)
     }
 
+    pub fn readback_agent_trails(&self, count: usize) -> Vec<GpuAgentTrail> {
+        let count = count.min(self.max_agents as usize);
+        let stride = std::mem::size_of::<GpuAgentTrail>() as u64;
+        let byte_len = (count as u64) * stride;
+        if byte_len == 0 {
+            return Vec::new();
+        }
+        let staging = self.device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("readback_agent_trails_staging"),
+            size: byte_len,
+            usage: wgpu::BufferUsages::MAP_READ | wgpu::BufferUsages::COPY_DST,
+            mapped_at_creation: false,
+        });
+        let mut encoder = self
+            .device
+            .create_command_encoder(&wgpu::CommandEncoderDescriptor {
+                label: Some("readback_agent_trails_encoder"),
+            });
+        encoder.copy_buffer_to_buffer(&self.agent_trails_buf, 0, &staging, 0, byte_len);
+        self.queue.submit([encoder.finish()]);
+
+        let slice = staging.slice(0..byte_len);
+        let (sender, receiver) = std::sync::mpsc::channel();
+        slice.map_async(wgpu::MapMode::Read, move |res| {
+            let _ = sender.send(res);
+        });
+        self.wait_blocking();
+        receiver.recv().unwrap().unwrap();
+
+        let data = slice.get_mapped_range();
+        let trails =
+            bytemuck::cast_slice::<u8, GpuAgentTrail>(&data[0..byte_len as usize]).to_vec();
+        drop(data);
+        staging.unmap();
+        trails
+    }
+
     /// Newborns and founders take ids from at least `next_id` on (the world's `next_id`, which
     /// is past every id it ever issued, dead creatures' included).
     pub fn raise_next_agent_id(&self, next_id: u32) {

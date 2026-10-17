@@ -139,6 +139,7 @@ fn test_long_run_gpu_population_sustainability_assertive() {
 fn test_sim_telemetry_birth_accumulation_guard() {
     let mut sim = SimWorld::new(42);
     let initial_births = sim.world.births; // 72
+    assert_eq!(initial_births, 72);
 
     // Simulate 5 frames where GPU telemetry reports total_births = 78 (meaning 6 new births occurred)
     let telem_total_births = 78u32;

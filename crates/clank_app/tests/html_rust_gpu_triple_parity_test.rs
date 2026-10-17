@@ -5,6 +5,7 @@ use clank_core::world::World;
 use serde::Deserialize;
 use std::fs;
 
+#[allow(dead_code)]
 #[derive(Deserialize)]
 struct ExportAgent {
     id: u32,
@@ -33,6 +34,7 @@ struct ExportAgent {
     genes: Vec<i8>,
 }
 
+#[allow(dead_code)]
 #[derive(Deserialize)]
 struct ExportTick {
     tick: u32,
@@ -121,7 +123,7 @@ fn test_html_vs_rust_vs_gpu_triple_parity() {
     let mut gpu_genomes = Vec::with_capacity(10000);
     let mut gpu_atomics = Vec::with_capacity(10000);
 
-    for (slot, a) in export.initial_agents.iter().enumerate() {
+    for (_slot, a) in export.initial_agents.iter().enumerate() {
         let mut st = GpuAgentState {
             pos_vel: [a.x as f32, a.y as f32, a.vx as f32, a.vy as f32],
             angle_energy: [a.angle as f32, a.energy as f32, 0.0, 0.0],
@@ -175,8 +177,8 @@ fn test_html_vs_rust_vs_gpu_triple_parity() {
     }
 
     // Pad to 10,000 for freelist
-    for slot in n..10000 {
-        let mut st = GpuAgentState {
+    for _slot in n..10000 {
+        let st = GpuAgentState {
             pos_vel: [0.0; 4],
             angle_energy: [0.0; 4],
             traits: [0.0; 8],
@@ -259,7 +261,7 @@ fn test_html_vs_rust_vs_gpu_triple_parity() {
 
         let g_states = driver.readback_agent_states(n);
         let g_atomics = driver.readback_atomics(n);
-        let telem = driver.readback_telemetry();
+        let _telem = driver.readback_telemetry();
 
         // Compare HTML vs Rust vs GPU for the first 10 agents
         let mut html_rust_max_pos = 0.0f64;

@@ -227,48 +227,31 @@ pub fn sync_gpu_to_rust(
 ) {
     sim.world.tick = params.tick;
 
-    // Synchronize agents
-    for (i, state) in states.iter().enumerate() {
-        if state.id == 0 {
-            // Uninitialized or empty slot
-            continue;
-        }
-
-        let is_dead = (state.meta_flags & (1 << 13)) != 0;
-
-        if is_dead {
-            if i < sim.world.agents.len() {
-                sim.world.agents[i].dead = 1;
-            }
-            continue;
-        }
-
+    // Synchronize agents when a non-empty slot slice is provided
+    if !states.is_empty() {
+        sim.world.agents.clear();
         let dummy_genome = GpuAgentGenome {
             packed_genes: [0u32; 88],
         };
-        let genome = genomes.get(i).unwrap_or(&dummy_genome);
-        let atomic = atomics.get(i);
-        let agent_data = unpack_gpu_agent_to_agent_data(state, genome, atomic);
-
-        if i < sim.world.agents.len() {
-            sim.world.agents[i] = agent_data;
-        } else {
-            if sim.world.agents.iter().filter(|ag| ag.dead == 0).count() < sim.world.max_cap {
-                sim.world.agents.push(agent_data);
+        for (i, state) in states.iter().enumerate() {
+            let is_dead = (state.meta_flags & (1 << 13)) != 0;
+            if state.id == 0 || is_dead {
+                continue;
             }
+            if sim.world.agents.len() >= sim.world.max_cap {
+                break;
+            }
+            let genome = genomes.get(i).unwrap_or(&dummy_genome);
+            let atomic = atomics.get(i);
+            let agent_data = unpack_gpu_agent_to_agent_data(state, genome, atomic);
+            sim.world.agents.push(agent_data);
         }
-    }
+        sim.world.sync_pos_cache();
 
-    // Filter dead agents in-place (matching CPU World::evolve stable compaction)
-    sim.world.agents.retain(|a| a.dead == 0 && a.id != 0);
-    if sim.world.agents.len() > sim.world.max_cap {
-        sim.world.agents.truncate(sim.world.max_cap);
+        // Ensure CPU next_id stays strictly ahead of all live agents
+        let max_agent_id = sim.world.agents.iter().map(|a| a.id).max().unwrap_or(0);
+        sim.world.next_id = sim.world.next_id.max(max_agent_id + 1);
     }
-    sim.world.sync_pos_cache();
-
-    // Ensure CPU next_id stays strictly ahead of all live agents
-    let max_agent_id = sim.world.agents.iter().map(|a| a.id).max().unwrap_or(0);
-    sim.world.next_id = sim.world.next_id.max(max_agent_id + 1);
 
     // Synchronize soil
     for (i, cell) in soil.iter().enumerate() {
@@ -277,6 +260,20 @@ pub fn sync_gpu_to_rust(
             sim.world.soil.food[i] = food;
             sim.world.soil.taint[i] = taint;
             sim.world.soil.scent[i] = scent;
+        }
+    }
+}
+
+/// Restores per-tick motion trails from GPU trail slots onto matching CPU agents.
+pub fn apply_gpu_trails(trails: &[GpuAgentTrail], sim: &mut SimWorld) {
+    for a in &mut sim.world.agents {
+        if let Some(t) = trails.iter().find(|t| t.owner_id == a.id && t.count > 0) {
+            let n = (t.count as usize).min(TRAIL_LEN);
+            for k in 0..n {
+                a.trail_x[k] = t.pts[k][0] as f64;
+                a.trail_y[k] = t.pts[k][1] as f64;
+            }
+            a.trail_count = n as u32;
         }
     }
 }

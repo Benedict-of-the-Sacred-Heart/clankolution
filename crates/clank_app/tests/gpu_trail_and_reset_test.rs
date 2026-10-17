@@ -200,3 +200,68 @@ fn test_new_world_resyncs_gpu_engine() {
         "birth count restarts from the new world's 72 founders"
     );
 }
+
+#[test]
+fn test_flush_gpu_to_rust_preserves_trails_and_clears_uninitialized_slots() {
+    let mut app = App::new();
+    app.add_plugins(MinimalPlugins).add_plugins(ClankSimPlugin);
+    app.world_mut().resource_mut::<SimWorld>().active_engine = ActiveEngine::Gpu;
+    app.update();
+    if app.world().resource::<GpuDriverResource>().driver.is_none() {
+        eprintln!("Skipping test: No GPU adapter available");
+        return;
+    }
+    for _ in 0..10 {
+        app.update();
+    }
+
+    // Switch to CPU engine (which triggers flush_gpu_to_rust on the next update)
+    app.world_mut().resource_mut::<SimWorld>().active_engine = ActiveEngine::Rust;
+    app.world_mut().resource_mut::<SimWorld>().paused = true;
+    app.update();
+
+    let sim = app.world().resource::<SimWorld>();
+    assert!(!sim.world.agents.is_empty());
+    let with_trails = sim
+        .world
+        .agents
+        .iter()
+        .filter(|a| a.trail_count > 1)
+        .count();
+    assert!(
+        with_trails > sim.world.agents.len() / 2,
+        "Expected creatures flushed from GPU to retain multi-point motion trails, got {with_trails}/{}",
+        sim.world.agents.len()
+    );
+    for a in &sim.world.agents {
+        if a.trail_count > 0 {
+            let last = (a.trail_count - 1) as usize;
+            assert!(
+                (a.trail_x[last] - a.x).abs() < 1e-3 && (a.trail_y[last] - a.y).abs() < 1e-3,
+                "Newest trail point must match creature position after GPU->CPU flush"
+            );
+        }
+    }
+
+    // Verify sync_gpu_to_rust drops stale CPU slots when GPU slots have id == 0
+    let mut sim_check = SimWorld::new(99);
+    assert_eq!(sim_check.world.agents.len(), 72);
+    let (mut states, genomes, atomics, soil, params) = sync_rust_to_gpu(&sim_check);
+    for s in states.iter_mut().skip(10) {
+        s.id = 0;
+        s.meta_flags = 0;
+    }
+    clank_app::gpu::bridge::sync_gpu_to_rust(
+        &states,
+        &genomes,
+        &atomics,
+        &soil,
+        &params,
+        &mut sim_check,
+    );
+    assert_eq!(
+        sim_check.world.agents.len(),
+        10,
+        "sync_gpu_to_rust must drop uninitialized (id == 0) slots"
+    );
+}
