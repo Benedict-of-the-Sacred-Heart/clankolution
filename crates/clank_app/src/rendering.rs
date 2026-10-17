@@ -626,7 +626,7 @@ pub fn agent_picking_system(
     window_query: Query<&Window, With<bevy::window::PrimaryWindow>>,
     camera_query: Query<(&Camera, &GlobalTransform), With<crate::camera::MainCamera>>,
     sim: Option<ResMut<SimWorld>>,
-    mut gpu_driver: Option<ResMut<crate::sim::GpuDriverResource>>,
+    gpu_driver: Option<ResMut<crate::sim::GpuDriverResource>>,
     ui_state: Option<Res<crate::ui::UiState>>,
     mut egui_contexts: Option<bevy_egui::EguiContexts>,
 ) {
@@ -701,16 +701,8 @@ pub fn agent_picking_system(
         }
         crate::ui::ActiveTool::SeedLife => {
             if mouse_buttons.just_pressed(MouseButton::Left) || (sim.world.tick % 8 == 0) {
-                sim.world.seed_life_at(sim_pos.x as f64, sim_pos.y as f64);
-                if sim.active_engine == crate::sim::ActiveEngine::Gpu {
-                    if let Some(ref mut gpu) = gpu_driver {
-                        if let Some(ref driver) = gpu.driver {
-                            if driver.is_initialized() {
-                                driver.seed_agents_gpu(&[(sim_pos.x, sim_pos.y)]);
-                            }
-                        }
-                    }
-                }
+                let drv = gpu_driver.as_ref().and_then(|g| g.driver.as_ref());
+                crate::sim::seed_life_gpu_aware(&mut sim, drv, &[(sim_pos.x, sim_pos.y)]);
             }
         }
         crate::ui::ActiveTool::Extinguish => {

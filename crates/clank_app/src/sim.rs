@@ -256,6 +256,42 @@ pub fn upload_world_to_gpu(
     sim.gpu_births_base = sim.world.births;
 }
 
+/// Seeds founders at `positions` on the active engine, updating GPU telemetry and cached
+/// population/lineage counters immediately (including while paused).
+pub fn seed_life_gpu_aware(
+    sim: &mut SimWorld,
+    driver: Option<&crate::gpu::compute_driver::GpuComputeDriver>,
+    positions: &[(f32, f32)],
+) {
+    if sim.active_engine == ActiveEngine::Gpu {
+        if let Some(driver) = driver.filter(|d| d.is_initialized()) {
+            let added = driver.seed_agents_gpu(positions);
+            for frame in driver.poll_frame_readbacks() {
+                apply_frame_readback(sim, driver, &frame, None);
+            }
+            if !added.is_empty() {
+                let n = added.len() as u32;
+                sim.gpu_population = sim.gpu_population.saturating_add(n);
+                sim.gpu_living_lineages = sim.gpu_living_lineages.saturating_add(n);
+                sim.world.next_id = sim.world.next_id.max(
+                    driver
+                        .next_agent_id
+                        .load(std::sync::atomic::Ordering::Relaxed),
+                );
+                sim.world.roots = sim.world.roots.max(
+                    driver
+                        .next_agent_root
+                        .load(std::sync::atomic::Ordering::Relaxed),
+                );
+            }
+            return;
+        }
+    }
+    for &(sx, sy) in positions {
+        sim.world.seed_life_at(sx as f64, sy as f64);
+    }
+}
+
 pub fn sim_step_system(
     mut sim: ResMut<SimWorld>,
     mut gpu_res: Option<ResMut<GpuDriverResource>>,

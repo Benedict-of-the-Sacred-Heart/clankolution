@@ -539,9 +539,9 @@ impl Plugin for ClankApiPlugin {
             .add_systems(
                 Update,
                 (
-                    api_dispatch_system,
-                    api_metrics_sync_system,
-                    api_state_sync_system,
+                    api_dispatch_system.before(crate::sim::sim_step_system),
+                    api_metrics_sync_system.after(crate::sim::sim_step_system),
+                    api_state_sync_system.after(crate::sim::sim_step_system),
                 ),
             );
     }
@@ -552,7 +552,7 @@ pub fn api_dispatch_system(
     rx_res: Option<Res<ApiReceiverResource>>,
     mut sim_res: Option<ResMut<SimWorld>>,
     mut ui_res: Option<ResMut<UiState>>,
-    mut gpu_res: Option<ResMut<crate::sim::GpuDriverResource>>,
+    gpu_res: Option<ResMut<crate::sim::GpuDriverResource>>,
 ) {
     let Some(rx_res) = rx_res else {
         return;
@@ -785,18 +785,10 @@ pub fn api_dispatch_system(
                                 } else {
                                     (x, y)
                                 };
-                                sim.world.seed_life_at(sx, sy);
                                 positions.push((sx as f32, sy as f32));
                             }
-                            if sim.active_engine == crate::sim::ActiveEngine::Gpu {
-                                if let Some(ref mut gpu) = gpu_res {
-                                    if let Some(ref driver) = gpu.driver {
-                                        if driver.is_initialized() {
-                                            driver.seed_agents_gpu(&positions);
-                                        }
-                                    }
-                                }
-                            }
+                            let drv = gpu_res.as_ref().and_then(|g| g.driver.as_ref());
+                            crate::sim::seed_life_gpu_aware(sim, drv, &positions);
                         }
                         "extinguish" | "kill" => {
                             sim.world.extinguish_at(x, y, 23.0);

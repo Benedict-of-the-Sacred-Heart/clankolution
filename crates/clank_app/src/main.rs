@@ -1,5 +1,5 @@
 use bevy::prelude::*;
-use bevy::window::{PresentMode, WindowLevel};
+use bevy::window::PresentMode;
 use clank_app::api::ClankApiPlugin;
 use clank_app::camera::ClankCameraPlugin;
 use clank_app::rendering::ClankRenderPlugin;
@@ -14,7 +14,6 @@ fn main() {
                 resolution: (1280u32, 800u32).into(),
                 present_mode: PresentMode::AutoVsync,
                 focused: true,
-                window_level: WindowLevel::AlwaysOnTop,
                 ..default()
             }),
             ..default()

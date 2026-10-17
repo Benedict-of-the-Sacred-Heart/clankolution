@@ -1464,29 +1464,41 @@ impl GpuComputeDriver {
             self.queue
                 .write_buffer(&self.freelist_buf, 0, bytemuck::cast_slice(&free_slots));
         }
-        // Lifetime counters (births, deaths) describe the uploaded world only.
-        self.queue.write_buffer(
-            &self.queue_buffer,
-            0,
-            bytemuck::bytes_of(&GpuTelemetry::default()),
-        );
-        self.queue
-            .write_buffer(&self.queue_buffer, 28, bytemuck::bytes_of(&freelist_top));
-
         // Ids continue after every uploaded one (queue_buffer offset 24, apex_agent_id); the
         // world's own counter raises this further (`raise_next_agent_id`).
         let next_id = states.iter().map(|s| s.id + 1).max().unwrap_or(1);
         self.next_agent_id
             .store(next_id, std::sync::atomic::Ordering::Relaxed);
-        self.queue
-            .write_buffer(&self.queue_buffer, 24, bytemuck::bytes_of(&next_id));
-        // Founders start new lineages after every uploaded one (the reference's `roots`).
-        let next_root = states
+        let live_states: Vec<&GpuAgentState> = states
             .iter()
-            .filter(|s| (s.meta_flags & (1 << 13)) == 0)
-            .map(|s| s.root + 1)
+            .filter(|s| (s.meta_flags & (1 << 13)) == 0 && s.id != 0)
+            .collect();
+        let initial_population = live_states.len() as u32;
+        let initial_max_gen = live_states
+            .iter()
+            .map(|s| s.age_gen & 0xFFFF)
             .max()
             .unwrap_or(0);
+        let initial_lineages = live_states
+            .iter()
+            .map(|s| s.root)
+            .collect::<std::collections::HashSet<_>>()
+            .len() as u32;
+        // Lifetime counters (births, deaths) describe the uploaded world only, while
+        // population, max_generation, and living_lineages reflect the uploaded living agents.
+        let init_telem = GpuTelemetry {
+            population: initial_population,
+            apex_agent_id: next_id,
+            freelist_top,
+            selected_agent_idx: 0xFFFF_FFFF,
+            max_generation: initial_max_gen,
+            living_lineages: initial_lineages,
+            ..Default::default()
+        };
+        self.queue
+            .write_buffer(&self.queue_buffer, 0, bytemuck::bytes_of(&init_telem));
+        // Founders start new lineages after every uploaded one (the reference's `roots`).
+        let next_root = live_states.iter().map(|s| s.root + 1).max().unwrap_or(0);
         self.next_agent_root
             .store(next_root, std::sync::atomic::Ordering::Relaxed);
 
@@ -2194,7 +2206,11 @@ impl GpuComputeDriver {
             run_start = run_end;
         }
 
-        // 4. Update freelist_top and apex_agent_id in queue_buffer
+        // 4. Update population, freelist_top, apex_agent_id, and living_lineages in queue_buffer
+        let added_count = slots.len() as u32;
+        let new_population = telem.population.saturating_add(added_count);
+        self.queue
+            .write_buffer(&self.queue_buffer, 0, bytemuck::bytes_of(&new_population));
         let new_freelist_top = start_slot;
         self.queue.write_buffer(
             &self.queue_buffer,
@@ -2206,6 +2222,9 @@ impl GpuComputeDriver {
             .load(std::sync::atomic::Ordering::Relaxed);
         self.queue
             .write_buffer(&self.queue_buffer, 24, bytemuck::bytes_of(&next_id));
+        let new_lineages = telem.living_lineages.saturating_add(added_count);
+        self.queue
+            .write_buffer(&self.queue_buffer, 60, bytemuck::bytes_of(&new_lineages));
 
         slots
     }

@@ -474,6 +474,30 @@ fn test_gpu_tools_act_at_once_while_paused() {
         "Extinguish while paused must remove creature {} immediately",
         target.id
     );
+
+    // 5. Seed Life while paused immediately spawns two founders in VRAM and updates population/lineages.
+    let pop_before_seed = app.world().resource::<SimWorld>().active_population();
+    let lineages_before_seed = app.world().resource::<SimWorld>().living_lineages();
+    app.world_mut()
+        .resource_scope(|world, mut sim: bevy::prelude::Mut<SimWorld>| {
+            let gpu = world.resource::<GpuDriverResource>();
+            clank_app::sim::seed_life_gpu_aware(&mut sim, gpu.driver.as_ref(), &[(450.0, 300.0)]);
+        });
+    assert_eq!(
+        app.world().resource::<SimWorld>().active_population(),
+        pop_before_seed + 2,
+        "Seed Life while paused must immediately increment active_population by 2"
+    );
+    assert_eq!(
+        app.world().resource::<SimWorld>().living_lineages(),
+        lineages_before_seed + 2,
+        "Seed Life while paused must immediately increment living_lineages by 2"
+    );
+    assert_eq!(
+        app_driver(&app).readback_telemetry().population as usize,
+        pop_before_seed + 2,
+        "Seed Life while paused must immediately update GPU telemetry population"
+    );
     assert_eq!(
         app.world().resource::<SimWorld>().world.tick,
         paused_tick,
