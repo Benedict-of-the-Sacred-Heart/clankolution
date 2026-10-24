@@ -243,6 +243,11 @@ fn test_gpu_settings_selected_agent_beyond_500_and_invalid_id() {
             Some(600),
             "must resolve actual buffer slot beyond 500 rather than falling back to agent_id"
         );
+        assert_eq!(
+            sim.get_selected_agent().map(|a| a.id),
+            Some(1600),
+            "get_selected_agent() must immediately return the newly selected GPU creature"
+        );
     }
 
     // Selecting a non-existent creature ID must clear selection rather than setting slot = id.

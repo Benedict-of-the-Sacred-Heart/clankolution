@@ -546,3 +546,90 @@ fn test_gpu_tools_act_at_once_while_paused() {
         "paused tools and capacity changes must never advance the simulation tick"
     );
 }
+
+/// In GPU mode, birth sparks carry the parent's lineage color (`root % 8`, count 9) rather than
+/// eclipse red (`color_idx == 9`), death sparks carry the dying creature's lineage color
+/// (`root % 8`, count 5), and running Nourish/Blight emit gold (`10`) and blight-red (`11`) sparks.
+#[test]
+fn test_gpu_sparks_use_lineage_colors_for_births_and_deaths_and_tool_colors_for_nourish_blight() {
+    let mut parent = creature(1, 450.0, 300.0, 0.0);
+    parent.root = 5; // lineage color 5
+    parent.energy = 100.0;
+    parent.age = 70;
+    parent.birth = 0;
+
+    let mut starving = creature(2, 500.0, 300.0, 0.0);
+    starving.root = 3; // lineage color 3
+    starving.energy = 0.05; // starves on tick 1
+    starving.age = 10;
+
+    let Some(mut app) = gpu_app(|sim| {
+        sim.world.agents = vec![parent, starving];
+        sim.world.next_id = 3;
+        sim.world.roots = 6;
+        sim.world.growth = 0.0;
+        sim.world.sync_pos_cache();
+        for f in sim.world.soil.food.iter_mut() {
+            *f = 0.0;
+        }
+    }) else {
+        return;
+    };
+
+    app.world_mut()
+        .resource_mut::<SimWorld>()
+        .world
+        .spark_events
+        .clear();
+    run(&mut app, 2);
+    settle(&mut app);
+
+    let sparks = app
+        .world()
+        .resource::<SimWorld>()
+        .world
+        .spark_events
+        .clone();
+    assert!(
+        sparks.iter().any(|s| s.color_idx == 5 && s.count == 9),
+        "Expected birth spark with parent lineage color_idx 5 and count 9, got {sparks:?}"
+    );
+    assert!(
+        sparks.iter().any(|s| s.color_idx == 3 && s.count == 5),
+        "Expected death spark with dying creature lineage color_idx 3 and count 5, got {sparks:?}"
+    );
+
+    // Running Nourish and Blight via pending_tool must emit tool sparks (10 and 11).
+    app.world_mut()
+        .resource_mut::<SimWorld>()
+        .world
+        .spark_events
+        .clear();
+    app.world_mut().resource_mut::<SimWorld>().pending_tool = Some(clank_app::sim::PendingTool {
+        tool_type: 1,
+        tool_pos: [200.0, 200.0],
+        tool_radius: 45.0,
+    });
+    run(&mut app, 1);
+    app.world_mut().resource_mut::<SimWorld>().pending_tool = Some(clank_app::sim::PendingTool {
+        tool_type: 2,
+        tool_pos: [250.0, 250.0],
+        tool_radius: 45.0,
+    });
+    run(&mut app, 1);
+
+    let tool_sparks = app
+        .world()
+        .resource::<SimWorld>()
+        .world
+        .spark_events
+        .clone();
+    assert!(
+        tool_sparks.iter().any(|s| s.color_idx == 10 && s.count == 2),
+        "Expected running GPU Nourish to emit gold spark (color_idx 10, count 2), got {tool_sparks:?}"
+    );
+    assert!(
+        tool_sparks.iter().any(|s| s.color_idx == 11 && s.count == 2),
+        "Expected running GPU Blight to emit blight spark (color_idx 11, count 2), got {tool_sparks:?}"
+    );
+}

@@ -729,41 +729,46 @@ pub fn agent_picking_system(
             }
         }
         crate::ui::ActiveTool::Nourish => {
-            sim.world.nourish_at(sim_pos.x as f64, sim_pos.y as f64);
             if sim.active_engine == crate::sim::ActiveEngine::Gpu {
                 sim.pending_tool = Some(crate::sim::PendingTool {
                     tool_type: 1,
                     tool_pos: [sim_pos.x, sim_pos.y],
                     tool_radius: 45.0,
                 });
+            } else {
+                sim.world.nourish_at(sim_pos.x as f64, sim_pos.y as f64);
             }
         }
         crate::ui::ActiveTool::Blight => {
-            sim.world.blight_at(sim_pos.x as f64, sim_pos.y as f64);
             if sim.active_engine == crate::sim::ActiveEngine::Gpu {
                 sim.pending_tool = Some(crate::sim::PendingTool {
                     tool_type: 2,
                     tool_pos: [sim_pos.x, sim_pos.y],
                     tool_radius: 45.0,
                 });
+            } else {
+                sim.world.blight_at(sim_pos.x as f64, sim_pos.y as f64);
             }
         }
         crate::ui::ActiveTool::SeedLife => {
-            if mouse_buttons.just_pressed(MouseButton::Left) || (sim.world.tick % 8 == 0) {
+            if mouse_buttons.just_pressed(MouseButton::Left)
+                || (!sim.paused && sim.world.tick % 8 == 0)
+            {
                 let drv = gpu_driver.as_ref().and_then(|g| g.driver.as_ref());
                 crate::sim::seed_life_gpu_aware(&mut sim, drv, &[(sim_pos.x, sim_pos.y)]);
             }
         }
         crate::ui::ActiveTool::Extinguish => {
-            sim.world
-                .extinguish_at(sim_pos.x as f64, sim_pos.y as f64, 23.0);
-            sim.validate_cpu_selection();
             if sim.active_engine == crate::sim::ActiveEngine::Gpu {
                 sim.pending_tool = Some(crate::sim::PendingTool {
                     tool_type: 3,
                     tool_pos: [sim_pos.x, sim_pos.y],
                     tool_radius: 23.0,
                 });
+            } else {
+                sim.world
+                    .extinguish_at(sim_pos.x as f64, sim_pos.y as f64, 23.0);
+                sim.validate_cpu_selection();
             }
         }
         crate::ui::ActiveTool::Eclipse => {

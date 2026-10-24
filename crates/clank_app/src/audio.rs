@@ -28,7 +28,10 @@ impl AudioVoiceQueue {
         self.voices.clear();
         for &v in voices.iter().take(256) {
             if v.volume > 0.0 {
-                self.voices.push(v);
+                self.voices.push(AudioVoice {
+                    event_type: v.event_type & 0xFF,
+                    ..v
+                });
             }
         }
     }

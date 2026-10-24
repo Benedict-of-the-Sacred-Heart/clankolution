@@ -617,6 +617,33 @@ pub fn api_dispatch_system(
                         sim.validate_cpu_selection();
                     }
                     if let Some(agent_id) = req.selected_agent {
+                        let unpack_gpu_slot =
+                            |driver: &crate::gpu::compute_driver::GpuComputeDriver,
+                             idx: usize,
+                             state: &crate::gpu::types::GpuAgentState| {
+                                let genomes = driver.readback_agent_genomes(idx + 1);
+                                let atomics = driver.readback_atomics(idx + 1);
+                                let dummy = crate::gpu::types::GpuAgentGenome {
+                                    packed_genes: [0u32; 88],
+                                };
+                                let mut data = crate::gpu::bridge::unpack_gpu_agent_to_agent_data(
+                                    state,
+                                    genomes.get(idx).unwrap_or(&dummy),
+                                    atomics.get(idx),
+                                );
+                                if let Some(t) = driver.readback_agent_trail(idx as u32) {
+                                    if t.owner_id == state.id {
+                                        let n =
+                                            (t.count as usize).min(crate::gpu::types::TRAIL_LEN);
+                                        for (i, p) in t.pts[..n].iter().enumerate() {
+                                            data.trail_x[i] = p[0] as f64;
+                                            data.trail_y[i] = p[1] as f64;
+                                        }
+                                        data.trail_count = n as u32;
+                                    }
+                                }
+                                data
+                            };
                         if agent_id == 0 {
                             if sim.active_engine == crate::sim::ActiveEngine::Gpu {
                                 let found = gpu_res
@@ -634,11 +661,14 @@ pub fn api_dispatch_system(
                                                 (a.meta_flags & (1 << 13)) == 0
                                                     && a.visual_cache != 0
                                             })
-                                            .map(|(idx, s)| (idx as u32, s.id))
+                                            .map(|(idx, s)| {
+                                                (idx as u32, s.id, unpack_gpu_slot(driver, idx, s))
+                                            })
                                     });
-                                if let Some((slot, id)) = found {
+                                if let Some((slot, id, data)) = found {
                                     sim.selected_agent_id = Some(id);
                                     sim.selected_agent_slot = Some(slot);
+                                    sim.selected_agent_cache = Some(data);
                                 } else {
                                     sim.selected_agent_id = None;
                                     sim.selected_agent_slot = None;
@@ -669,11 +699,14 @@ pub fn api_dispatch_system(
                                                 && (a.meta_flags & (1 << 13)) == 0
                                                 && a.visual_cache != 0
                                         })
-                                        .map(|(idx, s)| (idx as u32, s.id))
+                                        .map(|(idx, s)| {
+                                            (idx as u32, s.id, unpack_gpu_slot(driver, idx, s))
+                                        })
                                 });
-                            if let Some((slot, id)) = found {
+                            if let Some((slot, id, data)) = found {
                                 sim.selected_agent_id = Some(id);
                                 sim.selected_agent_slot = Some(slot);
+                                sim.selected_agent_cache = Some(data);
                             } else {
                                 sim.selected_agent_id = None;
                                 sim.selected_agent_slot = None;

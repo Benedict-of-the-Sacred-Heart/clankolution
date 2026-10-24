@@ -308,6 +308,22 @@ fn push_pending_free(slot: u32) {
     }
 }
 
+// Emits a silent (volume 0.0) visual death spark event (kind 3) carrying the dying creature's
+// lineage color (root % 8) when in the camera view and queue headroom remains.
+fn push_death_spark(p: vec2f, root: u32) {
+    let dx = abs(p.x - params.camera_pos.x);
+    let dist_x = min(dx, params.world_size.x - dx);
+    let dy = abs(p.y - params.camera_pos.y);
+    let dist_y = min(dy, params.world_size.y - dy);
+    let in_view = (dist_x <= params.camera_size.x * 0.5 && dist_y <= params.camera_size.y * 0.5);
+    if (in_view && atomicLoad(&queue_buffer.telemetry.audio_voice_count) < 192u) {
+        let voice_slot = atomicAdd(&queue_buffer.telemetry.audio_voice_count, 1u);
+        if (voice_slot < 256u) {
+            queue_buffer.audio[voice_slot] = AudioVoice(p, 3u | ((root & 7u) << 8u), 0.0);
+        }
+    }
+}
+
 @compute @workgroup_size(64)
 fn agent_main(@builtin(global_invocation_id) id: vec3u) {
     if (id.x >= params.max_agents) { return; }
@@ -345,6 +361,7 @@ fn agent_main(@builtin(global_invocation_id) id: vec3u) {
             push_pending_free(agent_idx);
             deposit_food_radius2(pos, 0.6);
             deposit_taint_radius1(pos, 0.1);
+            push_death_spark(pos, agent_states[agent_idx].root);
         }
         agent_states[agent_idx].meta_flags |= (1u << 13u);
         agent_states[agent_idx].angle_energy[1] = 0.0;
@@ -412,7 +429,7 @@ fn agent_main(@builtin(global_invocation_id) id: vec3u) {
                 if (range.x == 0xFFFFFFFFu) { continue; }
                 for (var k = 0u; k < range.y; k += 1u) {
                     let other = spatial_keys[n_keys + 54u + range.x + k].x;
-                    if (other == agent_idx || (agent_states[other].meta_flags & (1u << 13u)) != 0u) { continue; }
+                    if (other == agent_idx || (agent_states[other].meta_flags & (1u << 13u)) != 0u || agent_states[other].angle_energy[1] <= 0.0) { continue; }
                     let d2 = toroidal_dist2(pos, agent_states[other].pos_vel.xy);
                     if (d2 < 10000.0) { density += 1.0; }
                     if (d2 < best_d2 || (d2 == best_d2 && other < best_neighbor)) {
@@ -426,7 +443,7 @@ fn agent_main(@builtin(global_invocation_id) id: vec3u) {
             let live_count = min(atomicLoad(&queue_buffer.telemetry.live_count), n_keys);
             for (var i = 0u; i < live_count; i += 1u) {
                 let other = spatial_keys[i].y;
-                if (other == agent_idx || (agent_states[other].meta_flags & (1u << 13u)) != 0u) { continue; }
+                if (other == agent_idx || (agent_states[other].meta_flags & (1u << 13u)) != 0u || agent_states[other].angle_energy[1] <= 0.0) { continue; }
                 let d2 = toroidal_dist2(pos, agent_states[other].pos_vel.xy);
                 if (d2 < best_d2 || (d2 == best_d2 && other < best_neighbor)) {
                     best_d2 = d2;
@@ -635,6 +652,7 @@ fn agent_main(@builtin(global_invocation_id) id: vec3u) {
                     let vpos = agent_states[victim_idx].pos_vel.xy;
                     deposit_food_radius2(vpos, 0.6);
                     deposit_taint_radius1(vpos, 0.1);
+                    push_death_spark(vpos, agent_states[victim_idx].root);
                 }
             }
         }
@@ -693,7 +711,7 @@ fn agent_main(@builtin(global_invocation_id) id: vec3u) {
                 let birth_volume = mix(0.08, 0.7, zoom_factor);
                 let voice_slot = atomicAdd(&queue_buffer.telemetry.audio_voice_count, 1u);
                 if (voice_slot < 256u) {
-                    queue_buffer.audio[voice_slot] = AudioVoice(pos, 2u /* EVENT_BIRTH */, birth_volume);
+                    queue_buffer.audio[voice_slot] = AudioVoice(pos, 2u | ((a_root & 7u) << 8u) /* EVENT_BIRTH */, birth_volume);
                 }
             }
         }
@@ -715,6 +733,7 @@ fn agent_main(@builtin(global_invocation_id) id: vec3u) {
                 let corpse_food = clamp(f32(max(0, current_energy_milli)) * 0.000016 + 0.6, 0.3, 2.0);
                 deposit_food_radius2(pos, corpse_food);
                 deposit_taint_radius1(pos, 0.1);
+                push_death_spark(pos, a_root);
             }
         }
         agent_states[agent_idx].meta_flags |= (1u << 13u);

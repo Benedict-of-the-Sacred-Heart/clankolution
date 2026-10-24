@@ -566,6 +566,31 @@ pub fn sim_step_system(
 
                     let (tool_type, tool_pos, tool_radius) =
                         if let Some(pt) = sim.pending_tool.take() {
+                            match pt.tool_type {
+                                1 => {
+                                    sim.world.spark_prng(2);
+                                    if sim.world.spark_events.len() < 512 {
+                                        sim.world.spark_events.push(clank_core::SparkEvent {
+                                            x: pt.tool_pos[0],
+                                            y: pt.tool_pos[1],
+                                            color_idx: 10,
+                                            count: 2,
+                                        });
+                                    }
+                                }
+                                2 => {
+                                    sim.world.spark_prng(2);
+                                    if sim.world.spark_events.len() < 512 {
+                                        sim.world.spark_events.push(clank_core::SparkEvent {
+                                            x: pt.tool_pos[0],
+                                            y: pt.tool_pos[1],
+                                            color_idx: 11,
+                                            count: 2,
+                                        });
+                                    }
+                                }
+                                _ => {}
+                            }
                             (pt.tool_type, pt.tool_pos, pt.tool_radius)
                         } else {
                             (0xFFFFFFFF, [0.0, 0.0], 45.0)
@@ -699,10 +724,12 @@ fn apply_frame_readback(
     }
 
     for v in &frame.audio {
-        let (color_idx, count) = match v.event_type {
-            1 => (8, 2),  // Kill spark
-            2 => (9, 9),  // Birth spark
-            3 => (10, 9), // Lineage spark
+        let kind = v.event_type & 0xFF;
+        let root_color = (v.event_type >> 8) & 0x7;
+        let (color_idx, count) = match kind {
+            1 => (8, 2),          // Combat / kill spark (#ff7667)
+            2 => (root_color, 9), // Birth spark (parent lineage color 0..7)
+            3 => (root_color, 5), // Death spark (dying creature lineage color 0..7)
             _ => (8, 2),
         };
         if sim.world.spark_events.len() < 512 {
