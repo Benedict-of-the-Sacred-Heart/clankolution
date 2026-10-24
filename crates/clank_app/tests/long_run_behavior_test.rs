@@ -12,7 +12,7 @@ fn test_long_run_gpu_behavior() {
     let driver = driver.unwrap();
 
     let mut sim_rust = SimWorld::new(42);
-    let mut sim_gpu = SimWorld::new(42);
+    let sim_gpu = SimWorld::new(42);
 
     let (states, genomes, atomics, soil, mut params) = sync_rust_to_gpu(&sim_gpu);
     params.max_capacity = 340;

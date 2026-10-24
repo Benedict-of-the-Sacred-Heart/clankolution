@@ -2209,7 +2209,6 @@ impl CreatureLayerKind { pub const ALL: [Self; 4]; pub fn vertices_per_instance(
 
 **Out of scope (recorded, not hidden):**
 - Agent replenishment (`replenish_agents_gpu`) still reads the freelist back synchronously. It runs only when the GPU population collapses below 15.
-- The UI's food history still reads the CPU soil copy, which is stale in GPU mode.
 - The selected creature panel is up to two frames behind the GPU.
 
 ---
@@ -2322,6 +2321,8 @@ Measured on the working tree, which holds uncommitted work not yet in any commit
 | 6 | `api_server_test::test_state_generation_comes_from_the_engine_that_owns_the_world` | pass | was: `/state` generation 0 in GPU mode (read from the CPU copy, which GPU mode does not update, and counting dead creatures) |
 | 5 | `plan_t5::test_crowded_cell_grazing_cannot_eat_more_food_than_the_cell_holds` | pass | was: 60 creatures grazing one cell in the same tick all fed from `0.33` food (reference ran out after 17); fixed with an `atomicCompareExchangeWeak` loop on `soil_buffer[cell_idx].food_micro` |
 | 6 | `plan_t6::test_gpu_tools_act_at_once_while_paused` | pass | was: in GPU mode the tools (picking, Nourish, Blight, Extinguish) waited for the next running tick and did nothing while paused; now `dispatch_pick_paused` and immediate paused tool sync apply them at once without advancing `tick` |
+| 6 | `ui_test::test_history_recorder_pauses_when_sim_is_paused` & `test_history_recorder_samples_every_60_ticks_and_caps_at_180_like_html` | pass | `THE RECORD` pauses completely while `sim.paused == true` and samples every 60 simulation ticks (up to 180 points), using live GPU soil food from `census.wgsl` (`reserved1[0] = soil_food_milli`) |
+| 6 | `gpu_trail_and_reset_test::test_flush_gpu_to_rust_preserves_trails_and_clears_uninitialized_slots` | pass | failed first: `0/72` creatures retained trails after `flush_gpu_to_rust`; now `readback_agent_trails` and `apply_gpu_trails` preserve per-tick trails across GPU→CPU engine switches, paused GPU tools, and `.clank`/`.json` exports |
 
 The `plan_t6` file compiles since 2026-10-07; before that, its results other than the stats test were measured from a copy of the file without that test.
 
