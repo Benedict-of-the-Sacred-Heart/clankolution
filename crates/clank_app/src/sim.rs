@@ -19,6 +19,7 @@ pub struct SimWorld {
     pub selected_agent_slot: Option<u32>,
     pub selected_agent_cache: Option<AgentData>,
     pub pending_tool: Option<PendingTool>,
+    pub pending_tools: Vec<PendingTool>,
     pub world_width: f64,
     pub world_height: f64,
     pub active_engine: ActiveEngine,
@@ -61,6 +62,7 @@ impl SimWorld {
             selected_agent_slot: None,
             selected_agent_cache: None,
             pending_tool: None,
+            pending_tools: Vec::new(),
             world_width: 900.0,
             world_height: 600.0,
             active_engine: ActiveEngine::Rust,
@@ -179,8 +181,26 @@ impl SimWorld {
         self.selected_agent_slot = None;
         self.selected_agent_cache = None;
         self.pending_tool = None;
+        self.pending_tools.clear();
         self.gpu_resync_pending = true;
         self.sync_gpu_cached_stats_from_cpu();
+    }
+
+    pub fn queue_tool(&mut self, pt: PendingTool) {
+        if self.pending_tool.is_none() {
+            self.pending_tool = Some(pt);
+        } else {
+            self.pending_tools.push(pt);
+        }
+    }
+
+    pub fn take_pending_tools(&mut self) -> Vec<PendingTool> {
+        let mut out = Vec::new();
+        if let Some(pt) = self.pending_tool.take() {
+            out.push(pt);
+        }
+        out.append(&mut self.pending_tools);
+        out
     }
 
     pub fn get_selected_agent(&self) -> Option<&AgentData> {
@@ -411,49 +431,17 @@ pub fn sim_step_system(
                 if driver.is_initialized() {
                     let target_cap = (sim.world.max_cap as u32).min(driver.max_agents);
                     let cap_changed = driver.current_capacity() != target_cap;
-                    if let Some(pt) = sim.pending_tool.take() {
-                        match pt.tool_type {
-                            0 => {
-                                let current_count = if sim.gpu_population > 0 {
-                                    sim.gpu_population
-                                } else {
-                                    sim.world.agents.len() as u32
-                                };
-                                let params = crate::gpu::types::GpuSimParams {
-                                    tick: sim.world.tick,
-                                    agent_count: current_count,
-                                    max_agents: driver.active_slots(sim.world.max_cap as u32),
-                                    max_capacity: sim.world.max_cap as u32,
-                                    hostility: (sim.world.hostility / 100.0) as f32,
-                                    mut_rate: (sim.world.mutation / 100.0) as f32,
-                                    speed: sim.speed as f32,
-                                    renewal: (sim.world.growth / 100.0) as f32,
-                                    sub_tick: 0,
-                                    sub_ticks_per_frame: 1,
-                                    tool_type: 0,
-                                    tool_radius: pt.tool_radius,
-                                    tool_pos: pt.tool_pos,
-                                    camera_pos: [
-                                        (sim.world_width * 0.5) as f32,
-                                        (sim.world_height * 0.5) as f32,
-                                    ],
-                                    camera_size: [sim.world_width as f32, sim.world_height as f32],
-                                    world_size: [sim.world_width as f32, sim.world_height as f32],
-                                    soil_grid: [
-                                        sim.world.soil.cols as u32,
-                                        sim.world.soil.rows as u32,
-                                    ],
-                                    eclipse: sim.world.eclipse,
-                                    epoch: 0,
-                                };
-                                driver.dispatch_pick_paused(&params);
-                                driver.request_frame_readback(sim.selected_agent_slot, true);
+                    let queued_tools = sim.take_pending_tools();
+                    if !queued_tools.is_empty() {
+                        let has_world_tool = queued_tools
+                            .iter()
+                            .any(|pt| matches!(pt.tool_type, 1 | 2 | 3));
+                        if has_world_tool {
+                            flush_gpu_to_rust(&mut sim, driver);
+                            for frame in driver.poll_frame_readbacks() {
+                                apply_frame_readback(&mut sim, driver, &frame, None);
                             }
-                            1 | 2 | 3 => {
-                                flush_gpu_to_rust(&mut sim, driver);
-                                for frame in driver.poll_frame_readbacks() {
-                                    apply_frame_readback(&mut sim, driver, &frame, None);
-                                }
+                            for pt in &queued_tools {
                                 let (x, y) = (pt.tool_pos[0] as f64, pt.tool_pos[1] as f64);
                                 match pt.tool_type {
                                     1 => sim.world.nourish_at(x, y),
@@ -461,26 +449,60 @@ pub fn sim_step_system(
                                     3 => sim.world.extinguish_at(x, y, pt.tool_radius as f64),
                                     _ => {}
                                 }
-                                if let Some(sel_id) = sim.selected_agent_id {
-                                    let found = sim
-                                        .world
-                                        .agents
-                                        .iter()
-                                        .enumerate()
-                                        .find(|(_, a)| a.dead == 0 && a.id == sel_id)
-                                        .map(|(slot, a)| (slot as u32, *a));
-                                    if let Some((slot, a)) = found {
-                                        sim.selected_agent_slot = Some(slot);
-                                        sim.selected_agent_cache = Some(a);
-                                    } else {
-                                        sim.selected_agent_id = None;
-                                        sim.selected_agent_slot = None;
-                                        sim.selected_agent_cache = None;
-                                    }
-                                }
-                                upload_world_to_gpu(&mut sim, driver);
                             }
-                            _ => {}
+                            if let Some(sel_id) = sim.selected_agent_id {
+                                let found = sim
+                                    .world
+                                    .agents
+                                    .iter()
+                                    .enumerate()
+                                    .find(|(_, a)| a.dead == 0 && a.id == sel_id)
+                                    .map(|(slot, a)| (slot as u32, *a));
+                                if let Some((slot, a)) = found {
+                                    sim.selected_agent_slot = Some(slot);
+                                    sim.selected_agent_cache = Some(a);
+                                } else {
+                                    sim.selected_agent_id = None;
+                                    sim.selected_agent_slot = None;
+                                    sim.selected_agent_cache = None;
+                                }
+                            }
+                            upload_world_to_gpu(&mut sim, driver);
+                        }
+                        if let Some(pick_pt) =
+                            queued_tools.iter().rfind(|pt| pt.tool_type == 0).copied()
+                        {
+                            let current_count = if sim.gpu_population > 0 {
+                                sim.gpu_population
+                            } else {
+                                sim.world.agents.len() as u32
+                            };
+                            let params = crate::gpu::types::GpuSimParams {
+                                tick: sim.world.tick,
+                                agent_count: current_count,
+                                max_agents: driver.active_slots(sim.world.max_cap as u32),
+                                max_capacity: sim.world.max_cap as u32,
+                                hostility: (sim.world.hostility / 100.0) as f32,
+                                mut_rate: (sim.world.mutation / 100.0) as f32,
+                                speed: sim.speed as f32,
+                                renewal: (sim.world.growth / 100.0) as f32,
+                                sub_tick: 0,
+                                sub_ticks_per_frame: 1,
+                                tool_type: 0,
+                                tool_radius: pick_pt.tool_radius,
+                                tool_pos: pick_pt.tool_pos,
+                                camera_pos: [
+                                    (sim.world_width * 0.5) as f32,
+                                    (sim.world_height * 0.5) as f32,
+                                ],
+                                camera_size: [sim.world_width as f32, sim.world_height as f32],
+                                world_size: [sim.world_width as f32, sim.world_height as f32],
+                                soil_grid: [sim.world.soil.cols as u32, sim.world.soil.rows as u32],
+                                eclipse: sim.world.eclipse,
+                                epoch: 0,
+                            };
+                            driver.dispatch_pick_paused(&params);
+                            driver.request_frame_readback(sim.selected_agent_slot, true);
                         }
                     } else if cap_changed {
                         let current_count = if sim.gpu_population > 0 {
@@ -564,37 +586,44 @@ pub fn sim_step_system(
                         )
                     };
 
-                    let (tool_type, tool_pos, tool_radius) =
-                        if let Some(pt) = sim.pending_tool.take() {
-                            match pt.tool_type {
-                                1 => {
-                                    sim.world.spark_prng(2);
-                                    if sim.world.spark_events.len() < 512 {
-                                        sim.world.spark_events.push(clank_core::SparkEvent {
-                                            x: pt.tool_pos[0],
-                                            y: pt.tool_pos[1],
-                                            color_idx: 10,
-                                            count: 2,
-                                        });
-                                    }
+                    let mut queued_tools = sim.take_pending_tools();
+                    for pt in &queued_tools {
+                        match pt.tool_type {
+                            1 => {
+                                sim.world.spark_prng(2);
+                                if sim.world.spark_events.len() < 512 {
+                                    sim.world.spark_events.push(clank_core::SparkEvent {
+                                        x: pt.tool_pos[0],
+                                        y: pt.tool_pos[1],
+                                        color_idx: 10,
+                                        count: 2,
+                                    });
                                 }
-                                2 => {
-                                    sim.world.spark_prng(2);
-                                    if sim.world.spark_events.len() < 512 {
-                                        sim.world.spark_events.push(clank_core::SparkEvent {
-                                            x: pt.tool_pos[0],
-                                            y: pt.tool_pos[1],
-                                            color_idx: 11,
-                                            count: 2,
-                                        });
-                                    }
-                                }
-                                _ => {}
                             }
-                            (pt.tool_type, pt.tool_pos, pt.tool_radius)
-                        } else {
-                            (0xFFFFFFFF, [0.0, 0.0], 45.0)
-                        };
+                            2 => {
+                                sim.world.spark_prng(2);
+                                if sim.world.spark_events.len() < 512 {
+                                    sim.world.spark_events.push(clank_core::SparkEvent {
+                                        x: pt.tool_pos[0],
+                                        y: pt.tool_pos[1],
+                                        color_idx: 11,
+                                        count: 2,
+                                    });
+                                }
+                            }
+                            _ => {}
+                        }
+                    }
+                    let first_tool = if queued_tools.is_empty() {
+                        None
+                    } else {
+                        Some(queued_tools.remove(0))
+                    };
+                    let (tool_type, tool_pos, tool_radius) = if let Some(pt) = first_tool {
+                        (pt.tool_type, pt.tool_pos, pt.tool_radius)
+                    } else {
+                        (0xFFFFFFFF, [0.0, 0.0], 45.0)
+                    };
 
                     let params = crate::gpu::types::GpuSimParams {
                         tick: sim.world.tick,
@@ -618,6 +647,18 @@ pub fn sim_step_system(
                         eclipse: sim.world.eclipse,
                         epoch: 0,
                     };
+
+                    for extra in &queued_tools {
+                        let mut extra_params = params;
+                        extra_params.tool_type = extra.tool_type;
+                        extra_params.tool_pos = extra.tool_pos;
+                        extra_params.tool_radius = extra.tool_radius;
+                        if extra.tool_type == 1 || extra.tool_type == 2 {
+                            driver.dispatch_soil_tool(&extra_params);
+                        } else if extra.tool_type == 3 {
+                            driver.dispatch_extinguish_tool(&extra_params);
+                        }
+                    }
 
                     driver.update_params(&params);
                     driver.dispatch_sub_ticks(steps, &params);

@@ -299,6 +299,153 @@ fn test_api_gpu_nourish_does_not_overwrite_gpu_soil_with_stale_cpu_soil() {
     assert_eq!(sim.pending_tool.as_ref().map(|p| p.tool_type), Some(1));
 }
 
+#[test]
+fn test_api_gpu_nourish_blight_and_multi_drop_do_not_double_emit_sparks_and_apply_all_drops() {
+    use clank_app::sim::{ensure_gpu_driver, sim_step_system};
+
+    let mut app = App::new();
+    let (tx, rx) = mpsc::channel();
+    app.add_plugins(MinimalPlugins);
+    app.insert_resource(ApiReceiverResource(Arc::new(Mutex::new(rx))));
+    app.insert_resource(UiState::default());
+    let mut sim = quiet_world(vec![quiet_agent(1, 100.0, 100.0, 20.0)], 0.0);
+    sim.active_engine = ActiveEngine::Gpu;
+    app.insert_resource(GpuDriverResource { driver: None });
+    app.insert_resource(sim);
+    app.add_systems(
+        Update,
+        (ensure_gpu_driver, api_dispatch_system, sim_step_system).chain(),
+    );
+
+    app.update();
+    if app.world().resource::<GpuDriverResource>().driver.is_none() {
+        return;
+    }
+
+    // 1. Single nourish via API in GPU mode must emit exactly 1 gold spark (not 2).
+    app.world_mut()
+        .resource_mut::<SimWorld>()
+        .world
+        .spark_events
+        .clear();
+    tx.send(ApiCommand::ApplyTool(ApiToolRequest {
+        tool: "nourish".into(),
+        x: Some(450.0),
+        y: Some(300.0),
+        count: Some(1),
+    }))
+    .unwrap();
+    app.update();
+    {
+        let sparks = &app.world().resource::<SimWorld>().world.spark_events;
+        let nourish_sparks: Vec<_> = sparks
+            .iter()
+            .filter(|s| s.color_idx == 10 && s.count == 2)
+            .collect();
+        assert_eq!(
+            nourish_sparks.len(),
+            1,
+            "Single API nourish in GPU mode must emit exactly 1 spark event, got {sparks:?}"
+        );
+    }
+
+    let food_after_one: f32 = app
+        .world()
+        .resource::<GpuDriverResource>()
+        .driver
+        .as_ref()
+        .unwrap()
+        .readback_soil()
+        .iter()
+        .map(|c| c.food_micro as f32 / SOIL_FIXED_SCALE)
+        .sum();
+    assert!(
+        food_after_one > 0.5,
+        "Single nourish should deposit > 0.5 total food across its radius-3 stencil, got {food_after_one}"
+    );
+
+    // 2. Single blight via API in GPU mode must emit exactly 1 blight spark (not 2).
+    app.world_mut()
+        .resource_mut::<SimWorld>()
+        .world
+        .spark_events
+        .clear();
+    tx.send(ApiCommand::ApplyTool(ApiToolRequest {
+        tool: "blight".into(),
+        x: Some(200.0),
+        y: Some(200.0),
+        count: None,
+    }))
+    .unwrap();
+    app.update();
+    {
+        let sparks = &app.world().resource::<SimWorld>().world.spark_events;
+        let blight_sparks: Vec<_> = sparks
+            .iter()
+            .filter(|s| s.color_idx == 11 && s.count == 2)
+            .collect();
+        assert_eq!(
+            blight_sparks.len(),
+            1,
+            "Single API blight in GPU mode must emit exactly 1 spark event, got {sparks:?}"
+        );
+    }
+
+    // 3. Multi-drop nourish (count: 5) via API in GPU mode must emit 5 sparks and apply all 5 drops to GPU soil.
+    let food_before_five: f32 = app
+        .world()
+        .resource::<GpuDriverResource>()
+        .driver
+        .as_ref()
+        .unwrap()
+        .readback_soil()
+        .iter()
+        .map(|c| c.food_micro as f32 / SOIL_FIXED_SCALE)
+        .sum();
+    app.world_mut()
+        .resource_mut::<SimWorld>()
+        .world
+        .spark_events
+        .clear();
+    tx.send(ApiCommand::ApplyTool(ApiToolRequest {
+        tool: "nourish".into(),
+        x: Some(450.0),
+        y: Some(300.0),
+        count: Some(5),
+    }))
+    .unwrap();
+    app.update();
+    {
+        let sparks = &app.world().resource::<SimWorld>().world.spark_events;
+        let nourish_sparks: Vec<_> = sparks
+            .iter()
+            .filter(|s| s.color_idx == 10 && s.count == 2)
+            .collect();
+        assert_eq!(
+            nourish_sparks.len(),
+            5,
+            "Multi-drop API nourish (count=5) in GPU mode must emit 5 spark events, got {}",
+            nourish_sparks.len()
+        );
+    }
+    let food_after_five: f32 = app
+        .world()
+        .resource::<GpuDriverResource>()
+        .driver
+        .as_ref()
+        .unwrap()
+        .readback_soil()
+        .iter()
+        .map(|c| c.food_micro as f32 / SOIL_FIXED_SCALE)
+        .sum();
+    assert!(
+        food_after_five - food_before_five > food_after_one * 3.0,
+        "Multi-drop API nourish (count=5) must apply all 5 drops to GPU soil (delta = {}, single = {})",
+        food_after_five - food_before_five,
+        food_after_one
+    );
+}
+
 // ---------------------------------------------------------------------------------------------
 // Frustum cull -> indirect draw
 // ---------------------------------------------------------------------------------------------

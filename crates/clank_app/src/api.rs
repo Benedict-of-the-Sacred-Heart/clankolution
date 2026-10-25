@@ -786,24 +786,26 @@ pub fn api_dispatch_system(
                                 } else {
                                     (x, y)
                                 };
-                                sim.world.nourish_at(nx, ny);
-                            }
-                            if sim.active_engine == crate::sim::ActiveEngine::Gpu {
-                                sim.pending_tool = Some(crate::sim::PendingTool {
-                                    tool_type: 1,
-                                    tool_pos: [x as f32, y as f32],
-                                    tool_radius: 45.0,
-                                });
+                                if sim.active_engine == crate::sim::ActiveEngine::Gpu {
+                                    sim.queue_tool(crate::sim::PendingTool {
+                                        tool_type: 1,
+                                        tool_pos: [nx as f32, ny as f32],
+                                        tool_radius: 45.0,
+                                    });
+                                } else {
+                                    sim.world.nourish_at(nx, ny);
+                                }
                             }
                         }
                         "blight" => {
-                            sim.world.blight_at(x, y);
                             if sim.active_engine == crate::sim::ActiveEngine::Gpu {
-                                sim.pending_tool = Some(crate::sim::PendingTool {
+                                sim.queue_tool(crate::sim::PendingTool {
                                     tool_type: 2,
                                     tool_pos: [x as f32, y as f32],
                                     tool_radius: 45.0,
                                 });
+                            } else {
+                                sim.world.blight_at(x, y);
                             }
                         }
                         "seed" | "seedlife" | "seed_life" => {
@@ -825,14 +827,15 @@ pub fn api_dispatch_system(
                             crate::sim::seed_life_gpu_aware(sim, drv, &positions);
                         }
                         "extinguish" | "kill" => {
-                            sim.world.extinguish_at(x, y, 23.0);
-                            sim.validate_cpu_selection();
                             if sim.active_engine == crate::sim::ActiveEngine::Gpu {
-                                sim.pending_tool = Some(crate::sim::PendingTool {
+                                sim.queue_tool(crate::sim::PendingTool {
                                     tool_type: 3,
                                     tool_pos: [x as f32, y as f32],
                                     tool_radius: 23.0,
                                 });
+                            } else {
+                                sim.world.extinguish_at(x, y, 23.0);
+                                sim.validate_cpu_selection();
                             }
                         }
                         "eclipse" => {

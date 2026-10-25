@@ -101,12 +101,12 @@ fn soil_main(@builtin(global_invocation_id) id: vec3u) {
 
     // Interactive tool deposit (Nourish = 1, Blight = 2) on sub_tick 0
     if (sim_params.sub_tick == 0u && (sim_params.tool_type == 1u || sim_params.tool_type == 2u)) {
-        let inv_cw = 1.0 / 12.0;
-        let inv_ch = 1.0 / 12.0;
+        let cell_w = sim_params.world_size[0] / f32(params.width);
+        let cell_h = sim_params.world_size[1] / f32(params.height);
         let tx = ((sim_params.tool_pos[0] % sim_params.world_size[0]) + sim_params.world_size[0]) % sim_params.world_size[0];
         let ty = ((sim_params.tool_pos[1] % sim_params.world_size[1]) + sim_params.world_size[1]) % sim_params.world_size[1];
-        let cx = i32(floor(tx * inv_cw));
-        let cy = i32(floor(ty * inv_ch));
+        let cx = min(i32(floor(tx / cell_w)), i32(params.width) - 1);
+        let cy = min(i32(floor(ty / cell_h)), i32(params.height) - 1);
 
         let cols = i32(params.width);
         let rows = i32(params.height);
@@ -160,6 +160,65 @@ fn soil_main(@builtin(global_invocation_id) id: vec3u) {
         f32(i32(round(f * SOIL_SCALE))) / SOIL_SCALE,
         f32(i32(round(t * SOIL_SCALE))) / SOIL_SCALE,
         f32(i32(round(s * SOIL_SCALE))) / SOIL_SCALE,
+        id.xy,
+    );
+    textureStore(soil_display, id.xy, col);
+}
+
+// Standalone tool deposit pass (Nourish = 1, Blight = 2) without advancing renewal/decay,
+// used when multiple tool drops are queued in the same frame.
+@compute @workgroup_size(8, 8)
+fn soil_tool_main(@builtin(global_invocation_id) id: vec3u) {
+    if (id.x >= params.width || id.y >= params.height) { return; }
+    if (sim_params.tool_type != 1u && sim_params.tool_type != 2u) { return; }
+    let k = id.y * params.width + id.x;
+
+    var f = f32(atomicLoad(&soil_buffer[k].food_micro)) / SOIL_SCALE;
+    var t = f32(atomicLoad(&soil_buffer[k].taint_micro)) / SOIL_SCALE;
+    let s = f32(atomicLoad(&soil_buffer[k].scent_micro)) / SOIL_SCALE;
+
+    let cell_w = sim_params.world_size[0] / f32(params.width);
+    let cell_h = sim_params.world_size[1] / f32(params.height);
+    let tx = ((sim_params.tool_pos[0] % sim_params.world_size[0]) + sim_params.world_size[0]) % sim_params.world_size[0];
+    let ty = ((sim_params.tool_pos[1] % sim_params.world_size[1]) + sim_params.world_size[1]) % sim_params.world_size[1];
+    let cx = min(i32(floor(tx / cell_w)), i32(params.width) - 1);
+    let cy = min(i32(floor(ty / cell_h)), i32(params.height) - 1);
+
+    let cols = i32(params.width);
+    let rows = i32(params.height);
+
+    var dx = (i32(id.x) - cx) % cols;
+    if (dx > cols / 2) { dx -= cols; }
+    if (dx < -cols / 2) { dx += cols; }
+
+    var dy = (i32(id.y) - cy) % rows;
+    if (dy > rows / 2) { dy -= rows; }
+    if (dy < -rows / 2) { dy += rows; }
+
+    let rr = f32(dx * dx + dy * dy);
+
+    if (sim_params.tool_type == 1u) {
+        if (rr <= 9.5) {
+            f = clamp(f + 0.28 / (1.0 + rr * 0.8), 0.0, 3.0);
+        }
+    } else if (sim_params.tool_type == 2u) {
+        if (rr <= 9.5) {
+            t = clamp(t + 0.38 / (1.0 + rr * 0.8), 0.0, 3.0);
+        }
+        if (rr <= 4.5) {
+            f = clamp(f - 0.14 / (1.0 + rr * 0.8), 0.0, 3.0);
+        }
+    }
+
+    let f_micro = i32(round(f * SOIL_SCALE));
+    let t_micro = i32(round(t * SOIL_SCALE));
+    atomicStore(&soil_buffer[k].food_micro, f_micro);
+    atomicStore(&soil_buffer[k].taint_micro, t_micro);
+
+    let col = evaluate_soil_color(
+        f32(f_micro) / SOIL_SCALE,
+        f32(t_micro) / SOIL_SCALE,
+        s,
         id.xy,
     );
     textureStore(soil_display, id.xy, col);

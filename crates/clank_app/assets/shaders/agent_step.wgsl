@@ -654,6 +654,22 @@ fn agent_main(@builtin(global_invocation_id) id: vec3u) {
                     deposit_taint_radius1(vpos, 0.1);
                     push_death_spark(vpos, agent_states[victim_idx].root);
                 }
+            } else if (pcg3d_float(agent_idx, AUDIO_STREAM ^ victim_idx ^ 0x484954u, step_tick) < 0.13) {
+                // Non-fatal combat hit spark (HTML line 1409: 13% chance of 2 '#ff7667' sparks at midpoint)
+                let vpos = agent_states[victim_idx].pos_vel.xy;
+                let mid = (new_pos + vpos) * 0.5;
+                let dx = abs(mid.x - params.camera_pos.x);
+                let dist_x = min(dx, params.world_size.x - dx);
+                let dy = abs(mid.y - params.camera_pos.y);
+                let dist_y = min(dy, params.world_size.y - dy);
+                if (dist_x <= params.camera_size.x * 0.5 && dist_y <= params.camera_size.y * 0.5) {
+                    if (atomicLoad(&queue_buffer.telemetry.audio_voice_count) < 192u) {
+                        let voice_slot = atomicAdd(&queue_buffer.telemetry.audio_voice_count, 1u);
+                        if (voice_slot < 256u) {
+                            queue_buffer.audio[voice_slot] = AudioVoice(mid, 1u, 0.0);
+                        }
+                    }
+                }
             }
         }
     }
@@ -701,9 +717,9 @@ fn agent_main(@builtin(global_invocation_id) id: vec3u) {
             queue_buffer.births[queue_idx] = BirthEvent(agent_idx, mate_partner, 0xFFFFFFFFu, 0u);
 
             // Frustum-culled birth audio voice
-            let dx = abs(pos.x - params.camera_pos.x);
+            let dx = abs(new_pos.x - params.camera_pos.x);
             let dist_x = min(dx, params.world_size.x - dx);
-            let dy = abs(pos.y - params.camera_pos.y);
+            let dy = abs(new_pos.y - params.camera_pos.y);
             let dist_y = min(dy, params.world_size.y - dy);
             let in_view = (dist_x <= params.camera_size.x * 0.5 && dist_y <= params.camera_size.y * 0.5);
             if (in_view) {
@@ -711,7 +727,7 @@ fn agent_main(@builtin(global_invocation_id) id: vec3u) {
                 let birth_volume = mix(0.08, 0.7, zoom_factor);
                 let voice_slot = atomicAdd(&queue_buffer.telemetry.audio_voice_count, 1u);
                 if (voice_slot < 256u) {
-                    queue_buffer.audio[voice_slot] = AudioVoice(pos, 2u | ((a_root & 7u) << 8u) /* EVENT_BIRTH */, birth_volume);
+                    queue_buffer.audio[voice_slot] = AudioVoice(new_pos, 2u | ((a_root & 7u) << 8u) /* EVENT_BIRTH */, birth_volume);
                 }
             }
         }
@@ -730,10 +746,11 @@ fn agent_main(@builtin(global_invocation_id) id: vec3u) {
                 push_pending_free(agent_idx);
 
                 // Corpse deposition into soil (HTML line 1210: food radius 2, taint radius 1)
-                let corpse_food = clamp(f32(max(0, current_energy_milli)) * 0.000016 + 0.6, 0.3, 2.0);
-                deposit_food_radius2(pos, corpse_food);
-                deposit_taint_radius1(pos, 0.1);
-                push_death_spark(pos, a_root);
+                let clamped_e = clamp(f32(current_energy_milli) * 0.001, 0.0, 110.0);
+                let corpse_food = clamp(clamped_e * 0.016 + 0.6, 0.3, 2.0);
+                deposit_food_radius2(new_pos, corpse_food);
+                deposit_taint_radius1(new_pos, 0.1);
+                push_death_spark(new_pos, a_root);
             }
         }
         agent_states[agent_idx].meta_flags |= (1u << 13u);

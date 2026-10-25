@@ -1156,3 +1156,57 @@ fn test_crowded_cell_grazing_cannot_eat_more_food_than_the_cell_holds() {
         "GPU total energy {gpu_total_e:.3} vs reference {ref_total_e:.3}"
     );
 }
+
+/// When a creature dies of starvation or old age at the end of its own turn (after moving),
+/// its corpse food and taint land at its post-movement position (`new_pos`), matching the
+/// reference (`die(a)` after `a.x = wrap(a.x + a.vx, w)`).
+#[test]
+fn test_starvation_and_senescence_corpse_lands_at_post_movement_position() {
+    let mut old = creature(1, 407.0, 300.0, 0.0); // cell (33, 25); moves across 408.0 into cell (34, 25)
+    old.age = 2100; // becomes 2101 > 2100 on this tick and dies of senescence
+    old.birth = 95;
+    old.vx = 3.0;
+    old.energy = 20.0;
+    let mut sim = world_with(vec![old], 0.0);
+    let Some(mut gpu) = upload(&sim) else {
+        return;
+    };
+    gpu.tick();
+    sim.world.evolve();
+
+    assert!(
+        sim.world.agents.is_empty(),
+        "reference creature must die of senescence"
+    );
+    assert!(gpu.live().is_empty(), "GPU creature must die of senescence");
+
+    let soil: Vec<(f32, f32, f32)> = gpu
+        .driver
+        .readback_soil()
+        .iter()
+        .map(clank_app::gpu::soil_pipeline::GpuSoilPipeline::to_physics)
+        .collect();
+    let rs = &sim.world.soil;
+    let wrong: Vec<String> = (0..soil.len())
+        .filter(|&k| {
+            (soil[k].0 - rs.food[k]).abs() > 2e-3 || (soil[k].1 - rs.taint[k]).abs() > 2e-3
+        })
+        .map(|k| {
+            format!(
+                "cell ({}, {}): GPU food {:.3} taint {:.3} vs reference {:.3} {:.3}",
+                k % 75,
+                k / 75,
+                soil[k].0,
+                soil[k].1,
+                rs.food[k],
+                rs.taint[k]
+            )
+        })
+        .collect();
+    assert!(
+        wrong.is_empty(),
+        "Senescence corpse deposited in wrong cells ({} cells differ):\n{}",
+        wrong.len(),
+        wrong[..wrong.len().min(12)].join("\n")
+    );
+}

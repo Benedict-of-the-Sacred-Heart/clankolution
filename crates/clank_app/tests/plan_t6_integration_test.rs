@@ -633,3 +633,70 @@ fn test_gpu_sparks_use_lineage_colors_for_births_and_deaths_and_tool_colors_for_
         "Expected running GPU Blight to emit blight spark (color_idx 11, count 2), got {tool_sparks:?}"
     );
 }
+
+/// Non-fatal combat hits in GPU mode must emit 2-particle `#ff7667` (`color_idx == 8`) sparks
+/// at the midpoint between attacker and victim (~13% of hits), matching `clankolution.html`
+/// (`if (rand() < .13) spark((a.x+b.x)/2, (a.y+b.y)/2, '#ff7667', 2)`).
+#[test]
+fn test_gpu_non_fatal_combat_hits_emit_midpoint_combat_sparks() {
+    let mut a = creature(1, 400.0, 300.0, 0.0);
+    a.genes[output_bias(1)] = -127; // zero thrust so attacker stays at (400, 300)
+    a.genes[output_bias(3)] = 127; // maximum attack drive
+    a.genes[output_bias(5)] = -127; // suppress reproduction
+    a.tr = [0.8, 0.5, 0.5, 0.5, 0.5, 0.9];
+    a.energy = 100.0;
+    a.age = 10;
+    a.root = 1;
+
+    let mut victim = creature(2, 408.0, 300.0, 0.0);
+    victim.genes[output_bias(1)] = -127; // zero thrust so victim stays at (408, 300)
+    victim.genes[output_bias(3)] = -127; // victim does not attack back
+    victim.genes[output_bias(5)] = -127; // suppress reproduction
+    victim.tr = [0.5, 0.5, 0.5, 0.9, 0.5, 0.5];
+    victim.energy = 500.0; // high energy so it survives 120 ticks of bites
+    victim.age = 10;
+    victim.root = 2;
+
+    let Some(mut app) = gpu_app(|sim| {
+        sim.world.agents = vec![a, victim];
+        sim.world.next_id = 3;
+        sim.world.roots = 3;
+        sim.world.growth = 0.0;
+        sim.world.hostility = 100.0;
+        sim.world.sync_pos_cache();
+    }) else {
+        return;
+    };
+
+    app.world_mut()
+        .resource_mut::<SimWorld>()
+        .world
+        .spark_events
+        .clear();
+    run(&mut app, 120);
+    settle(&mut app);
+
+    let sim = app.world().resource::<SimWorld>();
+    assert_eq!(
+        sim.world.kills, 0,
+        "Victim should survive all 120 ticks so only non-fatal combat hits occur"
+    );
+    let combat_sparks: Vec<_> = sim
+        .world
+        .spark_events
+        .iter()
+        .filter(|s| s.color_idx == 8 && s.count == 2)
+        .collect();
+    assert!(
+        !combat_sparks.is_empty(),
+        "Non-fatal combat hits in GPU mode must emit #ff7667 (color_idx 8, count 2) sparks"
+    );
+    for s in &combat_sparks {
+        assert!(
+            (404.0..=450.0).contains(&s.x) && (s.y - 300.0).abs() < 1.0,
+            "Combat spark should be emitted at the attacker-victim midpoint along y=300, got ({}, {})",
+            s.x,
+            s.y
+        );
+    }
+}

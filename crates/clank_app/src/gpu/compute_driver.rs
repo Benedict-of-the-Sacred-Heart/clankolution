@@ -42,6 +42,7 @@ pub struct GpuComputeDriver {
 
     // Pipelines
     pub soil_pipeline: wgpu::ComputePipeline,
+    pub soil_tool_pipeline: wgpu::ComputePipeline,
     pub eclipse_pipeline: wgpu::ComputePipeline,
     pub preamble_pipeline: wgpu::ComputePipeline,
     pub morton_encode_pipeline: wgpu::ComputePipeline,
@@ -489,6 +490,14 @@ impl GpuComputeDriver {
             layout: Some(&soil_pl),
             module: &soil_sm,
             entry_point: Some("soil_main"),
+            compilation_options: wgpu::PipelineCompilationOptions::default(),
+            cache: None,
+        });
+        let soil_tool_pipeline = device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
+            label: Some("soil_tool_pipeline"),
+            layout: Some(&soil_pl),
+            module: &soil_sm,
+            entry_point: Some("soil_tool_main"),
             compilation_options: wgpu::PipelineCompilationOptions::default(),
             cache: None,
         });
@@ -1211,6 +1220,7 @@ impl GpuComputeDriver {
             staging_freelist,
             staging_audio,
             soil_pipeline,
+            soil_tool_pipeline,
             eclipse_pipeline,
             preamble_pipeline,
             morton_encode_pipeline,
@@ -1567,6 +1577,55 @@ impl GpuComputeDriver {
             cpass.set_pipeline(&self.capacity_pipeline);
             cpass.set_bind_group(0, &self.capacity_bind_group, &[]);
             cpass.dispatch_workgroups(self.max_agents.div_ceil(64), 1, 1);
+        }
+        self.queue.submit([encoder.finish()]);
+    }
+
+    /// Applies an extra Nourish (`tool_type == 1`) or Blight (`tool_type == 2`) deposit directly
+    /// to the GPU soil buffer without running soil renewal or decay.
+    pub fn dispatch_soil_tool(&self, params: &GpuSimParams) {
+        self.queue
+            .write_buffer(&self.sim_params_buf, 0, bytemuck::bytes_of(params));
+        let mut encoder = self
+            .device
+            .create_command_encoder(&wgpu::CommandEncoderDescriptor {
+                label: Some("gpu_soil_tool_encoder"),
+            });
+        {
+            let mut cpass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {
+                label: Some("gpu_soil_tool_pass"),
+                timestamp_writes: None,
+            });
+            cpass.set_pipeline(&self.soil_tool_pipeline);
+            cpass.set_bind_group(0, &self.soil_bind_group, &[]);
+            cpass.dispatch_workgroups((self.soil_cols + 7) / 8, (self.soil_rows + 7) / 8, 1);
+        }
+        self.queue.submit([encoder.finish()]);
+    }
+
+    /// Applies an extra Extinguish (`tool_type == 3`) brush directly to the GPU agent buffers
+    /// before `dispatch_sub_ticks` processes corpse deposits and freelist reclamation.
+    pub fn dispatch_extinguish_tool(&self, params: &GpuSimParams) {
+        let active_slots = params.max_agents.max(params.agent_count);
+        let agent_workgroups = (active_slots + 63) / 64;
+        if agent_workgroups == 0 {
+            return;
+        }
+        self.queue
+            .write_buffer(&self.sim_params_buf, 0, bytemuck::bytes_of(params));
+        let mut encoder = self
+            .device
+            .create_command_encoder(&wgpu::CommandEncoderDescriptor {
+                label: Some("gpu_extinguish_tool_encoder"),
+            });
+        {
+            let mut cpass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {
+                label: Some("gpu_extinguish_tool_pass"),
+                timestamp_writes: None,
+            });
+            cpass.set_pipeline(&self.spatial_query_pipeline);
+            cpass.set_bind_group(0, &self.spatial_query_bind_group, &[]);
+            cpass.dispatch_workgroups(agent_workgroups, 1, 1);
         }
         self.queue.submit([encoder.finish()]);
     }
